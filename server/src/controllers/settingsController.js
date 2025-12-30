@@ -1,0 +1,1194 @@
+const Settings = require('../models/Settings');
+const Product = require('../models/Product');
+
+// @desc Get settings
+// @route GET /api/settings
+// @access Private
+const getSettings = async (req, res) => {
+  try {
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      settings = await Settings.create({
+        organizationId: req.organizationId,
+        companyName: 'My Company',
+        gstPercentage: 5,
+        enabledSizes: ['S', 'M', 'L', 'XL', 'XXL'],
+        marketplaceAccounts: [],
+        stockLockEnabled: false, // 🔒 NEW
+        stockLockValue: 0, // 🔒 NEW
+        maxStockLockThreshold: 0,
+        notifications: {
+          enabled: true,
+          emailAlertsEnabled: true,
+          warningThresholdDays: 15,
+          moderateThresholdDays: 30,
+          urgentThresholdDays: 45,
+          criticalThresholdDays: 60,
+          largeAmountThreshold: 10000,
+          creditWarningPercent: 80,
+          creditLimitBlock: true,
+          autoEmailOn80Percent: true,
+          autoEmailMode: 'not_trusted_only',
+          dailySummaryEnabled: true,
+          dailySummaryTime: '09:00',
+          autoDeleteResolvedAfterDays: 90,
+          enableAutoDelete: false,
+          autoEmailChallan: false,
+        },
+      });
+    }
+
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc Update settings
+// @route PUT /api/settings
+// @access Private
+const updateSettings = async (req, res) => {
+  try {
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      settings = await Settings.create({
+        ...req.body,
+        organizationId: req.organizationId
+      });
+    } else {
+      // ✅ Explicitly handle editPermissions
+      if (req.body.editPermissions) {
+        settings.editPermissions = {
+          enabled: req.body.editPermissions.enabled || false,
+          allowedUsers: req.body.editPermissions.allowedUsers || [],
+          maxChanges: req.body.editPermissions.maxChanges || 2,
+          timeWindowMinutes: req.body.editPermissions.timeWindowMinutes || 3
+        };
+      }
+      
+      // Handle other fields
+      Object.assign(settings, req.body);
+      await settings.save();
+    }
+
+    res.json(settings);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+};
+
+// 🔒 NEW: Reduce stock lock value (for lock override)
+// @route POST /api/settings/reduce-stock-lock
+// @access Private
+const reduceStockLock = async (req, res) => {
+  try {
+    const { reduceBy } = req.body;
+    const organizationId = req.organizationId;
+
+    if (!reduceBy || reduceBy <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid reduction value',
+      });
+    }
+
+    const settings = await Settings.findOne({ organizationId });
+
+    if (!settings) {
+      return res.status(404).json({
+        success: false,
+        message: 'Settings not found',
+      });
+    }
+
+    if (!settings.stockLockEnabled) {
+      return res.status(400).json({
+        success: false,
+        message: 'Stock lock is not enabled',
+      });
+    }
+
+    // Calculate new lock value
+    const newLockValue = Math.max(0, settings.stockLockValue - reduceBy);
+    const actualReduction = settings.stockLockValue - newLockValue;
+
+    settings.stockLockValue = newLockValue;
+    await settings.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Stock lock reduced by ${actualReduction} units`,
+      data: {
+        previousLockValue: settings.stockLockValue + actualReduction,
+        newLockValue: settings.stockLockValue,
+        reducedBy: actualReduction,
+        maxThreshold: settings.maxStockLockThreshold || 0,  // ✅ ADD THIS
+      },
+    });
+
+  } catch (error) {
+    console.error('Reduce stock lock error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reduce stock lock',
+      error: error.message,
+    });
+  }
+};
+
+// ✅ NEW: Add marketplace account
+// @route POST /api/settings/marketplace-accounts
+// @access Private (Admin only)
+const addMarketplaceAccount = async (req, res) => {
+  try {
+    const { accountName, isDefault } = req.body;
+
+    if (!accountName || accountName.trim() === '') {
+      return res.status(400).json({ message: 'Account name is required' });
+    }
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      settings = await Settings.create({ organizationId: req.organizationId });
+    }
+
+    // Check for duplicate account name
+    const isDuplicate = settings.marketplaceAccounts.some(
+      (acc) => acc.accountName.toLowerCase() === accountName.trim().toLowerCase()
+    );
+
+    if (isDuplicate) {
+      return res.status(400).json({ message: 'Account name already exists' });
+    }
+
+    // If this is set as default, unset all other defaults
+    if (isDefault) {
+      settings.marketplaceAccounts.forEach((acc) => {
+        acc.isDefault = false;
+      });
+    }
+
+    // Add new account
+    settings.marketplaceAccounts.push({
+      accountName: accountName.trim(),
+      isDefault: isDefault || false,
+      isActive: true,
+    });
+
+    await settings.save();
+
+    res.status(201).json({
+      message: 'Marketplace account added successfully',
+      settings,
+    });
+  } catch (error) {
+    console.error('Add marketplace account error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Update marketplace account
+// @route PUT /api/settings/marketplace-accounts/:accountId
+// @access Private (Admin only)
+const updateMarketplaceAccount = async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    const { accountName, isDefault, isActive } = req.body;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    const account = settings.marketplaceAccounts.id(accountId);
+
+    if (!account) {
+      return res.status(404).json({ message: 'Account not found' });
+    }
+
+    // Check for duplicate name (excluding current account)
+    if (accountName && accountName.trim() !== '') {
+      const isDuplicate = settings.marketplaceAccounts.some(
+        (acc) =>
+          acc._id.toString() !== accountId &&
+          acc.accountName.toLowerCase() === accountName.trim().toLowerCase()
+      );
+
+      if (isDuplicate) {
+        return res.status(400).json({ message: 'Account name already exists' });
+      }
+
+      account.accountName = accountName.trim();
+    }
+
+    // If setting as default, unset all other defaults
+    if (isDefault === true) {
+      settings.marketplaceAccounts.forEach((acc) => {
+        acc.isDefault = false;
+      });
+      account.isDefault = true;
+    } else if (isDefault === false) {
+      account.isDefault = false;
+    }
+
+    if (isActive !== undefined) {
+      account.isActive = isActive;
+    }
+
+    await settings.save();
+
+    res.json({
+      message: 'Marketplace account updated successfully',
+      settings,
+    });
+  } catch (error) {
+    console.error('Update marketplace account error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Delete marketplace account
+// @route DELETE /api/settings/marketplace-accounts/:accountId
+// @access Private (Admin only)
+const deleteMarketplaceAccount = async (req, res) => {
+  try {
+    const { accountId } = req.params;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    const account = settings.marketplaceAccounts.id(accountId);
+
+    if (!account) {
+      return res.status(404).json({ message: 'Account not found' });
+    }
+
+    // Remove the account
+    account.deleteOne();
+    await settings.save();
+
+    res.json({
+      message: 'Marketplace account deleted successfully',
+      settings,
+    });
+  } catch (error) {
+    console.error('Delete marketplace account error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Set default marketplace account
+// @route PUT /api/settings/marketplace-accounts/:accountId/set-default
+// @access Private (Admin only)
+const setDefaultMarketplaceAccount = async (req, res) => {
+  try {
+    const { accountId } = req.params;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    const account = settings.marketplaceAccounts.id(accountId);
+
+    if (!account) {
+      return res.status(404).json({ message: 'Account not found' });
+    }
+
+    // Unset all defaults
+    settings.marketplaceAccounts.forEach((acc) => {
+      acc.isDefault = false;
+    });
+
+    // Set this account as default
+    account.isDefault = true;
+
+    await settings.save();
+
+    res.json({
+      message: 'Default marketplace account set successfully',
+      settings,
+    });
+  } catch (error) {
+    console.error('Set default marketplace account error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Update Stock Thresholds
+// @desc Update stock threshold settings
+// @route PUT /api/settings/stock-thresholds
+// @access Private (Admin only)
+const updateStockThresholds = async (req, res) => {
+  try {
+    const { globalThreshold, designOverrides } = req.body;
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Initialize stockThresholds if it doesn't exist
+    if (!settings.stockThresholds) {
+      settings.stockThresholds = {
+        globalThreshold: 10,
+        designOverrides: [],
+      };
+    }
+
+    // Update global threshold
+    if (globalThreshold !== undefined) {
+      settings.stockThresholds.globalThreshold = Number(globalThreshold);
+    }
+
+    // Update design overrides
+    if (designOverrides !== undefined && Array.isArray(designOverrides)) {
+      settings.stockThresholds.designOverrides = designOverrides.map((item) => ({
+        design: item.design,
+        threshold: Number(item.threshold),
+      }));
+    }
+
+    await settings.save();
+
+    res.json({
+      message: 'Stock thresholds updated successfully',
+      stockThresholds: settings.stockThresholds,
+    });
+  } catch (error) {
+    console.error('Update stock thresholds error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Get Stock Thresholds
+// @desc Get stock threshold settings
+// @route GET /api/settings/stock-thresholds
+// @access Private
+const getStockThresholds = async (req, res) => {
+  try {
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      // Return default values if settings don't exist
+      return res.json({
+        globalThreshold: 10,
+        designOverrides: [],
+      });
+    }
+
+    res.json({
+      globalThreshold: settings.stockThresholds?.globalThreshold || 10,
+      designOverrides: settings.stockThresholds?.designOverrides || [],
+    });
+  } catch (error) {
+    console.error('Get stock thresholds error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Add Design Threshold Override
+// @desc Add or update threshold for a specific design
+// @route POST /api/settings/stock-thresholds/design
+// @access Private (Admin only)
+const addDesignThreshold = async (req, res) => {
+  try {
+    const { design, threshold } = req.body;
+
+    if (!design || threshold === undefined) {
+      return res.status(400).json({ message: 'Design name and threshold are required' });
+    }
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Initialize stockThresholds if it doesn't exist
+    if (!settings.stockThresholds) {
+      settings.stockThresholds = {
+        globalThreshold: 10,
+        designOverrides: [],
+      };
+    }
+
+    // Check if design already has an override
+    const existingIndex = settings.stockThresholds.designOverrides.findIndex(
+      (item) => item.design === design
+    );
+
+    if (existingIndex !== -1) {
+      // Update existing override
+      settings.stockThresholds.designOverrides[existingIndex].threshold = Number(threshold);
+    } else {
+      // Add new override
+      settings.stockThresholds.designOverrides.push({
+        design: design,
+        threshold: Number(threshold),
+      });
+    }
+
+    await settings.save();
+
+    res.json({
+      message: 'Design threshold updated successfully',
+      stockThresholds: settings.stockThresholds,
+    });
+  } catch (error) {
+    console.error('Add design threshold error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Remove Design Threshold Override
+// @desc Remove threshold override for a specific design
+// @route DELETE /api/settings/stock-thresholds/design/:design
+// @access Private (Admin only)
+const removeDesignThreshold = async (req, res) => {
+  try {
+    const { design } = req.params;
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    if (!settings.stockThresholds || !settings.stockThresholds.designOverrides) {
+      return res.status(404).json({ message: 'No design overrides found' });
+    }
+
+    // Remove the override
+    settings.stockThresholds.designOverrides = settings.stockThresholds.designOverrides.filter(
+      (item) => item.design !== design
+    );
+
+    await settings.save();
+
+    res.json({
+      message: 'Design threshold removed successfully',
+      stockThresholds: settings.stockThresholds,
+    });
+  } catch (error) {
+    console.error('Remove design threshold error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Update Company Info
+// @desc Update company information
+// @route PUT /api/settings/company
+// @access Private (Admin only)
+const updateCompanyInfo = async (req, res) => {
+  try {
+    const { companyName, address, email, phone } = req.body;
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Update company fields
+    if (companyName !== undefined) settings.companyName = companyName;
+    if (address !== undefined) settings.address = address;
+    if (email !== undefined) settings.email = email;
+    if (phone !== undefined) settings.phone = phone;
+
+    await settings.save();
+
+    res.json({
+      message: 'Company information updated successfully',
+      settings,
+    });
+  } catch (error) {
+    console.error('Update company info error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Update GST Settings
+// @desc Update GST number and percentage
+// @route PUT /api/settings/gst
+// @access Private (Admin only)
+const updateGST = async (req, res) => {
+  try {
+    const { gstNumber, gstPercentage } = req.body;
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Update GST fields
+    if (gstNumber !== undefined) settings.gstNumber = gstNumber;
+    if (gstPercentage !== undefined) {
+      const percentage = Number(gstPercentage);
+      if (percentage < 0 || percentage > 100) {
+        return res.status(400).json({ message: 'GST percentage must be between 0 and 100' });
+      }
+      settings.gstPercentage = percentage;
+    }
+
+    await settings.save();
+
+    res.json({
+      message: 'GST settings updated successfully',
+      settings,
+    });
+  } catch (error) {
+    console.error('Update GST error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Update Enabled Sizes
+// @desc Update enabled product sizes
+// @route PUT /api/settings/sizes
+// @access Private (Admin only)
+const updateEnabledSizes = async (req, res) => {
+  try {
+    const { enabledSizes } = req.body;
+
+    if (!Array.isArray(enabledSizes) || enabledSizes.length === 0) {
+      return res.status(400).json({ message: 'Enabled sizes must be a non-empty array' });
+    }
+
+    // Validate sizes
+    const validSizes = ['S', 'M', 'L', 'XL', 'XXL'];
+    const invalidSizes = enabledSizes.filter((size) => !validSizes.includes(size));
+
+    if (invalidSizes.length > 0) {
+      return res.status(400).json({
+        message: `Invalid sizes: ${invalidSizes.join(', ')}. Valid sizes are: ${validSizes.join(', ')}`,
+      });
+    }
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    settings.enabledSizes = enabledSizes;
+    await settings.save();
+
+    res.json({
+      message: 'Enabled sizes updated successfully',
+      settings,
+    });
+  } catch (error) {
+    console.error('Update enabled sizes error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Update Permissions
+// @desc Update user permissions settings
+// @route PUT /api/settings/permissions
+// @access Private (Admin only)
+const updatePermissions = async (req, res) => {
+  try {
+    const { allowSalesEdit } = req.body;
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Initialize permissions if it doesn't exist
+    if (!settings.permissions) {
+      settings.permissions = {
+        allowSalesEdit: false,
+      };
+    }
+
+    // Update permissions
+    if (allowSalesEdit !== undefined) {
+      settings.permissions.allowSalesEdit = Boolean(allowSalesEdit);
+    }
+
+    await settings.save();
+
+    res.json({
+      message: 'Permissions updated successfully',
+      settings,
+    });
+  } catch (error) {
+    console.error('Update permissions error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+const toggleStockLock = async (req, res) => {
+  try {
+    const { enabled, threshold } = req.body;
+    const organizationId = req.organizationId;
+
+    console.log(`📋 Toggle Stock Lock Request: enabled=${enabled}, threshold=${threshold}`);
+
+    let settings = await Settings.findOne({ organizationId });
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    const wasEnabled = settings.stockLockEnabled;
+    console.log(`📋 Was enabled before: ${wasEnabled}`);
+
+    settings.stockLockEnabled = enabled;
+
+    if (threshold !== undefined) {
+      settings.maxStockLockThreshold = Number(threshold);
+      console.log(`📋 Setting threshold to: ${threshold}`);
+    }
+
+    const Product = require('../models/Product');
+
+    // ✅ When ENABLING: Auto-distribute threshold across variants
+    if (enabled && !wasEnabled && threshold > 0) {
+      console.log(`🔄 Starting auto-distribution...`);
+      
+      const products = await Product.find({ organizationId });
+      console.log(`📦 Found ${products.length} products`);
+
+      const allVariants = [];
+      products.forEach(product => {
+        product.colors.forEach(color => {
+          color.sizes.forEach(size => {
+            if (size.currentStock > 0) {
+              allVariants.push({
+                product,
+                color,
+                size,
+                key: `${product.design}-${color.color}-${size.size}`
+              });
+            }
+          });
+        });
+      });
+
+      console.log(`📊 Found ${allVariants.length} variants with stock`);
+
+      if (allVariants.length > 0) {
+        const lockPerVariant = Math.floor(threshold / allVariants.length);
+        let remaining = threshold - (lockPerVariant * allVariants.length);
+        let totalLocked = 0;
+
+        for (const variant of allVariants) {
+          const lockAmount = Math.min(
+            lockPerVariant + (remaining > 0 ? 1 : 0),
+            variant.size.currentStock
+          );
+          
+          variant.size.lockedStock = lockAmount;
+          totalLocked += lockAmount;
+          if (remaining > 0) remaining--;
+          
+          await variant.product.save();
+        }
+
+        console.log(`✅ Auto-locked ${totalLocked} units across ${allVariants.length} variants`);
+      } else {
+        console.warn(`⚠️ No variants with stock found!`);
+      }
+    }
+
+    // ✅ When DISABLING: Reset all locked stock to 0
+    if (!enabled && wasEnabled) {
+      console.log(`🔄 Disabling stock lock, clearing all locks...`);
+      
+      const products = await Product.find({ organizationId });
+      let totalCleared = 0;
+      
+      for (const product of products) {
+        let modified = false;
+        for (const color of product.colors) {
+          for (const size of color.sizes) {
+            if (size.lockedStock > 0) {
+              totalCleared += size.lockedStock;
+              size.lockedStock = 0;
+              modified = true;
+            }
+          }
+        }
+        if (modified) await product.save();
+      }
+      
+      console.log(`✅ Cleared ${totalCleared} units of locked stock`);
+    }
+
+    await settings.save();
+
+    res.json({
+      message: enabled 
+        ? `Stock lock enabled successfully`
+        : 'Stock lock disabled and all locked stock cleared.',
+      settings,
+    });
+  } catch (error) {
+    console.error('Toggle stock lock error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ CORRECTED: Distribute threshold to EACH variant (following existing code pattern)
+const distributeStockLock = async (req, res) => {
+  try {
+    const { threshold } = req.body;
+    const organizationId = req.organizationId; // ✅ Match existing pattern
+
+    if (!threshold || threshold <= 0) {
+      return res.status(400).json({ message: 'Valid threshold required' });
+    }
+
+    console.log(`🔄 Distribution for org: ${organizationId}, threshold: ${threshold}`);
+
+    // ✅ CORRECT: Use organizationId field (not organization)
+    const products = await Product.find({ organizationId });
+    
+    if (!products || products.length === 0) {
+      return res.status(404).json({ message: 'No products found' });
+    }
+
+    console.log(`📦 Found ${products.length} products in your organization`);
+
+    let totalDistributed = 0;
+    let variantCount = 0;
+
+    // ✅ CORRECT: Use colors[].sizes[] schema (not variants[])
+    for (const product of products) {
+      if (!product.colors || product.colors.length === 0) continue;
+
+      for (const color of product.colors) {
+        if (!color.sizes || color.sizes.length === 0) continue;
+
+        for (const size of color.sizes) {
+          // ✅ Apply threshold to EACH variant (not divided)
+          if (size.currentStock >= threshold) {
+            size.lockedStock = threshold;
+            variantCount++;
+            totalDistributed += threshold;
+            console.log(`  ✅ ${product.design}-${color.color}-${size.size}: locked ${threshold}`);
+          } else if (size.currentStock > 0) {
+            size.lockedStock = size.currentStock;
+            variantCount++;
+            totalDistributed += size.currentStock;
+            console.log(`  ⚠️ ${product.design}-${color.color}-${size.size}: locked ${size.currentStock} (partial)`);
+          }
+        }
+      }
+      
+      await product.save();
+    }
+
+    console.log(`✅ Total: ${totalDistributed} units across ${variantCount} variants`);
+
+    res.json({
+      message: 'Stock lock distributed successfully',
+      totalDistributed,
+      variantCount,
+      perVariant: threshold
+    });
+  } catch (error) {
+    console.error('❌ Error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Set Lock Amount for Specific Variant
+const setVariantLockAmount = async (req, res) => {
+  try {
+    const { design, color, size, lockAmount } = req.body;
+    const organizationId = req.organizationId;
+
+    const settings = await Settings.findOne({ organizationId });
+    if (!settings || !settings.stockLockEnabled) {
+      return res.status(400).json({ 
+        message: 'Stock lock feature is not enabled' 
+      });
+    }
+
+    const product = await Product.findOne({ design, organizationId });
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const colorVariant = product.colors.find(c => c.color === color);
+    if (!colorVariant) {
+      return res.status(404).json({ message: 'Color not found' });
+    }
+
+    const sizeVariant = colorVariant.sizes.find(s => s.size === size);
+    if (!sizeVariant) {
+      return res.status(404).json({ message: 'Size not found' });
+    }
+
+    // Validate lock amount
+    if (lockAmount < 0 || lockAmount > sizeVariant.currentStock) {
+      return res.status(400).json({ 
+        message: `Lock amount must be between 0 and ${sizeVariant.currentStock}` 
+      });
+    }
+
+    sizeVariant.lockedStock = lockAmount;
+    await product.save();
+
+    res.json({
+      message: 'Lock amount set successfully',
+      variant: {
+        design,
+        color,
+        size,
+        currentStock: sizeVariant.currentStock,
+        lockedStock: sizeVariant.lockedStock,
+        availableStock: sizeVariant.currentStock - sizeVariant.lockedStock,
+      },
+    });
+  } catch (error) {
+    console.error('Set lock amount error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ SOLUTION 2: Refill specific variant's locked stock
+const refillLockedStock = async (req, res) => {
+  try {
+    const { design, color, size, refillAmount } = req.body;
+    const organizationId = req.organizationId;
+
+    const settings = await Settings.findOne({ organizationId });
+    if (!settings || !settings.stockLockEnabled) {
+      return res.status(400).json({
+        message: 'Stock lock feature is not enabled'
+      });
+    }
+
+    const Product = require('../models/Product');
+    const product = await Product.findOne({ design, organizationId });
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const colorVariant = product.colors.find(c => c.color === color);
+    if (!colorVariant) {
+      return res.status(404).json({ message: 'Color not found' });
+    }
+
+    const sizeVariant = colorVariant.sizes.find(s => s.size === size);
+    if (!sizeVariant) {
+      return res.status(404).json({ message: 'Size not found' });
+    }
+
+    const currentLocked = sizeVariant.lockedStock || 0;
+    const currentStock = sizeVariant.currentStock || 0;
+    const availableForLock = currentStock - currentLocked;
+    const maxThreshold = settings.maxStockLockThreshold || 0;
+
+    // Calculate how much we can actually refill
+    const maxCanLock = Math.min(
+      refillAmount,           // Requested amount
+      availableForLock,       // Available stock
+      maxThreshold - currentLocked // Don't exceed threshold
+    );
+
+    if (maxCanLock <= 0) {
+      return res.status(400).json({
+        message: 'Cannot refill. Either no available stock or lock is already at threshold.',
+        currentStock,
+        lockedStock: currentLocked,
+        availableForLock,
+        maxThreshold
+      });
+    }
+
+    // ✅ Add to locked stock (don't change currentStock)
+    sizeVariant.lockedStock = currentLocked + maxCanLock;
+    await product.save();
+
+    res.json({
+      success: true,
+      message: `Refilled ${maxCanLock} units to locked stock`,
+      variant: {
+        design,
+        color,
+        size,
+        currentStock: sizeVariant.currentStock,
+        lockedStock: sizeVariant.lockedStock,
+        availableStock: sizeVariant.currentStock - sizeVariant.lockedStock,
+        refilled: maxCanLock,
+      },
+    });
+  } catch (error) {
+    console.error('Refill locked stock error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Get Stock Lock Settings with dynamic calculation
+// @route GET /api/settings/stock-lock
+// @access Private
+const getStockLockSettings = async (req, res) => {
+  try {
+    const organizationId = req.organizationId;
+    const settings = await Settings.findOne({ organizationId });
+
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // ✅ Calculate CURRENT locked stock from pending marketplace sales
+    const MarketplaceSale = require('../models/MarketplaceSale');
+    const pendingSales = await MarketplaceSale.find({
+      organizationId,
+      status: { $in: ['dispatched'] }
+    });
+
+    const totalLockedStock = pendingSales.reduce((sum, sale) => sum + sale.quantity, 0);
+
+    res.json({
+      stockLockEnabled: settings.stockLockEnabled || false,
+      stockLockValue: totalLockedStock, // ✅ Dynamic calculation
+      maxStockLockThreshold: settings.maxStockLockThreshold || 0,
+    });
+  } catch (error) {
+    console.error('Get stock lock settings error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Get Color Palette
+// @route GET /api/settings/color-palette
+// @access Private
+const getColorPalette = async (req, res) => {
+  try {
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      return res.json([
+        { colorName: 'Black', colorCode: '#000000', availableForDesigns: [], isActive: true, displayOrder: 0 },
+        { colorName: 'Green', colorCode: '#22c55e', availableForDesigns: [], isActive: true, displayOrder: 1 },
+        { colorName: 'Light Grey', colorCode: '#d1d5db', availableForDesigns: [], isActive: true, displayOrder: 2 },
+        { colorName: 'Dark Grey', colorCode: '#4b5563', availableForDesigns: [], isActive: true, displayOrder: 3 },
+        { colorName: 'Khaki', colorCode: '#a16207', availableForDesigns: [], isActive: true, displayOrder: 4 },
+      ]);
+    }
+
+    res.json(settings.colorPalette || []);
+  } catch (error) {
+    console.error('Get color palette error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Add Color to Palette
+// @route POST /api/settings/color-palette
+// @access Private (Admin only)
+const addColorToPalette = async (req, res) => {
+  try {
+    const { colorName, colorCode, availableForDesigns } = req.body;
+
+    if (!colorName || !colorCode) {
+      return res.status(400).json({ message: 'Color name and code are required' });
+    }
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Check for duplicate color name
+    const isDuplicate = settings.colorPalette.some(
+      (c) => c.colorName.toLowerCase() === colorName.trim().toLowerCase()
+    );
+
+    if (isDuplicate) {
+      return res.status(400).json({ message: 'Color name already exists' });
+    }
+
+    // Add new color
+    const newColor = {
+      colorName: colorName.trim(),
+      colorCode: colorCode.trim(),
+      availableForDesigns: availableForDesigns || [],
+      isActive: true,
+      displayOrder: settings.colorPalette.length,
+      createdAt: new Date(),
+    };
+
+    settings.colorPalette.push(newColor);
+    await settings.save();
+
+    res.status(201).json({
+      message: 'Color added successfully',
+      colorPalette: settings.colorPalette,
+    });
+  } catch (error) {
+    console.error('Add color error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Update Color in Palette
+// @route PUT /api/settings/color-palette/:colorId
+// @access Private (Admin only)
+const updateColorInPalette = async (req, res) => {
+  try {
+    const { colorId } = req.params;
+    const { colorName, colorCode, availableForDesigns, isActive } = req.body;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    const color = settings.colorPalette.id(colorId);
+    
+    if (!color) {
+      return res.status(404).json({ message: 'Color not found' });
+    }
+
+    // Check for duplicate name (excluding current color)
+    if (colorName && colorName.trim() !== '') {
+      const isDuplicate = settings.colorPalette.some(
+        (c) =>
+          c._id.toString() !== colorId &&
+          c.colorName.toLowerCase() === colorName.trim().toLowerCase()
+      );
+
+      if (isDuplicate) {
+        return res.status(400).json({ message: 'Color name already exists' });
+      }
+
+      color.colorName = colorName.trim();
+    }
+
+    if (colorCode) color.colorCode = colorCode.trim();
+    if (availableForDesigns !== undefined) color.availableForDesigns = availableForDesigns;
+    if (isActive !== undefined) color.isActive = isActive;
+
+    await settings.save();
+
+    res.json({
+      message: 'Color updated successfully',
+      colorPalette: settings.colorPalette,
+    });
+  } catch (error) {
+    console.error('Update color error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Delete Color from Palette
+// @route DELETE /api/settings/color-palette/:colorId
+// @access Private (Admin only)
+const deleteColorFromPalette = async (req, res) => {
+  try {
+    const { colorId } = req.params;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    const color = settings.colorPalette.id(colorId);
+    
+    if (!color) {
+      return res.status(404).json({ message: 'Color not found' });
+    }
+
+    // Remove the color
+    color.deleteOne();
+    await settings.save();
+
+    res.json({
+      message: 'Color deleted successfully',
+      colorPalette: settings.colorPalette,
+    });
+  } catch (error) {
+    console.error('Delete color error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Reorder Colors
+// @route PUT /api/settings/color-palette/reorder
+// @access Private (Admin only)
+const reorderColors = async (req, res) => {
+  try {
+    const { orderedColorIds } = req.body;
+
+    if (!Array.isArray(orderedColorIds)) {
+      return res.status(400).json({ message: 'Invalid color order array' });
+    }
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Update display order
+    orderedColorIds.forEach((colorId, index) => {
+      const color = settings.colorPalette.id(colorId);
+      if (color) {
+        color.displayOrder = index;
+      }
+    });
+
+    await settings.save();
+
+    // Sort and return
+    const sortedPalette = settings.colorPalette.sort((a, b) => a.displayOrder - b.displayOrder);
+
+    res.json({
+      message: 'Colors reordered successfully',
+      colorPalette: sortedPalette,
+    });
+  } catch (error) {
+    console.error('Reorder colors error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+module.exports = {
+  getSettings,
+  updateSettings,
+  reduceStockLock, // 🔒 NEW
+  addMarketplaceAccount,
+  updateMarketplaceAccount,
+  deleteMarketplaceAccount,
+  setDefaultMarketplaceAccount,
+  updateStockThresholds,
+  getStockThresholds,
+  addDesignThreshold,
+  removeDesignThreshold,
+  updateCompanyInfo,
+  updateGST,
+  updateEnabledSizes,
+  updatePermissions,
+  toggleStockLock,          // ✅ NEW
+  setVariantLockAmount,     // ✅ NEW
+  refillLockedStock,
+  getStockLockSettings,
+  distributeStockLock,
+  getColorPalette,
+  addColorToPalette,
+  updateColorInPalette,
+  deleteColorFromPalette,
+  reorderColors
+};
