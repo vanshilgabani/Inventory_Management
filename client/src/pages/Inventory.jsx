@@ -267,8 +267,8 @@ const allVariants = useMemo(() => {
 
   // Summary stats (from ALL variants, not filtered)
   const stats = useMemo(() => {
-    const lowStock = allVariants.filter(v => v.status === 'low_stock').length;
-    const outOfStock = allVariants.filter(v => v.status === 'out_of_stock').length;
+    const lowStock = allVariants.filter(v => v.status === 'lowstock').length;
+    const outOfStock = allVariants.filter(v => v.status === 'outofstock').length;
     const totalValue = allVariants.reduce((sum, v) => sum + (v.value || 0), 0);
     
     return { lowStock, outOfStock, totalValue };

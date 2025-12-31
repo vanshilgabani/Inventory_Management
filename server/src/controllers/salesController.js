@@ -191,7 +191,7 @@ exports.getAllSales = async (req, res) => {
       startDate, 
       endDate, 
       page = 1, 
-      limit = 100 
+      limit = 0 
     } = req.query;
 
     const filter = { organizationId };

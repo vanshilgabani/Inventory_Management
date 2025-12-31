@@ -245,7 +245,7 @@ const fetchInitialData = async () => {
   const fetchSales = async () => {
     try {
       const { start, end } = getEffectiveDateRange();
-      const data = await salesService.getAllSales(selectedAccount, 'all', start, end);
+      const data = await salesService.getAllSales(selectedAccount, 'all', start, end, { limit: 0 });
       setSales(data);
     } catch (error) {
       toast.error('Failed to fetch sales');
