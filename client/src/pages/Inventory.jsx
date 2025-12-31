@@ -270,8 +270,9 @@ const allVariants = useMemo(() => {
     const lowStock = allVariants.filter(v => v.status === 'lowstock').length;
     const outOfStock = allVariants.filter(v => v.status === 'outofstock').length;
     const totalValue = allVariants.reduce((sum, v) => sum + (v.value || 0), 0);
-    
-    return { lowStock, outOfStock, totalValue };
+    const totalStock = allVariants.reduce((sum, v) => sum + (v.stock || 0), 0);
+
+    return { lowStock, outOfStock, totalValue, totalStock };
   }, [allVariants]);
 
   // Export functions
@@ -583,8 +584,8 @@ const allVariants = useMemo(() => {
               <FiPackage className="text-2xl text-blue-600" />
             </div>
             <div>
-              <p className="text-sm text-gray-500">Total Variants</p>
-              <p className="text-2xl font-bold text-gray-900">{allVariants.length}</p>
+              <p className="text-sm text-gray-500">Total Stock</p>
+              <p className="text-2xl font-bold text-gray-900">{stats.totalStock}</p>
             </div>
           </div>
         </Card>
