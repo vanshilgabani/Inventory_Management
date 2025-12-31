@@ -280,10 +280,10 @@ const allVariants = useMemo(() => {
     
     if (type === 'all') {
       dataToExport = allVariants;
-    } else if (type === 'low_stock') {
-      dataToExport = allVariants.filter(v => v.status === 'low_stock');
-    } else if (type === 'out_of_stock') {
-      dataToExport = allVariants.filter(v => v.status === 'out_of_stock');
+    } else if (type === 'lowstock') {
+      dataToExport = allVariants.filter(v => v.status === 'lowstock');
+    } else if (type === 'outofstock') {
+      dataToExport = allVariants.filter(v => v.status === 'outofstock');
     }
 
     if (dataToExport.length === 0) {
@@ -559,13 +559,13 @@ const allVariants = useMemo(() => {
             </div>
             <div className="flex gap-2">
               <button
-                onClick={() => setStockFilter('low_stock')}
+                onClick={() => setStockFilter('lowstock')}
                 className="px-4 py-2 bg-yellow-500 text-white rounded-lg font-semibold hover:bg-yellow-600"
               >
                 View Low Stock
               </button>
               <button
-                onClick={() => setStockFilter('out_of_stock')}
+                onClick={() => setStockFilter('outofstock')}
                 className="px-4 py-2 bg-red-500 text-white rounded-lg font-semibold hover:bg-red-600"
               >
                 View Out of Stock
@@ -653,9 +653,9 @@ const allVariants = useMemo(() => {
                 className="px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500"
               >
                 <option value="all">All Stock Status</option>
-                <option value="in_stock">✅ In Stock</option>
-                <option value="low_stock">⚠️ Low Stock</option>
-                <option value="out_of_stock">❌ Out of Stock</option>
+                <option value="instock">✅ In Stock</option>
+                <option value="lowstock">⚠️ Low Stock</option>
+                <option value="outofstock">❌ Out of Stock</option>
               </select>
 
               {/* Color Filter */}
@@ -1120,7 +1120,7 @@ const allVariants = useMemo(() => {
           </button>
 
           <button
-            onClick={() => handleExport('low_stock')}
+            onClick={() => handleExport('lowstock')}
             className="w-full px-6 py-4 bg-yellow-500 text-white rounded-lg font-semibold hover:bg-yellow-600 flex items-center justify-between"
           >
             <div className="flex items-center gap-3">
@@ -1134,7 +1134,7 @@ const allVariants = useMemo(() => {
           </button>
 
           <button
-            onClick={() => handleExport('out_of_stock')}
+            onClick={() => handleExport('outofstock')}
             className="w-full px-6 py-4 bg-red-500 text-white rounded-lg font-semibold hover:bg-red-600 flex items-center justify-between"
           >
             <div className="flex items-center gap-3">
