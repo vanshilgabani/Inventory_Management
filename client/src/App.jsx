@@ -6,6 +6,8 @@ import Register from './pages/Register';
 import Layout from './components/common/Layout';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
+import TransferHistory from './pages/TransferHistory';
+import ReservedInventory from './pages/ReservedInventory';
 import Wholesale from './pages/Wholesale';
 import DirectSales from './pages/DirectSales';
 import FactoryReceiving from './pages/FactoryReceiving';
@@ -83,6 +85,8 @@ function App() {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="inventory" element={<Inventory />} />
+            <Route path="reserved-inventory" element={<ReservedInventory />} />
+            <Route path="transfer-history" element={<TransferHistory />} />
             <Route path="factory-receiving" element={<FactoryReceiving />} />
             <Route path="wholesale" element={<Wholesale />} />
             <Route path="direct-sales" element={<DirectSales />} />

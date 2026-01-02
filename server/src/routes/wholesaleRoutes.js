@@ -22,7 +22,8 @@ const {
   deleteBulkPayment,
   previewPaymentAllocation,
   getBuyerStats,
-  sendChallanEmail
+  sendChallanEmail,
+  createOrderWithReservedBorrow
 } = require('../controllers/wholesaleController');
 
 const { protect } = require('../middleware/auth');
@@ -62,6 +63,7 @@ router.put('/:id/payment-history', protect, isAdmin, updatePaymentHistory);
 
 // Order CRUD routes
 router.post('/', protect, createOrder);
+router.post('/with-reserved-borrow', protect, createOrderWithReservedBorrow);
 router.put('/:id', protect, updateOrder);
 router.get('/:id', protect, getOrderById);
 router.delete('/:id', protect, isAdmin, deleteOrder);

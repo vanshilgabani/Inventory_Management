@@ -10,6 +10,7 @@ router.get('/export/excel', protect, salesController.exportOrders);
 
 // ============ CRUD ROUTES ============
 router.post('/', protect, salesController.createSale);
+router.post('/with-main-stock', protect, salesController.createSaleWithMainStock);
 router.get('/', protect, salesController.getAllSales);
 router.post('/bulk/delivered', protect, salesController.bulkMarkDelivered);
 

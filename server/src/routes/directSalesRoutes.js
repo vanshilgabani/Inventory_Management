@@ -9,7 +9,8 @@ const {
   getSalesByDateRange,
   getSalesByCustomer,
   getAllCustomers,        // ✅ ADD THIS
-  getCustomerByMobile,    // ✅ ADD THIS
+  getCustomerByMobile,
+  createSaleWithReservedBorrow,    // ✅ ADD THIS
 } = require('../controllers/directSalesController');
 const { protect } = require('../middleware/auth');
 const { canEditDelete } = require('../middleware/checkEditPermission');
@@ -35,6 +36,7 @@ router.get('/:id', getSaleById);
 
 // Create new sale
 router.post('/', createSale);
+router.post('/with-reserved-borrow', createSaleWithReservedBorrow);
 
 // Update sale
 router.put('/:id', canEditDelete, updateSale);

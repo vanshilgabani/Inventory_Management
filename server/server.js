@@ -45,6 +45,7 @@ const notificationRoutes = require('./src/routes/notificationRoutes'); // NEW
 const productPricingRoutes = require('./src/routes/productPricingRoutes');
 const settlementRoutes = require('./src/routes/settlementRoutes');
 const editSessionRoutes = require('./src/routes/editSessionRoutes');
+const transferRoutes = require('./src/routes/transferRoutes');
 const initCronJobs = require('./src/utils/cronJobs');
 
 // Routes
@@ -63,6 +64,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/product-pricing', productPricingRoutes);
 app.use('/api/settlements', settlementRoutes);
 app.use('/api/edit-sessions', editSessionRoutes);
+app.use('/api/transfers', transferRoutes);
 
 // Test route
 app.get('/', (req, res) => {

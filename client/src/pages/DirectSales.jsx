@@ -6,6 +6,7 @@ import { generateInvoice, sendChallanViaWhatsApp } from '../components/InvoiceGe
 import { useEnabledSizes } from '../hooks/useEnabledSizes';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
+import BorrowFromReservedModal from '../components/BorrowFromReservedModal';
 import Loader from '../components/common/Loader';
 import toast from 'react-hot-toast';
 import {
@@ -57,6 +58,8 @@ const { user } = useAuth(); // ✅ ADD THIS (if not already present)
   const [showUseLockModal, setShowUseLockModal] = useState(false);
   const [useLockData, setUseLockData] = useState(null);
   const [pendingSaleData, setPendingSaleData] = useState(null);
+  const [showBorrowModal, setShowBorrowModal] = useState(false);
+  const [borrowData, setBorrowData] = useState(null);
   
   // ✅ GST State
   const [gstEnabled, setGstEnabled] = useState(true);
@@ -156,6 +159,38 @@ const { user } = useAuth(); // ✅ ADD THIS (if not already present)
     setShowCustomerListModal(false);
     toast.success('Customer selected!');
   };
+
+const handleBorrowConfirm = async () => {
+  if (!pendingSaleData) return;
+
+  try {
+    console.log('User confirmed borrowing from reserved, creating sale...');
+    
+    // ✅ ADD borrowFromReserved: true flag
+    const saleDataWithFlag = {
+      ...pendingSaleData,
+      borrowFromReserved: true  // ← ADD THIS
+    };
+    
+    await directSalesService.createSaleWithReservedBorrow(saleDataWithFlag);
+    
+    toast.success('Sale created successfully! Stock borrowed from Reserved Inventory.', { duration: 5000 });
+    
+    // Close modals
+    setShowBorrowModal(false);
+    setBorrowData(null);
+    setPendingSaleData(null);
+    setShowModal(false);
+    setIsSubmitting(false);
+    
+    // Refresh data
+    fetchData();
+  } catch (error) {
+    console.error('Failed to create sale with borrow:', error);
+    toast.error(error.response?.data?.message || 'Failed to create sale');
+    setIsSubmitting(false);
+  }
+};
 
   const handleSearchCustomer = async () => {
     if (searchMobile.length === 10) {
@@ -465,17 +500,32 @@ const handleSubmit = async (e) => {
       resetForm();
       fetchData();
     } else {
-      const result = await createSaleWithLock(saleData);
-      
-      // Only show success if not waiting for lock confirmation
-      if (result) {
-        toast.success('Sale created successfully');
-        setShowModal(false);
-        resetForm();
-        fetchData();
-      }
-      // If result is null, modal is showing, don't close or reset
-    }
+          // ✅ NEW: Try creating with lock check first
+          try {
+            const result = await createSaleWithLock(saleData);
+            // Only show success if not waiting for lock confirmation
+            if (result) {
+              toast.success('Sale created successfully');
+              setShowModal(false);
+              resetForm();
+              fetchData();
+            }
+          } catch (lockError) {
+            // ✅ Handle borrow from reserved error
+            if (lockError.response?.data?.code === 'MAIN_INSUFFICIENT_BORROW_RESERVED') {
+              console.log('Main insufficient, showing borrow modal:', lockError.response.data);
+              setBorrowData({
+                insufficientItems: lockError.response.data.insufficientItems,
+                totalNeededFromReserved: lockError.response.data.totalNeededFromReserved
+              });
+              setPendingSaleData(saleData);
+              setShowBorrowModal(true);
+              setIsSubmitting(false);
+              return; // Don't throw error
+            }
+            throw lockError; // Re-throw other errors
+          }
+        }
 
   } catch (error) {
     console.error('Submit error:', error);
@@ -1022,7 +1072,7 @@ if (loading || sizesLoading) return (
       </Card>
 
       {/* Create Sale Modal */}
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Record Direct Sale" size="max">
+      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Record Direct Sale">
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Customer Search */}
           <div className="bg-gray-50 p-4 rounded-lg space-y-3">
@@ -1303,20 +1353,18 @@ if (loading || sizesLoading) return (
           ))}
         </div>
       </Modal>
-      {/* Use Lock Stock Modal */}
-      <UseLockStockModal
-        isOpen={showUseLockModal}
+      {/* ⬇️ ADD THIS - Borrow From Reserved Modal */}
+      <BorrowFromReservedModal
+        isOpen={showBorrowModal}
         onClose={() => {
-          setShowUseLockModal(false);
-          setUseLockData(null);
+          setShowBorrowModal(false);
+          setBorrowData(null);
           setPendingSaleData(null);
           setIsSubmitting(false);
         }}
-        onConfirm={handleConfirmUseLock}
-        insufficientItems={useLockData?.insufficientItems || []}
-        totalNeededFromLock={useLockData?.totalNeededFromLock || 0}
-        currentLockValue={useLockData?.currentLockValue || 0}
-        newLockValue={useLockData?.newLockValue || 0}
+        onConfirm={handleBorrowConfirm}
+        insufficientItems={borrowData?.insufficientItems}
+        totalNeededFromReserved={borrowData?.totalNeededFromReserved || 0}
       />
     </div>
   );

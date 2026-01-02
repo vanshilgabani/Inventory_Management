@@ -133,6 +133,11 @@ const deleteBulkPayment = async (buyerId, paymentId) => {
   return response.data;
 };
 
+const createOrderWithReservedBorrow = async (data) => {
+  const response = await api.post('/wholesale/with-reserved-borrow', {...data, borrowedFromReserved: true, allowBorrowFromReserved: true });
+  return response.data;
+};
+
 export const wholesaleService = {
   getAllOrders,
   getOrderById,
@@ -154,5 +159,6 @@ export const wholesaleService = {
   previewPaymentAllocation,
   getBulkPaymentHistory,
   updateBulkPayment,
-  deleteBulkPayment
+  deleteBulkPayment,
+  createOrderWithReservedBorrow,
 };

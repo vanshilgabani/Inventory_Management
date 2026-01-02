@@ -2,6 +2,15 @@ const Product = require('../models/Product');
 const Settings = require('../models/Settings');
 const mongoose = require('mongoose');
 
+// ✅ ADD THIS - Global flag to disable locked stock
+const STOCK_LOCK_DISABLED = true;
+
+// Helper to check if we should use locked stock
+const shouldUseLockStock = () => {
+  if (STOCK_LOCK_DISABLED) return false; // Force disable
+  return false; // Always disabled
+};
+
 // ✅ ADD THIS HELPER AT THE TOP OF EACH CONTROLLER FILE
 const decrementEditSession = async (req, action, module, itemId) => {
   // Only decrement for salespeople with active sessions, not admins
@@ -33,60 +42,38 @@ const decrementEditSession = async (req, action, module, itemId) => {
 // @desc Get all products
 // @route GET /api/inventory
 // @access Private
-// ✅ SOLUTION 2: Use database lockedStock field
+// Get all products
 const getAllProducts = async (req, res) => {
   try {
-    const organizationId = req.organizationId;
+    const organizationId = req.organizationId || req.user?.organizationId;
 
-    // Fetch stock lock settings
-    const settings = await Settings.findOne({ organizationId });
-    const stockLockEnabled = settings?.stockLockEnabled || false;
-    const maxStockLockThreshold = settings?.maxStockLockThreshold || 0;
+    const products = await Product.find({ organizationId })
+      .sort({ design: 1 })
+      .lean();
 
-    const products = await Product.find({ organizationId }).sort({ design: 1 });
+    // Calculate available stock (main - locked for backward compatibility)
+    const enrichedProducts = products.map(product => ({
+      ...product,
+      colors: product.colors?.map(color => ({
+        ...color,
+        sizes: color.sizes?.map(size => ({
+          ...size,
+          currentStock: size.currentStock || 0,
+          reservedStock: size.reservedStock || 0, // NEW
+          lockedStock: shouldUseLockStock() ? (size.lockedStock || 0) : 0,
+          availableStock: Math.max(0, (size.currentStock || 0) - (size.lockedStock || 0))
+        }))
+      }))
+    }));
 
-    // ✅ Calculate total locked stock from database
-    let totalLockedStock = 0;
-
-    const productsWithAvailableStock = products.map(product => {
-      const productObj = product.toObject();
-
-      productObj.colors = productObj.colors.map(color => {
-        return {
-          ...color,
-          sizes: color.sizes.map(size => {
-            const currentStock = size.currentStock || 0;
-            const lockedStock = size.lockedStock || 0; // ✅ From database
-
-            const availableStock = stockLockEnabled
-              ? Math.max(0, currentStock - lockedStock)
-              : currentStock;
-
-            totalLockedStock += lockedStock;
-
-            return {
-              ...size,
-              lockedStock, // ✅ Send database value
-              availableStock,
-            };
-          }),
-        };
-      });
-
-      return productObj;
-    });
-
-    res.json({
-      products: productsWithAvailableStock,
-      stockLockSettings: {
-        enabled: stockLockEnabled,
-        lockValue: totalLockedStock, // ✅ Sum from database
-        maxThreshold: maxStockLockThreshold,
-      },
-    });
+    res.json({ products: enrichedProducts });
   } catch (error) {
-    console.error('Get all products error:', error);
-    res.status(500).json({ message: error.message });
+    logger.error('Failed to fetch products', { error: error.message });
+    res.status(500).json({ 
+      code: 'FETCH_FAILED', 
+      message: 'Failed to fetch products', 
+      error: error.message 
+    });
   }
 };
 
@@ -199,8 +186,8 @@ const getProductById = async (req, res) => {
 
     // Fetch stock lock settings
     const settings = await Settings.findOne({ organizationId });
-    const stockLockEnabled = settings?.stockLockEnabled || false;
-    const stockLockValue = settings?.stockLockValue || 0;
+    const stockLockEnabled = shouldUseLockStock() && (settings?.stockLockEnabled || false);
+    const stockLockValue = shouldUseLockStock() ? (settings?.stockLockValue || 0) : 0;
     const maxStockLockThreshold = settings?.maxStockLockThreshold || 0;
 
     const product = await Product.findById(req.params.id);
@@ -509,6 +496,9 @@ const updateStock = async (req, res) => {
 
 // ✅ NEW: Reduce locked stock for specific variants
 const reduceVariantLock = async (req, res) => {
+  if (shouldUseLockStock() === false) {
+    return res.json({ success: true, message: "Stock lock feature is disabled", results: [] });
+  }
   const session = await mongoose.startSession();
   session.startTransaction();
   
@@ -606,6 +596,9 @@ const reduceVariantLock = async (req, res) => {
 
 // ✅ NEW: Refill locked stock for specific variants
 const refillVariantLock = async (req, res) => {
+  if (shouldUseLockStock() === false) {
+    return res.json({ success: true, message: "Stock lock feature is disabled", results: [] });
+  }
   const session = await mongoose.startSession();
   session.startTransaction();
   

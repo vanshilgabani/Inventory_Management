@@ -5,6 +5,7 @@ import { settingsService } from '../services/settingsService';
 import { useEnabledSizes } from '../hooks/useEnabledSizes';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
+import BorrowFromReservedModal from '../components/BorrowFromReservedModal';
 import Loader from '../components/common/Loader';
 import toast from 'react-hot-toast';
 import { 
@@ -59,6 +60,8 @@ const Wholesale = () => {
   const [currentDraftId, setCurrentDraftId] = useState(null);
   const [expandedItems, setExpandedItems] = useState({});
   const [expandedColors, setExpandedColors] = useState({});
+  const [showBorrowModal, setShowBorrowModal] = useState(false);
+  const [borrowData, setBorrowData] = useState(null);
 
   const [formData, setFormData] = useState({
     buyerName: '',
@@ -631,6 +634,38 @@ const clearAllDrafts = () => {
       }
     ]);
   };
+
+const handleBorrowConfirm = async () => {
+  if (!pendingOrderData) return;
+  
+  try {
+    console.log('User confirmed borrowing from reserved, creating order...');
+    console.log('📦 Sending data:', pendingOrderData); // ✅ DEBUG
+    
+    await wholesaleService.createOrderWithReservedBorrow(pendingOrderData);
+    
+    toast.success('Order created successfully! Stock borrowed from Reserved Inventory.', { duration: 5000 });
+    
+    // Close modals
+    setShowBorrowModal(false);
+    setBorrowData(null);
+    setPendingOrderData(null);
+    setShowModal(false);
+    setSubmitting(false);
+    
+    // Refresh data
+    deleteCurrentDraft();
+    resetForm();
+    fetchOrders();
+    fetchProducts();
+    
+  } catch (error) {
+    console.error('Failed to create order with borrow:', error);
+    console.error('❌ Full error response:', error.response?.data); // ✅ SHOW FULL ERROR
+    toast.error(error.response?.data?.message || 'Failed to create order');
+    setSubmitting(false);
+  }
+};
 
   const handleRemoveItem = (index) => {
     const newItems = orderItems.filter((_, i) => i !== index);
@@ -2236,6 +2271,22 @@ const clearAllDrafts = () => {
         </Modal>
       )}
 
+      {/* ✅ NEW: Borrow from Reserved Modal */}
+      {showBorrowModal && borrowData && (
+        <BorrowFromReservedModal
+          isOpen={showBorrowModal}
+          onClose={() => {
+            setShowBorrowModal(false);
+            setBorrowData(null);
+            setPendingOrderData(null);
+            setSubmitting(false);
+          }}
+          onConfirm={handleBorrowConfirm}
+          insufficientItems={borrowData.insufficientItems}
+          orderType="order"
+        />
+      )}
+
       {/* Buyer List Modal */}
       <Modal
         isOpen={showBuyerListModal}
@@ -2419,29 +2470,23 @@ const clearAllDrafts = () => {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (submitting) return;
     setSubmitting(true);
 
     try {
-      if (!formData.buyerName || !formData.buyerContact) {
-        toast.error('Please fill in buyer details');
-        setSubmitting(false);
-        return;
-      }
-
+      // Validation
       const flattenedItems = [];
-      orderItems.forEach(item => {
-        if (!item.design || !item.pricePerUnit) return;
+      orderItems.forEach((item) => {
+        if (!item.design) return;
+        
         const colorQuantities = getFinalQuantities(item);
         colorQuantities.forEach(({ color, quantities }) => {
-          Object.keys(quantities).forEach(size => {
-            const qty = quantities[size];
-            if (qty && qty > 0) {
+          Object.keys(quantities).forEach((size) => {
+            if (quantities[size] > 0 && enabledSizes.includes(size)) {
               flattenedItems.push({
                 design: item.design,
                 color: color,
                 size: size,
-                quantity: qty,
+                quantity: quantities[size],
                 pricePerUnit: item.pricePerUnit,
               });
             }
@@ -2450,35 +2495,33 @@ const clearAllDrafts = () => {
       });
 
       if (flattenedItems.length === 0) {
-        toast.error('Please add at least one item with valid quantity');
+        toast.error('Please add at least one item with quantity');
         setSubmitting(false);
         return;
       }
 
+      // Calculate totals
       const totals = calculateTotal();
+
       const orderData = {
         buyerName: formData.buyerName,
         buyerContact: formData.buyerContact,
-        buyerEmail: formData.buyerEmail || '',
-        buyerAddress: formData.buyerAddress || '',
-        businessName: formData.businessName || '',
-        gstNumber: formData.gstNumber || '',
-        deliveryDate: formData.deliveryDate || null,
+        buyerEmail: formData.buyerEmail,
+        buyerAddress: formData.buyerAddress,
+        businessName: formData.businessName,
+        gstNumber: formData.gstNumber,
+        deliveryDate: formData.deliveryDate,
         items: flattenedItems,
-        subtotalAmount: totals.subtotal || 0,
-        discountType: formData.discountType || 'none',
-        discountValue: parseFloat(formData.discountValue) || 0,
-        discountAmount: totals.discountAmount || 0,
+        subtotalAmount: totals.subtotal,
+        discountType: formData.discountType,
+        discountValue: formData.discountValue,
+        discountAmount: totals.discountAmount,
         gstEnabled: gstEnabled,
-        gstAmount: gstEnabled ? (totals.total * gstPercentage / 100) : 0,
-        cgst: gstEnabled ? (totals.total * gstPercentage / 200) : 0,
-        sgst: gstEnabled ? (totals.total * gstPercentage / 200) : 0,
+        gstAmount: gstEnabled ? (totals.total * gstPercentage) / 100 : 0,
         totalAmount: gstEnabled ? totals.total * (1 + gstPercentage / 100) : totals.total,
-        notes: formData.notes || '',
-        fulfillmentType: formData.fulfillmentType || 'warehouse',
+        notes: formData.notes,
+        fulfillmentType: formData.fulfillmentType,
       };
-
-      setPendingOrderData(orderData);
 
       if (editingOrder) {
         await wholesaleService.updateOrder(editingOrder._id, orderData);
@@ -2488,33 +2531,78 @@ const clearAllDrafts = () => {
         resetForm();
         fetchOrders();
       } else {
-        await wholesaleService.createOrder(orderData);
-        toast.success('Order created successfully');
-        deleteCurrentDraft();
-        setShowModal(false);
-        resetForm();
-        fetchOrders();
+        // ✅ NEW: Create new order with borrow check
+        try {
+          await wholesaleService.createOrder(orderData);
+          toast.success('Order created successfully');
+          deleteCurrentDraft();
+          setShowModal(false);
+          resetForm();
+          fetchOrders();
+        } catch (createError) {
+          // ✅ Handle borrow from reserved error
+          if (createError.response?.data?.code === 'MAIN_INSUFFICIENT_BORROW_RESERVED') {
+            console.log('Main insufficient, showing borrow modal:', createError.response.data);
+            setBorrowData({
+              insufficientItems: createError.response.data.insufficientItems,
+              totalNeededFromReserved: createError.response.data.totalNeededFromReserved
+            });
+            setPendingOrderData({
+              ...orderData,
+              borrowFromReserved: true  // ✅ Add flag here
+            });
+            setShowBorrowModal(true);
+            setSubmitting(false);
+            return; // Don't throw error
+          }
+          throw createError; // Re-throw other errors
+        }
       }
+
+      setSubmitting(false);
+
     } catch (error) {
       console.error('Order submission error:', error);
       const errorData = error.response?.data;
       const errorCode = errorData?.code;
 
-      if ((errorCode === 'INSUFFICIENT_AVAILABLE_STOCK' || errorCode === 'INSUFFICIENTAVAILABLESTOCK') 
-          && errorData?.canUseLockedStock) {
+      // Handle specific error codes
+      if (errorCode === 'INSUFFICIENT_AVAILABLE_STOCK' && errorData?.canUseLockedStock) {
         setUseLockData({
           insufficientItems: errorData.insufficientItems || [],
           totalNeededFromLock: errorData.totalNeededFromLock || 0,
+          currentLockValue: errorData.currentLockValue || 0,
+          newLockValue: errorData.newLockValue || 0,
+        });
+        setPendingOrderData({
+          buyerName: formData.buyerName,
+          buyerContact: formData.buyerContact,
+          buyerEmail: formData.buyerEmail,
+          buyerAddress: formData.buyerAddress,
+          businessName: formData.businessName,
+          gstNumber: formData.gstNumber,
+          deliveryDate: formData.deliveryDate,
+          items: orderItems.map(item => ({
+            design: item.design,
+            color: item.color,
+            sizes: item.sizes,
+            pricePerUnit: item.pricePerUnit,
+          })),
+          notes: formData.notes,
+          fulfillmentType: formData.fulfillmentType,
         });
         setShowUseLockModal(true);
+      } else if (errorCode === 'INSUFFICIENT_STOCK') {
+        toast.error(errorData?.message || 'Insufficient stock');
+      } else if (errorCode === 'BUYER_CREDIT_EXCEEDED') {
+        toast.error(errorData?.message || 'Buyer credit limit exceeded');
       } else {
-        const errorMessage = errorData?.message || error.message || 'Failed to process order';
-        toast.error(errorMessage);
+        toast.error(errorData?.message || 'Failed to create order');
       }
-    } finally {
+      
       setSubmitting(false);
     }
-  }
+  };
 
   async function handleConfirmUseLock() {
     if (!useLockData || !pendingOrderData) return;

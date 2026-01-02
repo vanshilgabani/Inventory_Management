@@ -79,6 +79,12 @@ const marketplaceSaleSchema = new mongoose.Schema({
     default: 'dispatched' // ✅ Changed from 'upcoming' to 'dispatched'
   },
   
+  // ✅ NEW FIELD - Tracks if stock was restored and how much
+  stockRestoredAmount: {
+    type: Number,
+    default: 0,
+  },
+  
   // Status change history
   statusHistory: {
     type: [statusHistorySchema],

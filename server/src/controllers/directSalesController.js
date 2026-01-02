@@ -5,6 +5,15 @@ const Settings = require('../models/Settings');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 
+// ✅ ADD THIS - Global flag to disable locked stock
+const STOCK_LOCK_DISABLED = true;
+
+// Helper to check if we should use locked stock
+const shouldUseLockStock = () => {
+  if (STOCK_LOCK_DISABLED) return false; // Force disable
+  return false; // Always disabled
+};
+
 // ✅ ADD THIS HELPER AT THE TOP OF EACH CONTROLLER FILE
 const decrementEditSession = async (req, action, module, itemId) => {
   // Only decrement for salespeople with active sessions, not admins
@@ -189,7 +198,7 @@ const createSale = async (req, res) => {
       }
 
       const currentStock = colorVariant.sizes[sizeIndex].currentStock;
-      const lockedStock = colorVariant.sizes[sizeIndex].lockedStock || 0;  // ✅ Use variant lock
+      const lockedStock = shouldUseLockStock() ? (colorVariant.sizes[sizeIndex].lockedStock || 0) : 0;
       const availableStock = Math.max(0, currentStock - lockedStock);
 
       // ✅ DEBUG LOG
@@ -204,34 +213,38 @@ const createSale = async (req, res) => {
         willNeedLock: item.quantity > availableStock
       });
 
+      const reservedStock = colorVariant.sizes[sizeIndex].reservedStock || 0; 
+
       // 🔒 CHECK 1: Not enough even with locked stock
-      if (currentStock < item.quantity) {
+      if (currentStock + reservedStock < item.quantity) {
         await session.abortTransaction();
         return res.status(400).json({
           code: 'INSUFFICIENT_STOCK',
-          message: `Insufficient stock for ${item.design} ${item.color} ${item.size}. Available: ${currentStock}, Requested: ${item.quantity}`,
+          message: `Insufficient stock for ${item.design} ${item.color} ${item.size}. Total Available: ${currentStock + reservedStock}, Requested: ${item.quantity}`,
           product: {
             design: item.design,
             color: item.color,
             size: item.size,
-            available: currentStock,
+            mainStock: currentStock,
+            reservedStock: reservedStock,
+            totalAvailable: currentStock + reservedStock,
             requested: item.quantity,
           },
         });
       }
 
       // 🔒 CHECK 2: Not enough available stock, but enough if we use locked stock
-      if (item.quantity > availableStock) {
-        const neededFromLock = item.quantity - availableStock;
+      if (item.quantity > currentStock) {
+        const neededFromReserved = item.quantity - currentStock;
 
         console.log('⚠️  Insufficient Available Stock!', {
           design: item.design,
           color: item.color,
           size: item.size,
           requested: item.quantity,
-          available: availableStock,
-          locked: lockedStock,
-          neededFromLock
+          mainStock: currentStock,
+          reservedStock: reservedStock,
+          neededFromReserved
         });
 
         insufficientStockItems.push({
@@ -239,34 +252,31 @@ const createSale = async (req, res) => {
           color: item.color,
           size: item.size,
           requestedQty: item.quantity,
-          availableStock,
-          currentStock,
-          lockedStock,
-          neededFromLock,
+          mainStock: currentStock,
+          reservedStock: reservedStock,
+          neededFromReserved,
         });
       }
     }
 
-    // 🔒 IF STOCK LOCK OVERRIDE IS NEEDED
+    // ✅ NEW: IF NEED TO BORROW FROM RESERVED
     if (insufficientStockItems.length > 0) {
       await session.abortTransaction();
-
-      // Calculate total units needed from lock
-      const totalNeededFromLock = insufficientStockItems.reduce((sum, item) => sum + item.neededFromLock, 0);
-
-      console.log('🚫 STOPPING ORDER - Returning error with lock data:', {
+      const totalNeededFromReserved = insufficientStockItems.reduce((sum, item) => sum + item.neededFromReserved, 0);
+      
+      console.log('🚫 STOPPING ORDER (Direct Sales) - Need Reserved Stock:', {
         insufficientItemsCount: insufficientStockItems.length,
-        totalNeededFromLock,
+        totalNeededFromReserved,
         insufficientItems: insufficientStockItems
       });
 
       return res.status(400).json({
         success: false,
-        code: 'INSUFFICIENT_AVAILABLE_STOCK',
-        message: 'Insufficient available stock. Locked stock usage required.',
-        canUseLockedStock: true,
+        code: 'MAIN_INSUFFICIENT_BORROW_RESERVED',
+        message: 'Main inventory insufficient. Reserved stock borrowing required.',
+        canBorrowFromReserved: true,
         insufficientItems: insufficientStockItems,
-        totalNeededFromLock,
+        totalNeededFromReserved,
       });
     }
 
@@ -636,6 +646,143 @@ const getCustomerByMobile = async (req, res) => {
   }
 };
 
+// NEW: Create sale with borrow from reserved
+const createSaleWithReservedBorrow = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { customerName, customerContact, items, subtotalAmount, discountAmount, gstAmount, totalAmount, paymentMethod, notes, borrowFromReserved } = req.body;
+    const { organizationId } = req.user;
+
+    // Validation
+    if (!borrowFromReserved) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        code: 'CONFIRMATION_REQUIRED', 
+        message: 'Borrow from reserved confirmation required' 
+      });
+    }
+
+    if (!items || items.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({ code: 'INVALID_DATA', message: 'Items are required' });
+    }
+
+    // Find or create customer
+    let customer = null;
+    if (customerContact) {
+      customer = await Customer.findOne({ mobile: customerContact, organizationId }).session(session);
+      
+      if (!customer) {
+        customer = await Customer.create([{
+          name: customerName || 'Walk-in Customer',
+          mobile: customerContact,
+          organizationId,
+          totalPurchases: 1,
+          totalSpent: totalAmount,
+          firstPurchaseDate: new Date(),
+          lastPurchaseDate: new Date(),
+        }], { session });
+        customer = customer[0];
+      } else {
+        customer.totalPurchases = (customer.totalPurchases || 0) + 1;
+        customer.totalSpent = (customer.totalSpent || 0) + totalAmount;
+        customer.lastPurchaseDate = new Date();
+        if (!customer.firstPurchaseDate) customer.firstPurchaseDate = new Date();
+        await customer.save({ session });
+      }
+    }
+
+    // Validate and deduct stock (from both main and reserved)
+    for (const item of items) {
+      const product = await Product.findOne({ design: item.design, organizationId }).session(session);
+      
+      if (!product) {
+        await session.abortTransaction();
+        return res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: `Product not found: ${item.design}` });
+      }
+
+      const colorVariant = product.colors.find(c => c.color === item.color);
+      if (!colorVariant) {
+        await session.abortTransaction();
+        return res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: `Color ${item.color} not found for ${item.design}` });
+      }
+
+      const sizeIndex = colorVariant.sizes.findIndex(s => s.size === item.size);
+      if (sizeIndex === -1) {
+        await session.abortTransaction();
+        return res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: `Size ${item.size} not found for ${item.design}-${item.color}` });
+      }
+
+      const sizeVariant = colorVariant.sizes[sizeIndex];
+      const mainStock = sizeVariant.currentStock || 0;
+      const reservedStock = sizeVariant.reservedStock || 0;
+      const totalAvailable = mainStock + reservedStock;
+
+      // Check total availability
+      if (totalAvailable < item.quantity) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          code: 'INSUFFICIENT_STOCK',
+          message: `Insufficient stock for ${item.design}-${item.color}-${item.size}. Total Available: ${totalAvailable}, Requested: ${item.quantity}`,
+        });
+      }
+
+      // Deduct from main first, then reserved
+      let remaining = item.quantity;
+      
+      if (mainStock >= remaining) {
+        // All from main
+        colorVariant.sizes[sizeIndex].currentStock -= remaining;
+      } else {
+        // Partial from main, rest from reserved
+        const fromMain = mainStock;
+        const fromReserved = remaining - fromMain;
+        
+        colorVariant.sizes[sizeIndex].currentStock = 0;
+        colorVariant.sizes[sizeIndex].reservedStock -= fromReserved;
+        
+        console.log(`✅ Borrowed ${fromReserved} units from Reserved for ${item.design}-${item.color}-${item.size}`);
+      }
+
+      await product.save({ session });
+    }
+
+    // Create sale
+    const sale = await DirectSale.create([{
+      customerName: customerName || 'Walk-in Customer',
+      customerMobile: customerContact,
+      customerId: customer?._id,
+      items,
+      subtotalAmount,
+      discountAmount: discountAmount || 0,
+      gstAmount: gstAmount || 0,
+      totalAmount,
+      paymentMethod: paymentMethod || 'Cash',
+      notes: notes || '',
+      organizationId,
+      createdBy: req.user.id,
+      saleDate: new Date(),
+    }], { session });
+
+    await session.commitTransaction();
+    logger.info('Direct sale created with reserved borrow', { saleId: sale[0]._id, totalAmount });
+
+    res.status(201).json({
+      success: true,
+      data: sale[0]
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    logger.error('Direct sale with borrow failed', { error: error.message });
+    res.status(500).json({ code: 'SALE_CREATION_FAILED', message: 'Failed to create sale', error: error.message });
+  } finally {
+    session.endSession();
+  }
+};
+
 // ✅ Update module.exports
 module.exports = {
   getAllSales,
@@ -647,4 +794,5 @@ module.exports = {
   getSalesByCustomer,
   getAllCustomers,        // ✅ ADD THIS
   getCustomerByMobile,    // ✅ ADD THIS
+  createSaleWithReservedBorrow, 
 };

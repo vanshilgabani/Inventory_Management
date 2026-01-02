@@ -30,4 +30,9 @@ export const directSalesService = {
     const response = await api.get(`/direct-sales/customers/${mobile}`);
     return response.data;
   },
+
+  async createSaleWithReservedBorrow(data) {
+    const response = await api.post('/direct-sales/with-reserved-borrow', {...data, borrowedFromReserved: true });
+    return response.data;
+  },
 };

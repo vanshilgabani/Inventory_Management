@@ -9,7 +9,9 @@ import {
   FiBarChart2,
   FiUserCheck,
   FiSettings,
-  FiFileText
+  FiFileText,
+  FiLock, 
+  FiRepeat
 } from 'react-icons/fi';
 import { useAuth } from '../../context/AuthContext';
 

@@ -5,10 +5,12 @@ import {settingsService} from '../services/settingsService';
 import {inventoryService} from '../services/inventoryService';
 import {useEnabledSizes} from '../hooks/useEnabledSizes';
 import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import { usePermissions } from '../hooks/usePermissions';
 import { format } from 'date-fns';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
+import InsufficientReservedStockModal from '../components/InsufficientReservedStockModal';
 import SkeletonCard from '../components/common/SkeletonCard';
 import toast from 'react-hot-toast';
 import {
@@ -25,7 +27,8 @@ import {
   FiAlertTriangle,
   FiFilter,
   FiCalendar,
-  FiChevronDown
+  FiChevronDown,
+  FiPackage
 } from 'react-icons/fi';
 import { formatCurrency } from '../utils/dateUtils';
 import { useEditSession } from '../hooks/useEditSession'; // ✅ ADD THIS
@@ -37,6 +40,8 @@ const Sales = () => {
   const {enabledSizes} = useEnabledSizes();
   const { canEditSales } = usePermissions();
   const { hasActiveSession, refreshSession } = useEditSession(); // ✅ ADD THIS
+  const navigate = useNavigate();
+  
 
     // ============ DATA STATES ============
   const [sales, setSales] = useState([]);
@@ -73,6 +78,9 @@ const Sales = () => {
   const [showRefillModal, setShowRefillModal] = useState(false);
   const [refillData, setRefillData] = useState(null);
   const [pendingSettlement, setPendingSettlement] = useState(null);
+  const [showInsufficientReservedModal, setShowInsufficientReservedModal] = useState(false);
+  const [insufficientReservedData, setInsufficientReservedData] = useState(null);
+  const [pendingSaleData, setPendingSaleData] = useState(null);
 
   // ============ TIMELINE VIEW ============
   const [expandedDate, setExpandedDate] = useState(null);
@@ -409,71 +417,94 @@ const executeBulkAction = async () => {
   }
 };
 
-// ✅ FIXED: Create sale with variant lock check
-const createSaleWithLockCheck = async (saleData) => {
+// NEW: Create sale with reserved stock validation
+const createSaleWithReservedCheck = async (saleData) => {
   try {
-    console.log('🔍 Attempting to create sale:', saleData);
-    return await salesService.createSale(saleData);
-    
+    console.log('Attempting to create sale:', saleData);
+    const result = await salesService.createSale(saleData);
+    return result; // ✅ Successfully created without modal
   } catch (error) {
     const errorCode = error.response?.data?.code;
-    
-    if (errorCode === 'LOCK_EMPTY_REFILL_NEEDED' || errorCode === 'INSUFFICIENT_LOCKED_STOCK') {
+
+    // Handle insufficient reserved stock - need main stock
+    if (errorCode === 'RESERVED_INSUFFICIENT_USE_MAIN') {
       const errorData = error.response?.data;
-      const variant = errorData?.variant || {};
-      
-      console.log('⚠️ Backend says: Need to refill lock!', errorData);
-      
-      const orderQty = Number(saleData.quantity);
-      const currentLocked = errorData?.lockedStock || 0;
-      const deficit = orderQty - currentLocked;
-      const availableStock = errorData?.availableForLock || 0;
-      
-      if (availableStock < deficit) {
-        throw new Error(
-          `Cannot fulfill order. Need ${deficit} more units in locked stock, ` +
-          `but only ${availableStock} units are available. ` +
-          `Please receive more stock first.`
-        );
-      }
-      
-      const refillItems = [{
-        design: variant.design || saleData.design,
-        color: variant.color || saleData.color,
-        size: variant.size || saleData.size,
-        currentLocked: currentLocked,
-        refillAmount: deficit,
-        newLocked: currentLocked + deficit,
-      }];
+      const variant = errorData?.variant;
+      console.log('Reserved stock insufficient, need main stock:', errorData);
 
-      console.log('📦 Setting refill data:', refillItems); // ✅ ADD THIS
-      
-      setRefillData({
-        items: refillItems,
-        totalRefillAmount: deficit,
-        currentTotalLock: currentLocked,
-        newTotalLock: currentLocked + deficit,
+      // Store data for modal
+      setInsufficientReservedData({
+        variant: variant,
+        reservedStock: errorData?.reservedStock || 0,
+        mainStock: errorData?.mainStock || 0,
+        required: errorData?.required || 0,
+        deficit: errorData?.deficit || 0,
       });
+      setPendingSaleData(saleData);
+      setShowInsufficientReservedModal(true);
 
-      setPendingSettlement({
-        saleData: saleData,
-      });
-
-      console.log('🔓 Opening refill modal...'); // ✅ ADD THIS
-      
-      // ✅ FORCE modal to open
-      setTimeout(() => {
-        setShowRefillModal(true);
-        console.log('✅ Modal should be visible now'); // ✅ ADD THIS
-      }, 100);
-
+      // ✅ Return a NEW promise that will be resolved by modal
       return new Promise((resolve, reject) => {
         window.pendingSaleResolve = resolve;
         window.pendingSaleReject = reject;
       });
     }
-    
+
+    // Other errors - throw normally
     throw error;
+  }
+};
+
+// ✅ NEW: Handle confirmation to use main stock
+const handleConfirmUseMainStock = async () => {
+  if (!insufficientReservedData || !pendingSaleData) return;
+  
+  try {
+    console.log('User confirmed using main stock, creating sale...');
+    console.log('📦 Sending data:', pendingSaleData);
+    
+    // Call new endpoint with flag to use main stock
+    const result = await salesService.createSaleWithMainStock({
+      ...pendingSaleData,
+      useMainStock: true
+    });
+    
+    console.log('Sale created successfully with main stock:', result);
+    
+    toast.success('Order created using main inventory!', { duration: 5000 });
+    
+    // Close modals and reset
+    setShowInsufficientReservedModal(false);
+    setInsufficientReservedData(null);
+    setPendingSaleData(null);
+    setShowSaleModal(false);
+    setIsSubmitting(false);
+    
+    // Resolve pending promise
+    if (window.pendingSaleResolve) {
+      window.pendingSaleResolve(result);
+      delete window.pendingSaleResolve;
+      delete window.pendingSaleReject;
+    }
+    
+    // Refresh data
+    fetchSales();
+    
+    // Refresh products to get updated stock
+    const productsData = await inventoryService.getAllProducts();
+    setProducts(Array.isArray(productsData) ? productsData : productsData?.products || []);
+    
+  } catch (error) {
+    console.error('Failed to create sale with main stock:', error);
+    console.error('❌ Full error response:', error.response?.data);
+    toast.error(error.response?.data?.message || 'Failed to create order');
+    setIsSubmitting(false);
+    
+    if (window.pendingSaleReject) {
+      window.pendingSaleReject(error);
+      delete window.pendingSaleResolve;
+      delete window.pendingSaleReject;
+    }
   }
 };
 
@@ -611,6 +642,7 @@ const handleSaleSubmit = async (e) => {
 
   try {
     if (editingSale) {
+      // Update existing sale logic (keep as is)
       console.log('Updating sale:', editingSale._id);
       const response = await salesService.updateSale(editingSale._id, {
         status: saleFormData.status,
@@ -625,36 +657,34 @@ const handleSaleSubmit = async (e) => {
       } else {
         toast.success('Order updated');
       }
-      
       setShowSaleModal(false);
       setIsSubmitting(false);
       fetchSales();
-      
     } else {
+      // NEW: Create new sale with reserved stock check
       console.log('Creating new sale:', saleFormData);
       
-      // This might show modal and return pending promise
-      await createSaleWithLockCheck(saleFormData);
+      // ✅ This will either succeed OR show modal (and return pending promise)
+      const result = await createSaleWithReservedCheck(saleFormData);
       
-      // ✅ Only close modal and reset if refill modal is NOT showing
-      if (!showRefillModal) {
+      // ✅ If we got here with a result, order was created successfully
+      if (result && !showInsufficientReservedModal) {
         toast.success('Order created successfully!');
         setShowSaleModal(false);
         setIsSubmitting(false);
         fetchSales();
       }
-      // If refill modal is showing, handleConfirmRefill will handle cleanup
+      // ✅ If modal is showing, handleConfirmUseMainStock will handle everything
     }
   } catch (error) {
-    if (error.response?.data?.code !== 'LOCK_EMPTY_REFILL_NEEDED' && 
-        error.response?.data?.code !== 'INSUFFICIENT_LOCKED_STOCK') {
+    // Only handle real errors (not modal triggers)
+    if (error.response?.data?.code !== 'RESERVED_INSUFFICIENT_USE_MAIN') {
       console.error('Sale submit error:', error);
       toast.error(error.response?.data?.message || error.message || 'Operation failed');
-      setIsSubmitting(false); // ✅ Only reset on real errors
+      setIsSubmitting(false);
     }
-    // Don't reset isSubmitting for refill modal cases - modal will handle it
+    // Don't reset isSubmitting if modal is showing
   }
-  // ✅ REMOVE the finally block - we're handling it manually now
 };
 
 const handleConfirmLockRefill = async () => {
@@ -889,7 +919,13 @@ const handleCancelLockRefill = () => {
 
         {/* Filters & Actions */}
         <div className="flex flex-wrap gap-2 items-center">
-          
+          <button
+            onClick={() => navigate('/reserved-inventory')}
+            className="flex items-center space-x-2 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors"
+          >
+            <FiPackage className="w-5 h-5" />
+            <span>Reserved Inventory</span>
+          </button>
           {/* Account Filter */}
           <select
             className="border rounded-lg px-3 py-2 bg-white text-sm"
@@ -905,7 +941,7 @@ const handleCancelLockRefill = () => {
           </select>
 
           {/* Date Filter */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">                      
             <div className="relative">
               <FiCalendar className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
               <select
@@ -1743,194 +1779,216 @@ const handleCancelLockRefill = () => {
       </Modal>
 
             {/* ============ ALL MODALS ============ */}
-      
-      {/* ============ BULK ACTION MODAL ============ */}
-      <Modal
-        isOpen={showBulkModal}
-        onClose={() => setShowBulkModal(false)}
-        title="Bulk Mark Delivered"
-      >
-        <div className="space-y-4">
-          <p>
-            You are about to update <b>{selectedSales.length}</b> orders.
-          </p>
-          <textarea
-            className="w-full border rounded p-2"
-            placeholder="Add a comment (Optional)"
-            value={bulkComments}
-            onChange={(e) => setBulkComments(e.target.value)}
-            rows="3"
-          />
-          <div className="flex justify-end gap-3">
-            <button
-              onClick={() => setShowBulkModal(false)}
-              className="px-4 py-2 text-gray-600"
+            
+            {/* ============ BULK ACTION MODAL ============ */}
+            <Modal
+              isOpen={showBulkModal}
+              onClose={() => setShowBulkModal(false)}
+              title="Bulk Mark Delivered"
             >
-              Cancel
-            </button>
-            <button
-              onClick={executeBulkAction}
-              className="px-4 py-2 bg-indigo-600 text-white rounded"
-            >
-              Confirm
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* ============ HISTORY TIMELINE MODAL ============ */}
-      <Modal
-        isOpen={!!viewingHistory}
-        onClose={() => setViewingHistory(null)}
-        title="Order Timeline"
-      >
-        {viewingHistory && (
-          <div className="space-y-6">
-            {/* Order Summary */}
-            <div className="bg-gray-50 p-3 rounded text-sm">
-              <p>
-                <b>Order:</b> {viewingHistory.design} - {viewingHistory.color} {viewingHistory.size}
-              </p>
-              <p>
-                <b>Account:</b> {viewingHistory.accountName}
-              </p>
-              {viewingHistory.marketplaceOrderId && (
+              <div className="space-y-4">
                 <p>
-                  <b>Order ID:</b> <span className="font-mono text-purple-600">{viewingHistory.marketplaceOrderId}</span>
+                  You are about to update <b>{selectedSales.length}</b> orders.
                 </p>
-              )}
-            </div>
-
-            {/* Timeline */}
-            <div className="border-l-2 border-indigo-200 pl-4 space-y-6">
-              {viewingHistory.statusHistory?.slice().reverse().map((h, i) => (
-                <div key={i} className="relative">
-                  <div className="absolute -left-[21px] top-1 w-3 h-3 rounded-full bg-indigo-500 ring-4 ring-white"></div>
-                  <p className="font-semibold text-gray-800 capitalize">
-                    {h.newStatus.replace('_', ' ')}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    {new Date(h.changedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                    {' • '}
-                    {new Date(h.changedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">
-                    by {h.changedBy?.userName || 'System'}
-                  </p>
-                  {h.comments && (
-                    <p className="text-sm bg-yellow-50 p-2 mt-1 rounded text-gray-700 italic">
-                      {h.comments}
-                    </p>
-                  )}
+                <textarea
+                  className="w-full border rounded p-2"
+                  placeholder="Add a comment (Optional)"
+                  value={bulkComments}
+                  onChange={(e) => setBulkComments(e.target.value)}
+                  rows="3"
+                />
+                <div className="flex justify-end gap-3">
+                  <button
+                    onClick={() => setShowBulkModal(false)}
+                    className="px-4 py-2 text-gray-600"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={executeBulkAction}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded"
+                  >
+                    Confirm
+                  </button>
                 </div>
-              ))}
+              </div>
+            </Modal>
 
-              {/* Order Created */}
-              <div className="relative">
-                <div className="absolute -left-[21px] top-1 w-3 h-3 rounded-full bg-gray-300"></div>
-                <p className="font-semibold text-gray-600">Order Created</p>
-                <p className="text-xs text-gray-500">
-                  {new Date(viewingHistory.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                  {' • '}
-                  {new Date(viewingHistory.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </p>
+            {/* ============ HISTORY TIMELINE MODAL ============ */}
+            <Modal
+              isOpen={!!viewingHistory}
+              onClose={() => setViewingHistory(null)}
+              title="Order Timeline"
+            >
+              {viewingHistory && (
+                <div className="space-y-6">
+                  {/* Order Summary */}
+                  <div className="bg-gray-50 p-3 rounded text-sm">
+                    <p>
+                      <b>Order:</b> {viewingHistory.design} - {viewingHistory.color} {viewingHistory.size}
+                    </p>
+                    <p>
+                      <b>Account:</b> {viewingHistory.accountName}
+                    </p>
+                    {viewingHistory.marketplaceOrderId && (
+                      <p>
+                        <b>Order ID:</b> <span className="font-mono text-purple-600">{viewingHistory.marketplaceOrderId}</span>
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Timeline */}
+                  <div className="border-l-2 border-indigo-200 pl-4 space-y-6">
+                    {viewingHistory.statusHistory?.slice().reverse().map((h, i) => (
+                      <div key={i} className="relative">
+                        <div className="absolute -left-[21px] top-1 w-3 h-3 rounded-full bg-indigo-500 ring-4 ring-white"></div>
+                        <p className="font-semibold text-gray-800 capitalize">
+                          {h.newStatus.replace('_', ' ')}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {new Date(h.changedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          {' • '}
+                          {new Date(h.changedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          by {h.changedBy?.userName || 'System'}
+                        </p>
+                        {h.comments && (
+                          <p className="text-sm bg-yellow-50 p-2 mt-1 rounded text-gray-700 italic">
+                            {h.comments}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Order Created */}
+                    <div className="relative">
+                      <div className="absolute -left-[21px] top-1 w-3 h-3 rounded-full bg-gray-300"></div>
+                      <p className="font-semibold text-gray-600">Order Created</p>
+                      <p className="text-xs text-gray-500">
+                        {new Date(viewingHistory.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        {' • '}
+                        {new Date(viewingHistory.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </Modal>
+            {/* Lock Refill Modal */}
+      {showLockRefillModal && (
+        <Modal
+          isOpen={showLockRefillModal}
+          onClose={handleCancelLockRefill}
+          title="⚠️ Insufficient Locked Stock"
+        >
+          <div className="space-y-4">
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+              <p className="text-sm text-gray-700 mb-3">
+                Your marketplace order needs more stock than currently locked. Transfer stock from available inventory to locked reserve.
+              </p>
+              
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <span className="text-gray-600">Current Lock:</span>
+                  <span className="ml-2 font-semibold">{lockRefillData.currentLock}</span>
+                </div>
+                <div>
+                  <span className="text-gray-600">Order Needs:</span>
+                  <span className="ml-2 font-semibold text-red-600">{lockRefillData.orderNeeds}</span>
+                </div>
+                <div>
+                  <span className="text-gray-600">Available Stock:</span>
+                  <span className="ml-2 font-semibold text-green-600">{lockRefillData.availableStock}</span>
+                </div>
+                <div>
+                  <span className="text-gray-600">Max Lock Threshold:</span>
+                  <span className="ml-2 font-semibold">{lockRefillData.maxLockThreshold}</span>
+                </div>
               </div>
             </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Transfer Amount (Minimum: {lockRefillData.minToAdd}, Maximum: {lockRefillData.maxCanAdd})
+              </label>
+              <input
+                type="number"
+                min={lockRefillData.minToAdd}
+                max={lockRefillData.maxCanAdd}
+                value={lockRefillData.userInput}
+                onChange={(e) => setLockRefillData(prev => ({ ...prev, userInput: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                placeholder={`Enter amount (${lockRefillData.minToAdd} - ${lockRefillData.maxCanAdd})`}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                New lock will be: {lockRefillData.currentLock + Number(lockRefillData.userInput || 0)}
+              </p>
+            </div>
+            
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={handleCancelLockRefill}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmLockRefill}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Transfer & Create Order
+              </button>
+            </div>
           </div>
-        )}
-      </Modal>
-      {/* Lock Refill Modal */}
-{showLockRefillModal && (
-  <Modal
-    isOpen={showLockRefillModal}
-    onClose={handleCancelLockRefill}
-    title="⚠️ Insufficient Locked Stock"
-  >
-    <div className="space-y-4">
-      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-        <p className="text-sm text-gray-700 mb-3">
-          Your marketplace order needs more stock than currently locked. Transfer stock from available inventory to locked reserve.
-        </p>
-        
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div>
-            <span className="text-gray-600">Current Lock:</span>
-            <span className="ml-2 font-semibold">{lockRefillData.currentLock}</span>
-          </div>
-          <div>
-            <span className="text-gray-600">Order Needs:</span>
-            <span className="ml-2 font-semibold text-red-600">{lockRefillData.orderNeeds}</span>
-          </div>
-          <div>
-            <span className="text-gray-600">Available Stock:</span>
-            <span className="ml-2 font-semibold text-green-600">{lockRefillData.availableStock}</span>
-          </div>
-          <div>
-            <span className="text-gray-600">Max Lock Threshold:</span>
-            <span className="ml-2 font-semibold">{lockRefillData.maxLockThreshold}</span>
-          </div>
-        </div>
-      </div>
-      
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Transfer Amount (Minimum: {lockRefillData.minToAdd}, Maximum: {lockRefillData.maxCanAdd})
-        </label>
-        <input
-          type="number"
-          min={lockRefillData.minToAdd}
-          max={lockRefillData.maxCanAdd}
-          value={lockRefillData.userInput}
-          onChange={(e) => setLockRefillData(prev => ({ ...prev, userInput: e.target.value }))}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md"
-          placeholder={`Enter amount (${lockRefillData.minToAdd} - ${lockRefillData.maxCanAdd})`}
-        />
-        <p className="mt-1 text-xs text-gray-500">
-          New lock will be: {lockRefillData.currentLock + Number(lockRefillData.userInput || 0)}
-        </p>
-      </div>
-      
-      <div className="flex gap-2 pt-2">
-        <button
-          onClick={handleCancelLockRefill}
-          className="flex-1 px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={handleConfirmLockRefill}
-          className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-        >
-          Transfer & Create Order
-        </button>
-      </div>
-    </div>
-  </Modal>
-)}
+        </Modal>
+      )}
 
-{/* Refill Lock Stock Modal */}
-{console.log('🎨 Rendering modal check:', { showRefillModal, hasRefillData: !!refillData })}
-<RefillLockStockModal
-  isOpen={showRefillModal}
-  onClose={() => {
-    console.log('❌ Modal closed by user');
-    setShowRefillModal(false);
-    setRefillData(null);
-    setPendingSettlement(null);
-    setIsSubmitting(false); // ✅ ADD THIS
-    
-    if (window.pendingSaleReject) {
-      window.pendingSaleReject(new Error('User cancelled'));
-      delete window.pendingSaleResolve;
-      delete window.pendingSaleReject;
-    }
-  }}
-  onConfirm={handleConfirmRefill}
-  items={refillData?.items || []}
-  totalRefillAmount={refillData?.totalRefillAmount || 0}
-  currentTotalLock={refillData?.currentTotalLock || 0}
-  newTotalLock={refillData?.newTotalLock || 0}
-/>
+      {/* Refill Lock Stock Modal */}
+      {console.log('🎨 Rendering modal check:', { showRefillModal, hasRefillData: !!refillData })}
+      <RefillLockStockModal
+        isOpen={showRefillModal}
+        onClose={() => {
+          console.log('❌ Modal closed by user');
+          setShowRefillModal(false);
+          setRefillData(null);
+          setPendingSettlement(null);
+          setIsSubmitting(false); // ✅ ADD THIS
+          
+          if (window.pendingSaleReject) {
+            window.pendingSaleReject(new Error('User cancelled'));
+            delete window.pendingSaleResolve;
+            delete window.pendingSaleReject;
+          }
+        }}
+        onConfirm={handleConfirmRefill}
+        items={refillData?.items || []}
+        totalRefillAmount={refillData?.totalRefillAmount || 0}
+        currentTotalLock={refillData?.currentTotalLock || 0}
+        newTotalLock={refillData?.newTotalLock || 0}
+      />
+      {/* ✅ NEW: Insufficient Reserved Stock Modal */}
+      {showInsufficientReservedModal && insufficientReservedData && (
+        <InsufficientReservedStockModal
+          isOpen={showInsufficientReservedModal}
+          onClose={() => {
+            setShowInsufficientReservedModal(false);
+            setInsufficientReservedData(null);
+            setPendingSaleData(null);
+            setIsSubmitting(false);
+            if (window.pendingSaleReject) {
+              window.pendingSaleReject(new Error('User cancelled'));
+              delete window.pendingSaleResolve;
+              delete window.pendingSaleReject;
+            }
+          }}
+          onConfirm={handleConfirmUseMainStock}
+          variant={insufficientReservedData.variant}
+          reservedStock={insufficientReservedData.reservedStock}
+          mainStock={insufficientReservedData.mainStock}
+          required={insufficientReservedData.required}
+        />
+      )}
     </div>
   );
 };

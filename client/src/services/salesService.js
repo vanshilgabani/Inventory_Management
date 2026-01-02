@@ -61,6 +61,11 @@ export const salesService = {
     return response.data;
   },
 
+  async createSaleWithMainStock(data) {
+    const response = await api.post('/sales/with-main-stock', data);
+    return response.data;
+  },
+  
   // Export orders to Excel
   async exportOrders(accountName, status, startDate, endDate) {
     const params = {};

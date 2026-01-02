@@ -11,6 +11,7 @@ const sizeStockSchema = new mongoose.Schema({
     default: 0,
     min: 0,
   },
+  reservedStock: { type: Number, default: 0 },
   lockedStock: {
     type: Number,
     default: 0,

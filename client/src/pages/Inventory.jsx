@@ -19,19 +19,22 @@ import {
   FiCheckSquare,
   FiSquare,
   FiGrid,
-  FiList,
+  FiPlus,
   FiClock,
   FiPackage,
-  FiDollarSign
+  FiDollarSign,
+  FiArrowUpRight,
 } from 'react-icons/fi';
 import { settingsService } from '../services/settingsService';
 import { format } from 'date-fns';
 import {useColorPalette} from '../hooks/useColorPalette';
+import { useNavigate } from 'react-router-dom';
 
 const Inventory = () => {
   const { enabledSizes, loading: sizesLoading } = useEnabledSizes();
   const { colors: activeColors, getColorCode } = useColorPalette();
   const { user } = useAuth();
+  const navigate = useNavigate();
   
   // Data states
   const [products, setProducts] = useState([]);
@@ -503,45 +506,27 @@ const allVariants = useMemo(() => {
     <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-3xl font-bold text-gray-900">Inventory Management</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Inventory Management</h1>
         
-        {/* ✅ ADD THIS STOCK VIEW TOGGLE */}
-        {stockLockInfo.enabled && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">Stock view:</span>
-            <div className="inline-flex rounded-md shadow-sm overflow-hidden border">
-              <button
-                type="button"
-                onClick={() => setStockView('available')}
-                className={`px-3 py-1 text-sm ${
-                  stockView === 'available'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-700'
-                }`}
-                title="Show available stock (respects locked reserve)"
-              >
-                Available
-              </button>
-              <button
-                type="button"
-                onClick={() => setStockView('full')}
-                className={`px-3 py-1 text-sm border-l ${
-                  stockView === 'full'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-700'
-                }`}
-                title="Show full stock (ignores lock)"
-              >
-                Full
-              </button>
-            </div>
-            {stockLockInfo.maxThreshold > 0 && (
-              <span className="text-xs text-gray-500">
-                (Lock reserved: {stockLockInfo.lockValue}/{stockLockInfo.maxThreshold})
-              </span>
-            )}
-          </div>
-        )}
+        <div className="flex items-center space-x-3">
+          {/* ✅ NEW: Reserved Inventory Button */}
+          <button
+            onClick={() => navigate('/reserved-inventory')}
+            className="flex items-center space-x-2 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors"
+          >
+            <FiPackage className="w-5 h-5" />
+            <span>Reserved Inventory</span>
+          </button>
+          
+          {/* ✅ NEW: Transfer History Button */}
+          <button
+            onClick={() => navigate('/transfer-history')}
+            className="flex items-center space-x-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
+          >
+            <FiArrowUpRight className="w-5 h-5" />
+            <span>Transfer History</span>
+          </button>
+        </div>
       </div>
 
       {/* Alert Banner */}

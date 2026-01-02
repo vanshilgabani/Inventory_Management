@@ -2,11 +2,21 @@ const WholesaleOrder = require('../models/WholesaleOrder');
 const WholesaleBuyer = require('../models/WholesaleBuyer');
 const Product = require('../models/Product');
 const Settings = require('../models/Settings');
+const Transfer = require('../models/Transfer');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 const { checkBuyerNotifications } = require('../utils/checkNotifications');
 const { generateChallanPDF } = require('../utils/pdfGenerator');
 const { sendWholesaleChallan } = require('../utils/emailService');
+
+// ✅ ADD THIS - Global flag to disable locked stock
+const STOCK_LOCK_DISABLED = true;
+
+// Helper to check if we should use locked stock
+const shouldUseLockStock = () => {
+  if (STOCK_LOCK_DISABLED) return false; // Force disable
+  return false; // Always disabled
+};
 
 // Get all wholesale orders
 const getAllOrders = async (req, res) => {
@@ -167,7 +177,7 @@ const createOrder = async (req, res) => {
         }
 
         const currentStock = colorVariant.sizes[sizeIndex].currentStock;
-        const lockedStock = colorVariant.sizes[sizeIndex].lockedStock || 0;  // ✅ Use variant lock
+        const lockedStock = shouldUseLockStock() ? (colorVariant.sizes[sizeIndex].lockedStock || 0) : 0;
         const availableStock = Math.max(0, currentStock - lockedStock);
 
         // ✅ DEBUG LOG
@@ -182,34 +192,37 @@ const createOrder = async (req, res) => {
           willNeedLock: item.quantity > availableStock
         });
 
+        const reservedStock = colorVariant.sizes[sizeIndex].reservedStock || 0;
+
         // 🔒 CHECK 1: Not enough even with locked stock
-        if (currentStock < item.quantity) {
+        if (currentStock + reservedStock < item.quantity) {
           await session.abortTransaction();
           return res.status(400).json({
             code: 'INSUFFICIENT_STOCK',
-            message: `Insufficient stock for ${item.design} ${item.color} ${item.size}. Available: ${currentStock}, Requested: ${item.quantity}`,
+            message: `Insufficient stock for ${item.design} ${item.color} ${item.size}. Total Available: ${currentStock + reservedStock}, Requested: ${item.quantity}`,
             product: {
               design: item.design,
               color: item.color,
-              size: item.size,
-              available: currentStock,
+              mainStock: currentStock,
+              reservedStock: reservedStock,
+              totalAvailable: currentStock + reservedStock,
               requested: item.quantity,
             },
           });
         }
 
         // 🔒 CHECK 2: Not enough available stock, but enough if we use locked stock
-        if (item.quantity > availableStock) {
-          const neededFromLock = item.quantity - availableStock;
+        if (item.quantity > currentStock) {
+          const neededFromReserved = item.quantity - currentStock;
 
           console.log('⚠️  Insufficient Available Stock (Wholesale)!', {
             design: item.design,
             color: item.color,
             size: item.size,
             requested: item.quantity,
-            available: availableStock,
-            locked: lockedStock,
-            neededFromLock
+            mainStock: currentStock,
+            reservedStock: reservedStock,
+            neededFromReserved
           });
 
           insufficientStockItems.push({
@@ -217,34 +230,31 @@ const createOrder = async (req, res) => {
             color: item.color,
             size: item.size,
             requestedQty: item.quantity,
-            availableStock,
-            currentStock,
-            lockedStock,
-            neededFromLock,
+            mainStock: currentStock,
+            reservedStock: reservedStock,
+            neededFromReserved,
           });
         }
       }
 
-      // 🔒 IF STOCK LOCK OVERRIDE IS NEEDED
+      // ✅ NEW: IF NEED TO BORROW FROM RESERVED
       if (insufficientStockItems.length > 0) {
         await session.abortTransaction();
-
-        // Calculate total units needed from lock
-        const totalNeededFromLock = insufficientStockItems.reduce((sum, item) => sum + item.neededFromLock, 0);
-
-        console.log('🚫 STOPPING ORDER (Wholesale) - Returning error with lock data:', {
+        const totalNeededFromReserved = insufficientStockItems.reduce((sum, item) => sum + item.neededFromReserved, 0);
+        
+        console.log('🚫 STOPPING ORDER (Wholesale) - Need Reserved Stock:', {
           insufficientItemsCount: insufficientStockItems.length,
-          totalNeededFromLock,
+          totalNeededFromReserved,
           insufficientItems: insufficientStockItems
         });
 
         return res.status(400).json({
           success: false,
-          code: 'INSUFFICIENT_AVAILABLE_STOCK',
-          message: 'Insufficient available stock. Locked stock usage required.',
-          canUseLockedStock: true,
+          code: 'MAIN_INSUFFICIENT_BORROW_RESERVED',
+          message: 'Main inventory insufficient. Reserved stock borrowing required.',
+          canBorrowFromReserved: true,
           insufficientItems: insufficientStockItems,
-          totalNeededFromLock,
+          totalNeededFromReserved,
         });
       }
 
@@ -1627,6 +1637,145 @@ const getBuyerStats = async (req, res) => {
   }
 };
 
+// ✅ NEW: Create order borrowing from reserved stock
+const createOrderWithReservedBorrow = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      buyerName, buyerContact, buyerEmail, buyerAddress, businessName, gstNumber,
+      deliveryDate, items, subtotalAmount, discountType, discountValue, discountAmount,
+      gstEnabled, gstAmount, cgst, sgst, totalAmount, amountPaid, paymentMethod, notes,
+      fulfillmentType, borrowFromReserved
+    } = req.body;
+    const { organizationId } = req.user;
+
+    if (!borrowFromReserved) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        code: 'INVALID_REQUEST',
+        message: 'This endpoint requires borrowFromReserved flag',
+      });
+    }
+
+    // Find or create buyer (same as before)
+    let buyer = await WholesaleBuyer.findOne({ mobile: buyerContact, organizationId }).session(session);
+    if (!buyer) {
+      buyer = await WholesaleBuyer.create([{
+        name: buyerName,
+        mobile: buyerContact,
+        email: buyerEmail || '',
+        address: buyerAddress || '',
+        businessName: businessName || buyerName,
+        gstNumber: gstNumber || '',
+        organizationId,
+        creditLimit: 0,
+        totalDue: 0,
+        isTrusted: false,
+      }], { session });
+      buyer = buyer[0];
+    }
+
+    // ✅ Deduct stock (main + reserved)
+    for (const item of items) {
+      const product = await Product.findOne({ design: item.design, organizationId }).session(session);
+      const colorVariant = product.colors.find(c => c.color === item.color);
+      const sizeIndex = colorVariant.sizes.findIndex(s => s.size === item.size);
+
+      const mainStock = colorVariant.sizes[sizeIndex].currentStock;
+      const reservedStock = colorVariant.sizes[sizeIndex].reservedStock || 0;
+
+      if (item.quantity <= mainStock) {
+        colorVariant.sizes[sizeIndex].currentStock -= item.quantity;
+      } else {
+        const borrowAmount = item.quantity - mainStock;
+        colorVariant.sizes[sizeIndex].currentStock = 0;
+        colorVariant.sizes[sizeIndex].reservedStock -= borrowAmount;
+
+        // ✅ Log transfer
+        await Transfer.create([{
+          design: item.design,
+          color: item.color,
+          size: item.size,
+          quantity: borrowAmount,
+          from: 'reserved',
+          to: 'main',
+          type: 'emergency_borrow',
+          mainStockBefore: mainStock,
+          mainStockAfter: 0,
+          reservedStockBefore: reservedStock,
+          reservedStockAfter: reservedStock - borrowAmount,
+          performedBy: req.user._id,
+          notes: `Emergency borrow for Wholesale Order`,
+          organizationId
+        }], { session });
+
+        console.log(`✅ Borrowed ${borrowAmount} from Reserved for ${item.design} ${item.color} ${item.size}`);
+      }
+
+      await product.save({ session });
+    }
+
+    // Generate challan number
+    const challanNumber = await generateChallanNumber(businessName || buyerName, buyerContact, organizationId, session);
+    const amountDue = totalAmount - (amountPaid || 0);
+    const paymentStatus = amountDue === 0 ? 'Paid' : amountPaid > 0 ? 'Partial' : 'Pending';
+
+    // Create order
+    const order = await WholesaleOrder.create([{
+      challanNumber,
+      buyerId: buyer._id,
+      buyerName,
+      buyerContact,
+      buyerEmail: buyerEmail || '',
+      buyerAddress: buyerAddress || '',
+      businessName: businessName || buyerName,
+      gstNumber: gstNumber || '',
+      deliveryDate: deliveryDate || null,
+      items,
+      subtotalAmount,
+      discountType: discountType || 'none',
+      discountValue: discountValue || 0,
+      discountAmount: discountAmount || 0,
+      gstEnabled: gstEnabled || false,
+      gstAmount: gstAmount || 0,
+      cgst: cgst || 0,
+      sgst: sgst || 0,
+      totalAmount,
+      amountPaid: amountPaid || 0,
+      amountDue,
+      paymentStatus,
+      paymentMethod: paymentMethod || 'Cash',
+      orderStatus: 'Delivered',
+      notes: notes || '',
+      fulfillmentType: fulfillmentType || 'warehouse',
+      organizationId,
+      createdBy: req.user._id,
+    }], { session });
+
+    buyer.totalDue = (buyer.totalDue || 0) + amountDue;
+    buyer.totalOrders = (buyer.totalOrders || 0) + 1;
+    buyer.lastOrderDate = new Date();
+    await buyer.save({ session });
+
+    await session.commitTransaction();
+    logger.info('Wholesale order created with reserved borrow', { orderId: order[0]._id });
+    res.status(201).json(order[0]);
+
+  } catch (error) {
+    await session.abortTransaction();
+    logger.error('Wholesale order with reserved borrow failed', { error: error.message });
+    res.status(500).json({
+      code: 'ORDER_CREATION_FAILED',
+      message: 'Failed to create order',
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
 module.exports = {
   getAllOrders,
   getOrderById,
@@ -1650,4 +1799,5 @@ module.exports = {
   previewPaymentAllocation,
   getBuyerStats,
   sendChallanEmail,
+  createOrderWithReservedBorrow,
 };
