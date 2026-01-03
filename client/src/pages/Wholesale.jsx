@@ -659,9 +659,23 @@ const handleBorrowConfirm = async () => {
     fetchOrders();
     fetchProducts();
     
-  } catch (error) {
-    console.error('Failed to create order with borrow:', error);
-    console.error('❌ Full error response:', error.response?.data); // ✅ SHOW FULL ERROR
+    } catch (error) {
+    console.error('Order creation failed:', error);
+    
+    // ✅ NEW: Handle specific error codes
+    if (error.response?.data?.code === 'ZERO_STOCK') {
+      toast.error('Cannot create order with 0 pieces. Please add stock or use reserved inventory.');
+      setSubmitting(false);
+      return;
+    }
+    
+    if (error.response?.data?.code === 'INSUFFICIENT_STOCK') {
+      toast.error(error.response?.data?.message || 'Insufficient stock to fulfill order');
+      setSubmitting(false);
+      return;
+    }
+    
+    console.error('Full error response:', error.response?.data);
     toast.error(error.response?.data?.message || 'Failed to create order');
     setSubmitting(false);
   }
@@ -682,18 +696,31 @@ const handleBorrowConfirm = async () => {
     setOrderItems(newItems);
   };
 
-  const handleItemDesignChange = (index, value) => {
-    const newItems = [...orderItems];
-    newItems[index] = {
-      design: value,
-      selectedColors: [],
-      pricePerUnit: newItems[index].pricePerUnit || 0,
-      colorData: {},
-      isCollapsed: false,
-      isComplete: false
-    };
-    setOrderItems(newItems);
+const handleItemDesignChange = (index, value) => {
+  const newItems = [...orderItems];
+  
+  // Find the product to get wholesale price
+  const product = products.find(p => p.design === value);
+  
+  // Get wholesale price from first color (all colors have same wholesale price)
+  const wholesalePrice = product?.colors[0]?.wholesalePrice || 0;
+  
+  newItems[index] = {
+    design: value,
+    selectedColors: [],
+    pricePerUnit: wholesalePrice, // ✅ Auto-fill from product
+    colorData: {},
+    isCollapsed: false,
+    isComplete: false
   };
+
+  // Show success message if price is auto-filled
+  if (wholesalePrice > 0) {
+    toast.success(`Price auto-filled: ₹${wholesalePrice}/pc`, { duration: 2000 });
+  }
+
+  setOrderItems(newItems);
+};
 
   const handleColorToggle = (index, color) => {
     const newItems = [...orderItems];
@@ -1701,19 +1728,36 @@ const handleBorrowConfirm = async () => {
                                 {/* Sets Mode */}
                                 {colorData.mode === 'sets' && (
                                   <div className="mb-3">
-                                    <label className="block text-sm font-medium text-gray-700 mb-2">Number of Sets:</label>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">Number of Sets</label>
                                     <input
                                       type="number"
-                                      value={colorData.sets || ''}
+                                      value={colorData.sets}
                                       onChange={(e) => handleSetsChange(index, color, e.target.value)}
                                       placeholder="0"
                                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
                                     />
-                                    {colorData.sets > 0 && (
-                                      <div className="mt-2 text-sm text-gray-600">
-                                        Auto-filled: {enabledSizes.map(size => `${size}:${colorData.sets}`).join(', ')}
+                                    
+                                    {/* ✅ NEW: Show available stock per size in sets mode */}
+                                    <div className="mt-2 text-xs text-gray-600 bg-gray-50 p-2 rounded">
+                                      <span className="font-semibold">Available per size:</span>
+                                      <div className="flex flex-wrap gap-2 mt-1">
+                                        {enabledSizes.map((size) => {
+                                          const available = getAvailableStock(item.design, color, size);
+                                          return (
+                                            <span 
+                                              key={size}
+                                              className={`px-2 py-1 rounded ${
+                                                available === 0 ? 'bg-red-100 text-red-700' : 
+                                                available < (colorData.sets || 0) ? 'bg-yellow-100 text-yellow-700' :
+                                                'bg-green-100 text-green-700'
+                                              }`}
+                                            >
+                                              {size}: {available}
+                                            </span>
+                                          );
+                                        })}
                                       </div>
-                                    )}
+                                    </div>
                                   </div>
                                 )}
 
@@ -2694,12 +2738,31 @@ const handleBorrowConfirm = async () => {
     }
   }
 
-  async function handleDownloadChallan(order) {
+    async function handleDownloadChallan(order) {
     try {
-      await generateInvoice(order);
+      // ✅ NEW: Fetch latest buyer data before generating challan
+      const buyer = await wholesaleService.getBuyerByMobile(order.buyerContact);
+      
+      // Create enhanced order object with latest buyer data
+      const orderWithLatestBuyerData = {
+        ...order,
+        buyerAddress: buyer?.address || order.buyerAddress || '',
+        buyerEmail: buyer?.email || order.buyerEmail || '',
+        gstNumber: buyer?.gstNumber || order.gstNumber || '',
+        businessName: buyer?.businessName || order.businessName || order.buyerName,
+      };
+      
+      await generateInvoice(orderWithLatestBuyerData);
       toast.success('Challan downloaded successfully');
     } catch (error) {
-      toast.error('Failed to generate challan');
+      console.error('Challan generation error:', error);
+      // Fallback to original order data if buyer fetch fails
+      try {
+        await generateInvoice(order);
+        toast.success('Challan downloaded successfully');
+      } catch (fallbackError) {
+        toast.error('Failed to generate challan');
+      }
     }
   }
 

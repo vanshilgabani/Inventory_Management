@@ -61,6 +61,7 @@ const createOrder = async (req, res) => {
   session.startTransaction();
 
   try {
+    let { items } = req.body;
     const {
       buyerName,
       buyerContact,
@@ -69,7 +70,6 @@ const createOrder = async (req, res) => {
       businessName,
       gstNumber,
       deliveryDate,
-      items,
       subtotalAmount,
       discountType,
       discountValue,
@@ -115,173 +115,259 @@ const createOrder = async (req, res) => {
     let buyer = await WholesaleBuyer.findOne({ mobile: buyerContact, organizationId }).session(session);
 
     if (!buyer) {
-      buyer = await WholesaleBuyer.create(
-        [
-          {
-            name: buyerName,
-            mobile: buyerContact,
-            email: buyerEmail || '',
-            address: buyerAddress || '',
-            businessName: businessName || buyerName,
-            gstNumber: gstNumber || '',
-            organizationId,
-            creditLimit: 0,
-            totalDue: 0,
-            isTrusted: false,
-          },
-        ],
-        { session }
-      );
+      buyer = await WholesaleBuyer.create([{
+        name: buyerName,
+        mobile: buyerContact,
+        email: buyerEmail || '',
+        address: buyerAddress || '',
+        businessName: businessName || buyerName,
+        gstNumber: gstNumber || '',
+        organizationId,
+        creditLimit: 0,
+        totalDue: 0,
+        isTrusted: false,
+      }], { session });
       buyer = buyer[0];
       logger.info('New buyer created', { buyerId: buyer._id, name: buyerName });
+    } else {
+      // ✅ NEW: Update existing buyer if new data is provided
+      let needsUpdate = false;
+      
+      if (buyerEmail && buyerEmail !== buyer.email) {
+        buyer.email = buyerEmail;
+        needsUpdate = true;
+      }
+      
+      if (buyerAddress && buyerAddress !== buyer.address) {
+        buyer.address = buyerAddress;
+        needsUpdate = true;
+      }
+      
+      if (gstNumber && gstNumber !== buyer.gstNumber) {
+        buyer.gstNumber = gstNumber;
+        needsUpdate = true;
+      }
+      
+      if (businessName && businessName !== buyer.businessName) {
+        buyer.businessName = businessName;
+        needsUpdate = true;
+      }
+      
+      if (needsUpdate) {
+        await buyer.save({ session });
+        logger.info('Buyer details updated during order creation', { 
+          buyerId: buyer._id, 
+          mobile: buyerContact,
+          updatedFields: { 
+            email: !!buyerEmail, 
+            address: !!buyerAddress, 
+            gstNumber: !!gstNumber,
+            businessName: !!businessName
+          } 
+        });
+      }
     }
 
-    // ✅ UPDATED: Skip stock validation for factory_direct orders
-    if (fulfillmentType !== 'factory_direct') {
-      // 🔒 Track items that need locked stock
+    // ✅ UPDATED: Skip stock validation for factory-direct orders
+    if (fulfillmentType !== 'factorydirect') {
       const insufficientStockItems = [];
+      const adjustedItems = []; // Store items with adjusted quantities
 
-      // ✅ Update inventory with validation (only for warehouse orders)
+      // STEP 1: Calculate max available per item
       for (const item of items) {
-        const product = await Product.findOne({
-          design: item.design,
-          organizationId,
-        }).session(session);
-
+        const product = await Product.findOne({ design: item.design, organizationId }).session(session);
+        
         if (!product) {
           await session.abortTransaction();
-          return res.status(404).json({
-            code: 'PRODUCT_NOT_FOUND',
-            message: `Product not found: ${item.design}`,
-          });
+          return res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: `Product not found: ${item.design}` });
         }
 
-        // Find color variant
         const colorVariant = product.colors.find((c) => c.color === item.color);
+        
         if (!colorVariant) {
           await session.abortTransaction();
-          return res.status(404).json({
-            code: 'PRODUCT_NOT_FOUND',
-            message: `Color ${item.color} not found for ${item.design}`,
-          });
+          return res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: `Color ${item.color} not found for ${item.design}` });
         }
 
-        // Find size in color variant
         const sizeIndex = colorVariant.sizes.findIndex((s) => s.size === item.size);
+        
         if (sizeIndex === -1) {
           await session.abortTransaction();
-          return res.status(404).json({
-            code: 'PRODUCT_NOT_FOUND',
-            message: `Size ${item.size} not found for ${item.design} ${item.color}`,
-          });
+          return res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: `Size ${item.size} not found for ${item.design} ${item.color}` });
         }
 
-        const currentStock = colorVariant.sizes[sizeIndex].currentStock;
-        const lockedStock = shouldUseLockStock() ? (colorVariant.sizes[sizeIndex].lockedStock || 0) : 0;
-        const availableStock = Math.max(0, currentStock - lockedStock);
-
-        // ✅ DEBUG LOG
-        console.log('🔍 Stock Check (Wholesale):', {
-          design: item.design,
-          color: item.color,
-          size: item.size,
-          requestedQty: item.quantity,
-          currentStock,
-          lockedStock,
-          availableStock,
-          willNeedLock: item.quantity > availableStock
-        });
-
+        const currentStock = colorVariant.sizes[sizeIndex].currentStock || 0; // ✅ Handle undefined
         const reservedStock = colorVariant.sizes[sizeIndex].reservedStock || 0;
+        const requestedQty = item.quantity;
 
-        // 🔒 CHECK 1: Not enough even with locked stock
-        if (currentStock + reservedStock < item.quantity) {
+        // ✅ NEW: Take maximum available from main stock (never negative)
+        const maxAvailableFromMain = Math.min(requestedQty, Math.max(0, currentStock));
+        
+        adjustedItems.push({
+          ...item,
+          requestedQty: requestedQty,
+          availableMain: maxAvailableFromMain,
+          availableReserved: reservedStock,
+          shortfall: requestedQty - maxAvailableFromMain,
+          productRef: product,
+          colorVariant: colorVariant,
+          sizeIndex: sizeIndex
+        });
+      }
+
+      // STEP 2: Calculate totals
+      const totalRequested = adjustedItems.reduce((sum, item) => sum + item.requestedQty, 0);
+      const totalAvailableMain = adjustedItems.reduce((sum, item) => sum + item.availableMain, 0);
+      const totalShortfall = totalRequested - totalAvailableMain;
+
+      // STEP 3: Check if we need reserved stock
+      if (totalShortfall > 0) {
+        // Check if reserved can fulfill
+        const totalAvailableReserved = adjustedItems.reduce((sum, item) => sum + item.availableReserved, 0);
+        
+        if (totalAvailableReserved >= totalShortfall) {
+          // ✅ Reserved can fulfill - show modal
+          console.log('❌ STOPPING ORDER - Need Reserved Stock', {
+            totalRequested,
+            totalAvailableMain,
+            totalShortfall,
+            totalAvailableReserved
+          });
+
           await session.abortTransaction();
           return res.status(400).json({
-            code: 'INSUFFICIENT_STOCK',
-            message: `Insufficient stock for ${item.design} ${item.color} ${item.size}. Total Available: ${currentStock + reservedStock}, Requested: ${item.quantity}`,
-            product: {
+            success: false,
+            code: 'MAIN_INSUFFICIENT_BORROW_RESERVED',
+            message: `Main inventory insufficient. Reserved stock borrowing required.`,
+            canBorrowFromReserved: true,
+            totalRequested,
+            totalAvailableMain,
+            totalShortfall,
+            totalAvailableReserved,
+            insufficientItems: adjustedItems.filter(item => item.shortfall > 0).map(item => ({
               design: item.design,
               color: item.color,
-              mainStock: currentStock,
-              reservedStock: reservedStock,
-              totalAvailable: currentStock + reservedStock,
-              requested: item.quantity,
-            },
+              size: item.size,
+              requestedQty: item.requestedQty,
+              mainStock: item.availableMain,
+              reservedStock: item.availableReserved,
+              neededFromReserved: item.shortfall
+            }))
           });
-        }
+        } else {
+        // ✅ Reserved also insufficient - proceed with max available from main + reserved
+            const totalMaxAvailable = totalAvailableMain + totalAvailableReserved;
+            
+            console.log('⚠️ Reserved also insufficient - creating order with max available', {
+              totalRequested,
+              totalAvailableMain,
+              totalAvailableReserved,
+              totalMaxAvailable
+            });
 
-        // 🔒 CHECK 2: Not enough available stock, but enough if we use locked stock
-        if (item.quantity > currentStock) {
-          const neededFromReserved = item.quantity - currentStock;
+            // Check if total available is 0
+            if (totalMaxAvailable === 0) {
+              await session.abortTransaction();
+              return res.status(400).json({
+                code: 'ZERO_STOCK',
+                message: 'Cannot create order with 0 pieces. No stock available in main or reserved inventory.'
+              });
+            }
 
-          console.log('⚠️  Insufficient Available Stock (Wholesale)!', {
-            design: item.design,
-            color: item.color,
-            size: item.size,
-            requested: item.quantity,
-            mainStock: currentStock,
-            reservedStock: reservedStock,
-            neededFromReserved
-          });
+            // ✅ Proceed with taking max from main + whatever needed from reserved
+            for (const item of adjustedItems) {
+              const { productRef, colorVariant, sizeIndex, availableMain, shortfall, availableReserved } = item;
+              
+              // Take from main first (ensure we don't go negative)
+              if (availableMain > 0) {
+                const currentStock = colorVariant.sizes[sizeIndex].currentStock;
+                const actualDeduction = Math.min(availableMain, currentStock); // ✅ Never deduct more than available
+                colorVariant.sizes[sizeIndex].currentStock = Math.max(0, currentStock - actualDeduction); // ✅ Ensure non-negative
+                
+                logger.debug('Main stock deducted', {
+                  design: item.design,
+                  color: item.color,
+                  size: item.size,
+                  requested: availableMain,
+                  actualDeducted: actualDeduction,
+                  newStock: colorVariant.sizes[sizeIndex].currentStock
+                });
+              }
 
-          insufficientStockItems.push({
-            design: item.design,
-            color: item.color,
-            size: item.size,
-            requestedQty: item.quantity,
-            mainStock: currentStock,
-            reservedStock: reservedStock,
-            neededFromReserved,
-          });
-        }
+              // If still need more and reserved has stock, take from reserved
+              if (shortfall > 0 && availableReserved > 0) {
+                const takeFromReserved = Math.min(shortfall, availableReserved);
+                const currentReserved = colorVariant.sizes[sizeIndex].reservedStock || 0;
+                const actualReservedDeduction = Math.min(takeFromReserved, currentReserved); // ✅ Never deduct more than available
+                colorVariant.sizes[sizeIndex].reservedStock = Math.max(0, currentReserved - actualReservedDeduction); // ✅ Ensure non-negative
+                
+                logger.info('Borrowed from reserved stock due to insufficient total', {
+                  design: item.design,
+                  color: item.color,
+                  size: item.size,
+                  requested: takeFromReserved,
+                  actualBorrowed: actualReservedDeduction,
+                  newReservedStock: colorVariant.sizes[sizeIndex].reservedStock
+                });
+              }
+
+              await productRef.save({ session });
+              
+              logger.debug('Stock updated (main + reserved partial)', {
+                productId: productRef._id,
+                design: item.design,
+                color: item.color,
+                size: item.size,
+                mainStockNow: colorVariant.sizes[sizeIndex].currentStock,
+                reservedStockNow: colorVariant.sizes[sizeIndex].reservedStock
+              });
+            }
+
+            // Update items array with actual quantities taken (main + partial reserved)
+            items = adjustedItems.map(item => {
+              const actualQty = item.availableMain + Math.min(item.shortfall, item.availableReserved);
+              return {
+                design: item.design,
+                color: item.color,
+                size: item.size,
+                quantity: actualQty,
+                pricePerUnit: item.pricePerUnit,
+                discount: item.discount || 0
+              };
+            }).filter(item => item.quantity > 0); // ✅ Remove 0 quantity items
+
+            // ✅ NEW: Check if we have any items left after filtering
+            if (items.length === 0) {
+              await session.abortTransaction();
+              return res.status(400).json({
+                code: 'ZEROSTOCK',
+                message: 'Cannot create order. No stock available for any items.'
+              });
+            }
+
+            // Continue to order creation below...
+            logger.info('✅ Proceeding with partial order creation', {
+              originalRequested: totalRequested,
+              actualFulfilled: items.reduce((sum, i) => sum + i.quantity, 0)
+            });
+
+            // Continue to order creation below...
+            logger.info('✅ Proceeding with partial order creation', {
+              originalRequested: totalRequested,
+              actualFulfilled: items.reduce((sum, i) => sum + i.quantity, 0)
+            });
+          }
       }
 
-      // ✅ NEW: IF NEED TO BORROW FROM RESERVED
-      if (insufficientStockItems.length > 0) {
+      // STEP 4: Check if main stock is zero
+      if (totalAvailableMain === 0) {
         await session.abortTransaction();
-        const totalNeededFromReserved = insufficientStockItems.reduce((sum, item) => sum + item.neededFromReserved, 0);
-        
-        console.log('🚫 STOPPING ORDER (Wholesale) - Need Reserved Stock:', {
-          insufficientItemsCount: insufficientStockItems.length,
-          totalNeededFromReserved,
-          insufficientItems: insufficientStockItems
-        });
-
         return res.status(400).json({
-          success: false,
-          code: 'MAIN_INSUFFICIENT_BORROW_RESERVED',
-          message: 'Main inventory insufficient. Reserved stock borrowing required.',
-          canBorrowFromReserved: true,
-          insufficientItems: insufficientStockItems,
-          totalNeededFromReserved,
+          code: 'ZERO_STOCK',
+          message: 'Cannot create order with 0 pieces. No stock available in main inventory.'
         });
       }
 
-      console.log('✅ Stock validation passed (Wholesale) - proceeding to deduct stock');
-
-      // ✅ Stock validation passed - proceed to deduct stock
-      for (const item of items) {
-        const product = await Product.findOne({
-          design: item.design,
-          organizationId,
-        }).session(session);
-
-        const colorVariant = product.colors.find((c) => c.color === item.color);
-        const sizeIndex = colorVariant.sizes.findIndex((s) => s.size === item.size);
-
-        // Deduct stock
-        colorVariant.sizes[sizeIndex].currentStock -= item.quantity;
-        await product.save({ session });
-
-        logger.debug('Stock updated', {
-          productId: product._id,
-          design: item.design,
-          color: item.color,
-          size: item.size,
-          newStock: colorVariant.sizes[sizeIndex].currentStock,
-        });
-      }
     } else {
       logger.info('Factory direct order - skipping stock deduction', { organizationId });
     }
