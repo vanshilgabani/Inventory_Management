@@ -151,6 +151,58 @@ const reorderColors = async (orderedColorIds) => {
   return response.data;
 };
 
+// ✅✅ NEW: Company Management APIs
+const getCompanies = async () => {
+  const response = await axios.get(`${API_URL}/settings/companies`, {
+    headers: getAuthHeader()
+  });
+  return response.data;
+};
+
+const addCompany = async (companyData) => {
+  const response = await axios.post(
+    `${API_URL}/settings/companies`,
+    companyData,
+    { headers: getAuthHeader() }
+  );
+  return response.data;
+};
+
+const updateCompany = async (companyId, companyData) => {
+  const response = await axios.put(
+    `${API_URL}/settings/companies/${companyId}`,
+    companyData,
+    { headers: getAuthHeader() }
+  );
+  return response.data;
+};
+
+const deleteCompany = async (companyId) => {
+  const response = await axios.delete(
+    `${API_URL}/settings/companies/${companyId}`,
+    { headers: getAuthHeader() }
+  );
+  return response.data;
+};
+
+const toggleCompanyActive = async (companyId, isActive) => {
+  const response = await axios.put(
+    `${API_URL}/settings/companies/${companyId}/toggle-active`,
+    { isActive },
+    { headers: getAuthHeader() }
+  );
+  return response.data;
+};
+
+const setDefaultCompany = async (companyId) => {
+  const response = await axios.put(
+    `${API_URL}/settings/companies/${companyId}/set-default`,
+    {},
+    { headers: getAuthHeader() }
+  );
+  return response.data;
+};
+
 export const settingsService = {
   getSettings,
   getEnabledSizes,
@@ -167,5 +219,12 @@ export const settingsService = {
   addColorToPalette,
   updateColorInPalette,
   deleteColorFromPalette,
-  reorderColors
+  reorderColors,
+  // ✅✅ Company Management
+  getCompanies,
+  addCompany,
+  updateCompany,
+  deleteCompany,
+  toggleCompanyActive,
+  setDefaultCompany
 };

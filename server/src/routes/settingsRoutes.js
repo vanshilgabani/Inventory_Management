@@ -38,6 +38,13 @@ router.delete('/stock-thresholds/design/:design', protect, isAdmin, settingsCont
 
 // Company info routes
 router.put('/company', protect, isAdmin, settingsController.updateCompanyInfo);
+// Company Management Routes
+router.get('/companies', protect, settingsController.getCompanies);
+router.post('/companies', protect, settingsController.addCompany);
+router.put('/companies/:companyId', protect, settingsController.updateCompany);
+router.delete('/companies/:companyId', protect, settingsController.deleteCompany);
+router.put('/companies/:companyId/toggle-active', protect, settingsController.toggleCompanyActive);
+router.put('/companies/:companyId/set-default', protect, settingsController.setDefaultCompany);
 
 // GST routes
 router.put('/gst', protect, isAdmin, settingsController.updateGST);

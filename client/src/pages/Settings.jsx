@@ -16,6 +16,7 @@ import ProductPricing from '../components/settings/ProductPricing';
 import PermissionsSettings from '../components/settings/PermissionsSettings';
 import NotificationsSettings from '../components/settings/NotificationsSettings';
 import ColorPaletteManager from '../components/settings/ColorPaletteManager';
+import CompanyManagement from '../components/settings/CompanyManagement';
 
 const Settings = () => {
   const [settings, setSettings] = useState({
@@ -311,6 +312,7 @@ const Settings = () => {
 
   const tabs = [
     { id: 'company', label: 'General', icon: '🏢' },
+    { id: 'companies', label: 'Companies', icon: '🏭' },
     { id: 'sizes-permissions', label: 'Sizes & Permissions', icon: '📏' },
     { id: 'colors', label: 'Color Palette', icon: '🎨' },
     { id: 'thresholds', label: 'Stock Alerts', icon: '🔔' },
@@ -368,6 +370,10 @@ const Settings = () => {
             handleUpdateSettings={handleUpdateSettings}
             saving={saving}
           />
+        )}
+
+        {activeTab === 'companies' && (
+          <CompanyManagement />
         )}
 
         {activeTab === 'sizes-permissions' && (

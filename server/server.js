@@ -39,13 +39,13 @@ const factoryRoutes = require('./src/routes/factoryRoutes');
 const predictionRoutes = require('./src/routes/predictionRoutes');
 const eventRoutes = require('./src/routes/eventRoutes');
 const analyticsRoutes = require('./src/routes/analyticsRoutes');
-const challanSettingsRoutes = require('./src/routes/challanSettingsRoutes');
 const settingsRoutes = require('./src/routes/settingsRoutes');
 const notificationRoutes = require('./src/routes/notificationRoutes'); // NEW
 const productPricingRoutes = require('./src/routes/productPricingRoutes');
 const settlementRoutes = require('./src/routes/settlementRoutes');
 const editSessionRoutes = require('./src/routes/editSessionRoutes');
 const transferRoutes = require('./src/routes/transferRoutes');
+const monthlyBillRoutes = require('./src/routes/monthlyBillRoutes');
 const initCronJobs = require('./src/utils/cronJobs');
 
 // Routes
@@ -58,13 +58,13 @@ app.use('/api/factory', factoryRoutes);
 app.use('/api/predictions', predictionRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/analytics', analyticsRoutes);
-app.use('/api/challan-settings', challanSettingsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/product-pricing', productPricingRoutes);
 app.use('/api/settlements', settlementRoutes);
 app.use('/api/edit-sessions', editSessionRoutes);
 app.use('/api/transfers', transferRoutes);
+app.use('/api/monthly-bills', monthlyBillRoutes);
 
 // Test route
 app.get('/', (req, res) => {

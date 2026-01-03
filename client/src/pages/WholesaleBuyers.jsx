@@ -19,7 +19,7 @@ import {
   FiBriefcase,
   FiAlertCircle,
   FiCheckCircle,
-  FiX,
+  FiFileText,
   FiEdit2,
   FiTrash2,
   FiEye,
@@ -805,7 +805,15 @@ const handleEmailSubmit = async (e) => {
                           <FiSend size={14} />
                           Reminder
                         </button>
+                        
                       )}
+                    <button
+                      onClick={() => navigate(`/monthly-bills?buyer=${buyer._id}`)}
+                      className="w-full px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors flex items-center justify-center gap-2 text-sm font-medium"
+                    >
+                      <FiFileText size={16} />
+                      View Monthly Bills
+                    </button>
                     </div>
                   </div>
                 </div>

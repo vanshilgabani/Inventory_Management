@@ -16,8 +16,8 @@ import WholesaleBuyers from './pages/WholesaleBuyers';
 import Customers from './pages/Customers';
 import Analytics from './pages/Analytics';
 import UserManagement from './pages/UserManagement';
-import ChallanSettings from './pages/ChallanSettings';
 import Settings from './pages/Settings';
+import MonthlyBills from './pages/MonthlyBills';
 import Notifications from './pages/Notifications';
 
 // Protected Route Component
@@ -97,14 +97,14 @@ function App() {
             <Route path="notifications" element={<Notifications />} />
             
             {/* Admin Routes */}
+            <Route path="monthly-bills" element={
+              <AdminRoute>
+                <MonthlyBills />
+              </AdminRoute>
+            } />
             <Route path="users" element={
               <AdminRoute>
                 <UserManagement />
-              </AdminRoute>
-            } />
-            <Route path="challan-settings" element={
-              <AdminRoute>
-                <ChallanSettings />
               </AdminRoute>
             } />
             <Route path="settings" element={

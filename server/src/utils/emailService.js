@@ -1,5 +1,5 @@
 const nodemailer = require('nodemailer');
-const ChallanSettings = require('../models/ChallanSettings');
+const Settings = require('../models/Settings'); // ✅ CHANGED: Use Settings instead of ChallanSettings
 
 // Create transporter (configure with your email service)
 const transporter = nodemailer.createTransport({
@@ -10,15 +10,15 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Get business settings
+// ✅ UPDATED: Get business settings from Settings model
 const getBusinessSettings = async () => {
   try {
-    const settings = await ChallanSettings.findOne();
-    return settings || {
-      businessName: 'VeeRaa Impex',
-      email: process.env.EMAIL_USER,
-      mobile: '+91 9328822592',
-      address: 'Surat'
+    const settings = await Settings.findOne();
+    return {
+      businessName: settings?.companyName || 'VeeRaa Impex',
+      email: settings?.email || process.env.EMAIL_USER,
+      mobile: settings?.phone || '+91 9328822592',
+      address: settings?.address || 'Surat'
     };
   } catch (error) {
     console.error('Error fetching business settings:', error);
@@ -35,128 +35,180 @@ const getBusinessSettings = async () => {
 const sendCreditLimitWarning = async (buyerEmail, buyerName, creditUsagePercent, creditLimit, totalDue) => {
   try {
     const businessSettings = await getBusinessSettings();
-    
+
     const mailOptions = {
-      from: `"${businessSettings.businessName}" <${process.env.EMAIL_USER}>`,  // ✅ Show business name as sender
+      from: `"${businessSettings.businessName}" <${process.env.EMAIL_USER}>`,
       to: buyerEmail,
       subject: '⚠️ Credit Limit Warning - Action Required',
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #f97316;">⚠️ Credit Limit Warning</h2>
-          <p>Dear ${buyerName},</p>
-          <p>This is to inform you that your credit utilization has reached <strong>${creditUsagePercent}%</strong>.</p>
-          
-          <div style="background: #fef3c7; padding: 15px; border-radius: 5px; margin: 20px 0;">
-            <p style="margin: 5px 0;"><strong>Credit Limit:</strong> ₹${creditLimit.toLocaleString('en-IN')}</p>
-            <p style="margin: 5px 0;"><strong>Current Due:</strong> ₹${totalDue.toLocaleString('en-IN')}</p>
-            <p style="margin: 5px 0;"><strong>Utilization:</strong> ${creditUsagePercent}%</p>
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background-color: #f44336; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
+            .content { background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }
+            .warning-box { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+            .details { background-color: white; padding: 20px; border-radius: 5px; margin: 20px 0; }
+            .detail-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
+            .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 2px solid #eee; color: #666; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h2>⚠️ Credit Limit Warning</h2>
+            </div>
+            <div class="content">
+              <p>Dear <strong>${buyerName}</strong>,</p>
+              
+              <p>This is to inform you that your credit utilization has reached <strong>${creditUsagePercent}%</strong>.</p>
+              
+              <div class="details">
+                <div class="detail-row">
+                  <span><strong>Credit Limit:</strong></span>
+                  <span>₹${creditLimit.toLocaleString('en-IN')}</span>
+                </div>
+                <div class="detail-row">
+                  <span><strong>Current Due:</strong></span>
+                  <span style="color: #f44336;">₹${totalDue.toLocaleString('en-IN')}</span>
+                </div>
+                <div class="detail-row">
+                  <span><strong>Utilization:</strong></span>
+                  <span style="color: #f44336;">${creditUsagePercent}%</span>
+                </div>
+              </div>
+
+              <div class="warning-box">
+                <p><strong>Action Required:</strong></p>
+                <p>Please clear your pending dues at the earliest to avoid any service interruption.</p>
+              </div>
+
+              <p>If you have already made the payment, please ignore this email.</p>
+
+              <div class="footer">
+                <p><strong>${businessSettings.businessName}</strong></p>
+                <p>${businessSettings.address}</p>
+                <p>Email: ${businessSettings.email}</p>
+                <p>Mobile: ${businessSettings.mobile}</p>
+              </div>
+            </div>
           </div>
-          
-          <p>Please clear your pending dues at the earliest to avoid any service interruption.</p>
-          
-          <p>If you have already made the payment, please ignore this email.</p>
-          
-          <p>Best regards,<br><strong>${businessSettings.businessName}</strong></p>
-          <p style="color: #666; font-size: 12px;">
-            ${businessSettings.address}<br>
-            Email: ${businessSettings.email}<br>
-            Mobile: ${businessSettings.mobile}
-          </p>
-        </div>
+        </body>
+        </html>
       `
     };
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent:', info.messageId);
-    return { success: true, messageId: info.messageId };
+    await transporter.sendMail(mailOptions);
+    console.log(`Credit limit warning email sent to ${buyerEmail}`);
   } catch (error) {
-    console.error('❌ Email sending failed:', error);
-    return { success: false, error: error.message };
+    console.error('Error sending credit limit warning email:', error);
+    throw error;
   }
 };
 
-// Send overdue payment reminder
-const sendOverduePaymentReminder = async (buyerEmail, buyerName, amountDue, daysOverdue, pendingOrdersCount) => {
+// Send payment reminder email
+const sendPaymentReminder = async (buyerEmail, buyerName, amountDue, daysOverdue, pendingOrdersCount) => {
   try {
     const businessSettings = await getBusinessSettings();
-    
+
     const mailOptions = {
-      from: `"${businessSettings.businessName}" <${process.env.EMAIL_USER}>`,  // ✅ Show business name as sender
+      from: `"${businessSettings.businessName}" <${process.env.EMAIL_USER}>`,
       to: buyerEmail,
-      subject: `🔔 Payment Reminder - ${daysOverdue} Days Overdue`,
+      subject: '💰 Payment Reminder - Pending Dues',
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #dc2626;">🔔 Payment Reminder</h2>
-          <p>Dear ${buyerName},</p>
-          <p>This is a friendly reminder that you have pending payments.</p>
-          
-          <div style="background: #fee2e2; padding: 15px; border-radius: 5px; margin: 20px 0;">
-            <p style="margin: 5px 0;"><strong>Total Due:</strong> ₹${amountDue.toLocaleString('en-IN')}</p>
-            <p style="margin: 5px 0;"><strong>Days Overdue:</strong> ${daysOverdue} days</p>
-            <p style="margin: 5px 0;"><strong>Pending Orders:</strong> ${pendingOrdersCount}</p>
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background-color: #ff9800; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
+            .content { background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }
+            .details { background-color: white; padding: 20px; border-radius: 5px; margin: 20px 0; }
+            .detail-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
+            .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 2px solid #eee; color: #666; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h2>💰 Payment Reminder</h2>
+            </div>
+            <div class="content">
+              <p>Dear <strong>${buyerName}</strong>,</p>
+              
+              <p>This is a friendly reminder that you have pending payments.</p>
+              
+              <div class="details">
+                <div class="detail-row">
+                  <span><strong>Total Due:</strong></span>
+                  <span style="color: #f44336; font-size: 18px;">₹${amountDue.toLocaleString('en-IN')}</span>
+                </div>
+                <div class="detail-row">
+                  <span><strong>Days Overdue:</strong></span>
+                  <span>${daysOverdue} days</span>
+                </div>
+                <div class="detail-row">
+                  <span><strong>Pending Orders:</strong></span>
+                  <span>${pendingOrdersCount}</span>
+                </div>
+              </div>
+
+              <p>Please make the payment at your earliest convenience.</p>
+              <p>If you have already made the payment, please ignore this email.</p>
+
+              <div class="footer">
+                <p><strong>${businessSettings.businessName}</strong></p>
+                <p>${businessSettings.address}</p>
+                <p>Email: ${businessSettings.email}</p>
+                <p>Mobile: ${businessSettings.mobile}</p>
+              </div>
+            </div>
           </div>
-          
-          <p>Please make the payment at your earliest convenience.</p>
-          
-          <p>If you have already made the payment, please ignore this email.</p>
-          
-          <p>Best regards,<br><strong>${businessSettings.businessName}</strong></p>
-          <p style="color: #666; font-size: 12px;">
-            ${businessSettings.address}<br>
-            Email: ${businessSettings.email}<br>
-            Mobile: ${businessSettings.mobile}
-          </p>
-        </div>
+        </body>
+        </html>
       `
     };
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent:', info.messageId);
-    return { success: true, messageId: info.messageId };
+    await transporter.sendMail(mailOptions);
+    console.log(`Payment reminder email sent to ${buyerEmail}`);
   } catch (error) {
-    console.error('❌ Email sending failed:', error);
-    return { success: false, error: error.message };
+    console.error('Error sending payment reminder email:', error);
+    throw error;
   }
 };
 
-// Send wholesale challan email with PDF attachment
-const sendWholesaleChallan = async (to, subject, text, pdfBuffer, fileName) => {
-  if (!to || !pdfBuffer) {
-    console.log('❌ Missing email or PDF buffer');
-    return;
-  }
-
-  const businessSettings = await getBusinessSettings();
-
-  const mailOptions = {
-    from: `${businessSettings.businessName} <${process.env.EMAIL_USER}>`,
-    to,
-    subject: subject || `Delivery Challan - ${businessSettings.businessName}`,
-    text: text || 'Please find attached your delivery challan.',
-    attachments: [
-      {
-        filename: fileName || 'challan.pdf',
-        content: pdfBuffer,
-      },
-    ],
-  };
-
+// Send wholesale order challan via email
+const sendWholesaleChallan = async (buyerEmail, subject, text, pdfBuffer, filename) => {
   try {
-    console.log('📧 Attempting to send email to:', to);
-    const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent successfully:', info.messageId);
-    console.log('📬 Preview URL:', nodemailer.getTestMessageUrl(info)); // For testing
-    return { success: true, messageId: info.messageId };
+    const businessSettings = await getBusinessSettings();
+
+    const mailOptions = {
+      from: `"${businessSettings.businessName}" <${process.env.EMAIL_USER}>`,
+      to: buyerEmail,
+      subject: subject,
+      text: text,
+      attachments: [
+        {
+          filename: filename,
+          content: pdfBuffer,
+          contentType: 'application/pdf'
+        }
+      ]
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log(`Challan email sent to ${buyerEmail}`);
   } catch (error) {
-    console.error('❌ Email sending failed:', error.message);
-    console.error('Full error:', error);
-    return { success: false, error: error.message };
+    console.error('Error sending challan email:', error);
+    throw error;
   }
 };
 
-// Update module.exports to include sendWholesaleChallan
 module.exports = {
   sendCreditLimitWarning,
-  sendOverduePaymentReminder,
-  sendWholesaleChallan, // ✅ ADD THIS
+  sendPaymentReminder,
+  sendWholesaleChallan
 };

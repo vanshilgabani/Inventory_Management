@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { challanSettingsService } from '../services/challanSettingsService';
+import {settingsService} from '../services/settingsService'; // ✅ CHANGED: Use settingsService
 import logo from '../assets/logo.png';
 
 const formatCurrency = (n) => {
@@ -19,7 +19,8 @@ const formatDate = (d) => {
 export const generateInvoice = async (order, options = {}) => {
   return new Promise(async (resolve, reject) => {
     try {
-      const settings = await challanSettingsService.getSettings();
+      const settings = await settingsService.getSettings(); // ✅ CHANGED: Use settingsService
+
       const doc = new jsPDF('p', 'mm', 'a4');
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
@@ -41,6 +42,7 @@ export const generateInvoice = async (order, options = {}) => {
       // ==========================================
       const headerStartY = 10;
       const headerHeight = 35;
+
       doc.setDrawColor(0);
       doc.setLineWidth(0.2);
       doc.rect(margin, headerStartY, contentWidth, headerHeight);
@@ -76,7 +78,7 @@ export const generateInvoice = async (order, options = {}) => {
       // 2. BILL TO & CHALLAN INFO (Box 2)
       // ==========================================
       const billToY = headerStartY + headerHeight;
-      const billToHeight = 35; // ✅ Increased from 30 to 35 for buyer GST
+      const billToHeight = 35;
 
       // Draw Box
       doc.rect(margin, billToY, contentWidth, billToHeight);
@@ -95,23 +97,20 @@ export const generateInvoice = async (order, options = {}) => {
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
-
       const maxAddressWidth = (splitX - margin) - 10;
       const buyerAddr = order.buyerAddress ? doc.splitTextToSize(order.buyerAddress, maxAddressWidth) : [];
-      
       let currentBillY = billToY + 15;
+
       if (buyerAddr.length > 0) {
         doc.text(buyerAddr, margin + 3, currentBillY);
         currentBillY += (buyerAddr.length * 4);
       }
 
-      // ✅ FIXED: Always show mobile (removed condition)
       if (order.buyerContact) {
         doc.text(`Mo: ${order.buyerContact}`, margin + 3, currentBillY);
         currentBillY += 4;
       }
 
-      // ✅ NEW: Show buyer GST number
       if (order.gstNumber) {
         doc.text(`GSTIN: ${order.gstNumber}`, margin + 3, currentBillY);
       }
@@ -122,13 +121,11 @@ export const generateInvoice = async (order, options = {}) => {
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(14);
-      // ✅ CHANGED: Center-aligned CHALLAN text
       doc.text('CHALLAN', splitX + ((pageWidth - margin - splitX) / 2), billToY + 7, { align: 'center' });
-
-      // ✅ REMOVED: Fulfillment Type Badge (deleted the entire block)
 
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
+
       // Row 1: Number
       doc.text('Number:', infoLabelX, billToY + 20);
       doc.setFont('helvetica', 'normal');
@@ -148,25 +145,22 @@ export const generateInvoice = async (order, options = {}) => {
       const head = [['#', 'Item', 'Qty', 'Rate', hasDiscount ? 'Discount' : null, 'Total'].filter(Boolean)];
 
       const body = (order.items || []).map((item, index) => {
-      const total = (item.quantity * item.pricePerUnit) - (item.discount || 0);
-      
-      // ✅ NEW: Format with underscores between design, color, size
-      const itemName = [item.design, item.color, item.size]
-        .filter(Boolean)  
-        .join('_');      // Join with space-underscore
-      
-      return [
-        index + 1,
-        itemName,  
-        `${item.quantity} Pcs`,
-        formatCurrency(item.pricePerUnit),
-        hasDiscount ? formatCurrency(item.discount || 0) : null,
-        formatCurrency(total)
-      ].filter(Boolean);
-    });
+        const total = (item.quantity * item.pricePerUnit) - (item.discount || 0);
+        const itemName = [item.design, item.color, item.size]
+          .filter(Boolean)
+          .join('_');
+
+        return [
+          index + 1,
+          itemName,
+          `${item.quantity} Pcs`,
+          formatCurrency(item.pricePerUnit),
+          hasDiscount ? formatCurrency(item.discount || 0) : null,
+          formatCurrency(total)
+        ].filter(Boolean);
+      });
 
       const totalQty = (order.items || []).reduce((sum, i) => sum + i.quantity, 0);
-
       const tableFooter = [
         '',
         `Total Qty:`,
@@ -198,7 +192,7 @@ export const generateInvoice = async (order, options = {}) => {
           fontStyle: 'bold'
         },
         columnStyles: {
-          0: { halign: 'center', cellWidth: 15 }, // ✅ CHANGED: Increased from 10 to 15
+          0: { halign: 'center', cellWidth: 15 },
           1: { halign: 'left', cellWidth: 'auto' },
           2: { halign: 'center', cellWidth: 25 },
           3: { halign: 'right', cellWidth: 30 },
@@ -208,11 +202,9 @@ export const generateInvoice = async (order, options = {}) => {
         margin: { left: margin, right: margin },
         tableLineWidth: 0.2,
         tableLineColor: 0,
-        // ✅ NEW: Add page numbering
         didDrawPage: function (data) {
           const pageCount = doc.internal.getNumberOfPages();
           const currentPage = doc.internal.getCurrentPageInfo().pageNumber;
-          
           doc.setFontSize(8);
           doc.setFont('helvetica', 'normal');
           doc.text(`Page ${currentPage} of ${pageCount}`, pageWidth - margin, pageHeight - 5, { align: 'right' });
@@ -224,12 +216,12 @@ export const generateInvoice = async (order, options = {}) => {
       // ==========================================
       let finalY = doc.lastAutoTable.finalY;
 
-      if (finalY > pageHeight - 60) { // ✅ Increased from 50 to 60
+      if (finalY > pageHeight - 60) {
         doc.addPage();
         finalY = margin;
       }
 
-      const footerHeight = 55; // ✅ Increased from 45 to 55 for CGST/SGST split
+      const footerHeight = 55;
       doc.rect(margin, finalY, contentWidth, footerHeight);
 
       const totalBoxWidth = 75;
@@ -239,10 +231,10 @@ export const generateInvoice = async (order, options = {}) => {
       // -- Left: Words & Signatures --
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
-      doc.text('Net Payable in Words:', margin + 3, finalY + 8);
+      doc.text('Net Payable (in Words):', margin + 3, finalY + 8);
 
       doc.setFont('helvetica', 'bold');
-      const netPayable = roundedTotal; // ✅ Use rounded total
+      const netPayable = roundedTotal;
       const words = doc.splitTextToSize(numberToWords(netPayable), totalBoxX - margin - 5);
       doc.text(words, margin + 3, finalY + 14);
 
@@ -266,7 +258,6 @@ export const generateInvoice = async (order, options = {}) => {
         doc.text(`- ${formatCurrency(order.discountAmount)}`, valX, calcY, { align: 'right' });
       }
 
-      // ✅ NEW: Split CGST and SGST
       if (order.gstEnabled && order.cgst > 0) {
         calcY += lineSpacing;
         doc.text(`CGST (${cgstPercentage}%):`, labelX, calcY);
@@ -277,7 +268,6 @@ export const generateInvoice = async (order, options = {}) => {
         doc.text(formatCurrency(order.sgst), valX, calcY, { align: 'right' });
       }
 
-      // ✅ NEW: Show round-off if applicable
       if (Math.abs(roundOffAmount) > 0.01) {
         calcY += lineSpacing;
         doc.text('Round Off:', labelX, calcY);
@@ -293,7 +283,7 @@ export const generateInvoice = async (order, options = {}) => {
       doc.text('Net Payable:', labelX, calcY);
       doc.text(formatCurrency(roundedTotal), valX, calcY, { align: 'right' });
 
-      // ✅ Add page numbers to footer
+      // Add page numbers
       const pageCount = doc.internal.getNumberOfPages();
       for (let i = 1; i <= pageCount; i++) {
         doc.setPage(i);
@@ -313,21 +303,19 @@ export const generateInvoice = async (order, options = {}) => {
   });
 };
 
-// Send Challan via WhatsApp (with delay)
+// Send Challan via WhatsApp
 export const sendChallanViaWhatsApp = async (order) => {
   return new Promise(async (resolve, reject) => {
     try {
-      const SELLER_INFO = await challanSettingsService.getSettings();
+      const SELLER_INFO = await settingsService.getSettings(); // ✅ CHANGED: Use settingsService
 
       const challanNo = order.challanNumber || order._id.slice(-8).toUpperCase();
       const totalAmount = order.totalAmount.toFixed(2);
       const totalQty = order.items.reduce((sum, item) => sum + item.quantity, 0);
-      const orderDate = new Date(order.createdAt).toLocaleDateString('en-IN'); // ✅ FIXED: Use createdAt
+      const orderDate = new Date(order.createdAt).toLocaleDateString('en-IN');
 
-      // Create professional WhatsApp message with GST info
       let message = `🧾 *DELIVERY CHALLAN*\n\nDear ${order.buyerName},\n\nYour challan has been generated successfully!\n\n📋 *Challan No:* ${challanNo}\n📅 *Date:* ${orderDate}\n📦 *Total Items:* ${totalQty}`;
 
-      // ✅ Add fulfillment type
       const fulfillmentType = order.fulfillmentType || 'warehouse';
       if (fulfillmentType === 'factory_direct') {
         message += `\n🏭 *Type:* Factory Direct`;
@@ -335,14 +323,12 @@ export const sendChallanViaWhatsApp = async (order) => {
         message += `\n📦 *Type:* Warehouse`;
       }
 
-      // Add GST info if enabled
       if (order.gstEnabled && order.gstAmount > 0) {
         message += `\n\n💰 *Subtotal:* Rs. ${(order.totalAmount - order.gstAmount).toFixed(2)}\n🧾 *GST:* Rs. ${order.gstAmount.toFixed(2)}`;
       }
 
-      message += `\n\n💰 *Net Payable:* Rs. ${totalAmount}\n\n*From:* ${SELLER_INFO.businessName}\n📍 ${SELLER_INFO.address}\n📞 ${SELLER_INFO.mobile}\n\nThank you for your business! 🙏\n\n_Please download and review the attached PDF challan._`;
+      message += `\n\n💰 *Net Payable:* Rs. ${totalAmount}\n\n*From:* ${SELLER_INFO.companyName}\n📍 ${SELLER_INFO.address}\n📞 ${SELLER_INFO.phone}\n\nThank you for your business! 🙏\n\n_Please download and review the attached PDF challan._`;
 
-      // Format mobile number for WhatsApp
       let mobile = order.buyerContact.replace(/\D/g, '');
       if (!mobile.startsWith('91')) {
         mobile = '91' + mobile;
@@ -361,14 +347,13 @@ export const sendChallanViaWhatsApp = async (order) => {
   });
 };
 
-// Helper function to convert number to words (Indian numbering system)
+// Helper function to convert number to words
 const numberToWords = (num) => {
   const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
   const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
   const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
 
   if (num === 0) return 'Zero';
-
   num = Math.floor(num);
 
   const crore = Math.floor(num / 10000000);
@@ -402,7 +387,6 @@ const numberToWords = (num) => {
   return words.trim();
 };
 
-// Helper to convert two-digit numbers
 const convertTwoDigit = (num, ones, tens, teens) => {
   if (num < 10) {
     return ones[num];

@@ -287,7 +287,7 @@ const createOrder = async (req, res) => {
     }
 
     // Generate challan number (thread-safe)
-    const challanNumber = await generateChallanNumber(businessName || buyerName, buyerContact, organizationId, session);
+    const challanNumber = await generateChallanNumber(businessName || buyerName, organizationId, session);
 
     // Calculate amounts
     const amountDue = totalAmount - (amountPaid || 0);
@@ -406,34 +406,30 @@ const createOrder = async (req, res) => {
   }
 };
 
-// ✅ UPDATED: Per-buyer sequential challan number generation
-const generateChallanNumber = async (businessName, buyerContact, organizationId, session) => {
+// ✅ UPDATED: Per-business sequential challan number generation
+const generateChallanNumber = async (businessName, organizationId, session) => {
   try {
-    // Count orders for THIS specific buyer only
-    const buyerOrderCount = await WholesaleOrder.countDocuments({
-      buyerContact,
-      organizationId,
-    }).session(session);
-
-    const orderNumber = buyerOrderCount + 1;
-
-    // Clean business name:
-    // 1. Remove all special characters except spaces
-    // 2. Replace spaces with underscores
-    // 3. Convert to uppercase
+    // Clean business name first for consistent counting
     const cleanBusinessName = businessName
       .replace(/[^a-zA-Z0-9\s]/g, '') // Remove special characters, keep spaces
       .replace(/\s+/g, '_') // Replace spaces with underscores
       .toUpperCase(); // Convert to uppercase
 
-    // Format: BUSINESSNAME_ORDERNUMBER (e.g., RAM_001, RAM_002, etc.)
+    // Count orders for THIS business name (not buyer contact)
+    const businessOrderCount = await WholesaleOrder.countDocuments({
+      businessName: businessName,  // ✅ CHANGED: Use businessName instead of buyerContact
+      organizationId,
+    }).session(session);
+
+    const orderNumber = businessOrderCount + 1;
+
+    // Format: BUSINESSNAME_ORDERNUMBER (e.g., SNELLY_20, RAM_001, etc.)
     const challanNumber = `${cleanBusinessName}_${String(orderNumber).padStart(2, '0')}`;
 
     logger.debug('Challan number generated', {
       businessName,
       cleanBusinessName,
-      buyerContact,
-      buyerOrderCount,
+      businessOrderCount,
       orderNumber,
       challanNumber,
     });
@@ -1718,7 +1714,7 @@ const createOrderWithReservedBorrow = async (req, res) => {
     }
 
     // Generate challan number
-    const challanNumber = await generateChallanNumber(businessName || buyerName, buyerContact, organizationId, session);
+    const challanNumber = await generateChallanNumber(businessName || buyerName, organizationId, session);
     const amountDue = totalAmount - (amountPaid || 0);
     const paymentStatus = amountDue === 0 ? 'Paid' : amountPaid > 0 ? 'Partial' : 'Pending';
 

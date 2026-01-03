@@ -105,6 +105,27 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
               </li>
             ))}
 
+            {isAdmin() && (
+              <li>
+                <NavLink
+                  to="/monthly-bills"
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+                      isActive
+                        ? 'bg-purple-500 text-white shadow-md'
+                        : 'text-gray-700 hover:bg-purple-50'
+                    }`
+                  }
+                  onClick={() => setSidebarOpen(false)}
+                >
+                  <FiFileText size={20} />
+                  <span className="font-medium text-sm">Bills</span>
+                  <span className="ml-auto px-2 py-0.5 bg-purple-100 text-purple-600 text-xs rounded-full font-semibold">
+                    Admin
+                  </span>
+                </NavLink>
+              </li>
+            )}
             {/* Admin Only - User Management */}
             {isAdmin() && (
               <li>
@@ -121,27 +142,6 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
                 >
                   <FiSettings size={20} />
                   <span className="font-medium text-sm">User Management</span>
-                  <span className="ml-auto px-2 py-0.5 bg-purple-100 text-purple-600 text-xs rounded-full font-semibold">
-                    Admin
-                  </span>
-                </NavLink>
-              </li>
-            )}
-            {isAdmin() && (
-              <li>
-                <NavLink
-                  to="/challan-settings"
-                  className={({ isActive }) =>
-                    `flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
-                      isActive
-                        ? 'bg-purple-500 text-white shadow-md'
-                        : 'text-gray-700 hover:bg-purple-50'
-                    }`
-                  }
-                  onClick={() => setSidebarOpen(false)}
-                >
-                  <FiSettings size={20} />
-                  <span className="font-medium text-sm">Challan Settings</span>
                   <span className="ml-auto px-2 py-0.5 bg-purple-100 text-purple-600 text-xs rounded-full font-semibold">
                     Admin
                   </span>

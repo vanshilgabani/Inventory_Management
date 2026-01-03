@@ -1165,6 +1165,298 @@ const reorderColors = async (req, res) => {
   }
 };
 
+// ✅✅ COMPANY MANAGEMENT FUNCTIONS
+
+// Get all companies
+const getCompanies = async (req, res) => {
+  try {
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    if (!settings) {
+      return res.json({ companies: [] });
+    }
+    
+    const companies = settings.editPermissions?.companies || [];
+    res.json({ companies });
+  } catch (error) {
+    console.error('Get companies error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Add company
+const addCompany = async (req, res) => {
+  try {
+    const { name, legalName, gstin, pan, address, contact, bank, logo, isDefault } = req.body;
+    
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ message: 'Company name is required' });
+    }
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Initialize editPermissions if needed
+    if (!settings.editPermissions) {
+      settings.editPermissions = {
+        enabled: false,
+        allowedUsers: [],
+        maxChanges: 2,
+        timeWindowMinutes: 3
+      };
+    }
+
+    if (!settings.editPermissions.companies) {
+      settings.editPermissions.companies = [];
+    }
+
+    // Check for duplicate company name
+    const isDuplicate = settings.editPermissions.companies.some(
+      (comp) => comp.name.toLowerCase() === name.trim().toLowerCase()
+    );
+
+    if (isDuplicate) {
+      return res.status(400).json({ message: 'Company name already exists' });
+    }
+
+    // If this is set as default, unset all other defaults
+    if (isDefault) {
+      settings.editPermissions.companies.forEach((comp) => {
+        comp.isDefault = false;
+      });
+    }
+
+    // Generate unique company ID
+    const companyId = `company${settings.editPermissions.companies.length + 1}`;
+
+    // Add new company
+    const newCompany = {
+      id: companyId,
+      name: name.trim(),
+      legalName: legalName?.trim() || name.trim(),
+      gstin: gstin?.trim() || '',
+      pan: pan?.trim() || '',
+      address: address || {
+        line1: '',
+        line2: '',
+        city: '',
+        state: 'Gujarat',
+        pincode: '',
+        stateCode: '24'
+      },
+      contact: contact || {
+        phone: '',
+        email: ''
+      },
+      bank: bank || {
+        name: '',
+        accountNo: '',
+        ifsc: '',
+        branch: ''
+      },
+      logo: logo || '',
+      isDefault: isDefault || false,
+      isActive: true
+    };
+
+    settings.editPermissions.companies.push(newCompany);
+
+    // Also initialize billingSettings if it doesn't exist
+    if (!settings.editPermissions.billingSettings) {
+      settings.editPermissions.billingSettings = {
+        autoGenerateBills: true,
+        billGenerationDay: 31,
+        paymentTermDays: 30,
+        defaultCompanyId: companyId,
+        hsnCode: '6203',
+        gstRate: settings.gstPercentage || 5,
+        billNumberPrefix: 'VR'
+      };
+    }
+
+    await settings.save();
+
+    res.status(201).json({
+      message: 'Company added successfully',
+      company: newCompany,
+      companies: settings.editPermissions.companies
+    });
+  } catch (error) {
+    console.error('Add company error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Update company
+const updateCompany = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    const { name, legalName, gstin, pan, address, contact, bank, logo, isDefault, isActive } = req.body;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    if (!settings || !settings.editPermissions?.companies) {
+      return res.status(404).json({ message: 'Companies not found' });
+    }
+
+    const company = settings.editPermissions.companies.find(c => c.id === companyId);
+    if (!company) {
+      return res.status(404).json({ message: 'Company not found' });
+    }
+
+    // Check for duplicate name (excluding current company)
+    if (name && name.trim() !== '') {
+      const isDuplicate = settings.editPermissions.companies.some(
+        (comp) =>
+          comp.id !== companyId &&
+          comp.name.toLowerCase() === name.trim().toLowerCase()
+      );
+
+      if (isDuplicate) {
+        return res.status(400).json({ message: 'Company name already exists' });
+      }
+
+      company.name = name.trim();
+    }
+
+    // Update fields
+    if (legalName !== undefined) company.legalName = legalName.trim();
+    if (gstin !== undefined) company.gstin = gstin.trim();
+    if (pan !== undefined) company.pan = pan.trim();
+    if (address !== undefined) company.address = address;
+    if (contact !== undefined) company.contact = contact;
+    if (bank !== undefined) company.bank = bank;
+    if (logo !== undefined) company.logo = logo;
+    if (isActive !== undefined) company.isActive = isActive;
+
+    // If setting as default, unset all other defaults
+    if (isDefault === true) {
+      settings.editPermissions.companies.forEach((comp) => {
+        comp.isDefault = false;
+      });
+      company.isDefault = true;
+    } else if (isDefault === false) {
+      company.isDefault = false;
+    }
+
+    await settings.save();
+
+    res.json({
+      message: 'Company updated successfully',
+      company,
+      companies: settings.editPermissions.companies
+    });
+  } catch (error) {
+    console.error('Update company error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Delete company
+const deleteCompany = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    if (!settings || !settings.editPermissions?.companies) {
+      return res.status(404).json({ message: 'Companies not found' });
+    }
+
+    const companyIndex = settings.editPermissions.companies.findIndex(c => c.id === companyId);
+    if (companyIndex === -1) {
+      return res.status(404).json({ message: 'Company not found' });
+    }
+
+    // Don't allow deleting if it's the only company
+    if (settings.editPermissions.companies.length === 1) {
+      return res.status(400).json({ message: 'Cannot delete the only company' });
+    }
+
+    // Remove the company
+    settings.editPermissions.companies.splice(companyIndex, 1);
+    await settings.save();
+
+    res.json({
+      message: 'Company deleted successfully',
+      companies: settings.editPermissions.companies
+    });
+  } catch (error) {
+    console.error('Delete company error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Toggle company active status
+const toggleCompanyActive = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    const { isActive } = req.body;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    if (!settings || !settings.editPermissions?.companies) {
+      return res.status(404).json({ message: 'Companies not found' });
+    }
+
+    const company = settings.editPermissions.companies.find(c => c.id === companyId);
+    if (!company) {
+      return res.status(404).json({ message: 'Company not found' });
+    }
+
+    company.isActive = isActive;
+    await settings.save();
+
+    res.json({
+      message: `Company ${isActive ? 'activated' : 'deactivated'} successfully`,
+      company,
+      companies: settings.editPermissions.companies
+    });
+  } catch (error) {
+    console.error('Toggle company active error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Set default company
+const setDefaultCompany = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    if (!settings || !settings.editPermissions?.companies) {
+      return res.status(404).json({ message: 'Companies not found' });
+    }
+
+    const company = settings.editPermissions.companies.find(c => c.id === companyId);
+    if (!company) {
+      return res.status(404).json({ message: 'Company not found' });
+    }
+
+    // Unset all defaults
+    settings.editPermissions.companies.forEach((comp) => {
+      comp.isDefault = false;
+    });
+
+    // Set this company as default
+    company.isDefault = true;
+
+    // Also update billingSettings defaultCompanyId
+    if (settings.editPermissions.billingSettings) {
+      settings.editPermissions.billingSettings.defaultCompanyId = companyId;
+    }
+
+    await settings.save();
+
+    res.json({
+      message: 'Default company set successfully',
+      company,
+      companies: settings.editPermissions.companies
+    });
+  } catch (error) {
+    console.error('Set default company error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   getSettings,
   updateSettings,
@@ -1190,5 +1482,11 @@ module.exports = {
   addColorToPalette,
   updateColorInPalette,
   deleteColorFromPalette,
-  reorderColors
+  reorderColors,
+  getCompanies,
+  addCompany,
+  updateCompany,
+  deleteCompany,
+  toggleCompanyActive,
+  setDefaultCompany
 };
