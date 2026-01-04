@@ -1430,26 +1430,25 @@ exports.importFromCSV = async (req, res) => {
         // Parse quantity
         const quantity = parseInt(quantityStr) || 1;
         
-        // Use Invoice Date instead of Ordered On
+        // ✅ UPDATED: Use Invoice Date for both pending and dispatched
         let saleDate;
         if (importType === 'dispatched') {
           // For dispatched orders, use Invoice Date
-          const invoiceDateStr = row['Invoice Date (mm/dd/yy)'];
+          const invoiceDateStr = row['Invoice Date (mmddyy)'];
           saleDate = convertInvoiceDateToISO(invoiceDateStr);
         } else {
-          // For pending orders, use Ordered On date
-          const orderDateStr = row['Ordered On'];
-          const orderDate = orderDateStr ? new Date(orderDateStr) : new Date();
-          if (isNaN(orderDate.getTime())) {
+          // ✅ NEW: For pending orders, also use Invoice Date
+          const invoiceDateStr = row['Invoice Date (mmddyy)'];
+          if (!invoiceDateStr) {
             results.failed.push({
               row: rowNumber,
               orderId,
               sku,
-              reason: `Invalid date format: ${orderDateStr}`
+              reason: 'Missing Invoice Date',
             });
             continue;
           }
-          saleDate = orderDate.toISOString().split('T')[0];
+          saleDate = convertInvoiceDateToISO(invoiceDateStr);
         }
 
         // Parse SKU

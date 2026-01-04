@@ -13,13 +13,13 @@ router.get('/stats', protect, salesController.getSalesStats);
 router.get('/:id', protect, salesController.getSaleById);
 
 // Create new sale
-router.post('/', protect, isAdmin, salesController.createSale);
+router.post('/', protect, salesController.createSale);
 
 // Create sale with main stock (when reserved insufficient)
-router.post('/with-main-stock', protect, isAdmin, salesController.createSaleWithMainStock);
+router.post('/with-main-stock', protect, salesController.createSaleWithMainStock);
 
 // ✅ NEW: Import from CSV
-router.post('/import-csv', protect, isAdmin, salesController.importFromCSV);
+router.post('/import-csv', protect, salesController.importFromCSV);
 
 // Update sale
 router.put('/:id', protect, salesController.updateSale);
@@ -28,7 +28,7 @@ router.put('/:id', protect, salesController.updateSale);
 router.delete('/:id', protect, isAdmin, salesController.deleteSale);
 
 // Bulk mark as delivered
-router.post('/bulk-delivered', protect, isAdmin, salesController.bulkMarkDelivered);
+router.post('/bulk-delivered', protect, salesController.bulkMarkDelivered);
 
 // Export orders to CSV
 router.get('/export/csv', protect, salesController.exportOrders);
