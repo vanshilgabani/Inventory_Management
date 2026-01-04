@@ -1041,26 +1041,29 @@ const addColorToPalette = async (req, res) => {
   }
 };
 
-// ✅ NEW: Update Color in Palette
+// ✅ UPDATED: Update Color in Palette + Update Products
 // @route PUT /api/settings/color-palette/:colorId
 // @access Private (Admin only)
 const updateColorInPalette = async (req, res) => {
   try {
     const { colorId } = req.params;
     const { colorName, colorCode, availableForDesigns, isActive } = req.body;
-
+    
     const settings = await Settings.findOne({ organizationId: req.organizationId });
     
     if (!settings) {
       return res.status(404).json({ message: 'Settings not found' });
     }
-
+    
     const color = settings.colorPalette.id(colorId);
     
     if (!color) {
       return res.status(404).json({ message: 'Color not found' });
     }
-
+    
+    // Store the old color name before updating
+    const oldColorName = color.colorName;
+    
     // Check for duplicate name (excluding current color)
     if (colorName && colorName.trim() !== '') {
       const isDuplicate = settings.colorPalette.some(
@@ -1068,24 +1071,63 @@ const updateColorInPalette = async (req, res) => {
           c._id.toString() !== colorId &&
           c.colorName.toLowerCase() === colorName.trim().toLowerCase()
       );
-
+      
       if (isDuplicate) {
         return res.status(400).json({ message: 'Color name already exists' });
       }
-
+      
       color.colorName = colorName.trim();
     }
-
+    
     if (colorCode) color.colorCode = colorCode.trim();
     if (availableForDesigns !== undefined) color.availableForDesigns = availableForDesigns;
     if (isActive !== undefined) color.isActive = isActive;
-
+    
     await settings.save();
-
+    
+    // ✅ NEW: If color name changed, update all products with old color name
+    if (colorName && colorName.trim() !== '' && oldColorName !== colorName.trim()) {
+      const Product = require('../models/Product');
+      
+      // Find all products with the old color name
+      const productsToUpdate = await Product.find({
+        organizationId: req.organizationId,
+        'colors.color': oldColorName
+      });
+      
+      let updatedCount = 0;
+      
+      // Update each product
+      for (const product of productsToUpdate) {
+        let modified = false;
+        
+        product.colors.forEach(colorVariant => {
+          if (colorVariant.color === oldColorName) {
+            colorVariant.color = colorName.trim();
+            modified = true;
+          }
+        });
+        
+        if (modified) {
+          await product.save();
+          updatedCount++;
+        }
+      }
+      
+      console.log(`✅ Updated color name in ${updatedCount} products from "${oldColorName}" to "${colorName.trim()}"`);
+      
+      return res.json({
+        message: `Color updated successfully. ${updatedCount} product(s) updated.`,
+        colorPalette: settings.colorPalette,
+        productsUpdated: updatedCount
+      });
+    }
+    
     res.json({
       message: 'Color updated successfully',
       colorPalette: settings.colorPalette,
     });
+    
   } catch (error) {
     console.error('Update color error:', error);
     res.status(500).json({ message: error.message });

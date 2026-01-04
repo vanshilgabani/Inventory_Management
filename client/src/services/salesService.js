@@ -66,6 +66,19 @@ export const salesService = {
     return response.data;
   },
   
+  // Import orders from CSV
+  async importFromCSV(csvData, accountName, importType = 'pending', filterDate = null) {
+    const payload = {
+      csvData,
+      accountName: accountName,  // ✅ Change 'accountName' to 'account' to match backend
+      importType,
+      filterDate
+    };
+    
+    const response = await api.post('/sales/import-csv', payload);
+    return response.data;
+  },
+
   // Export orders to Excel
   async exportOrders(accountName, status, startDate, endDate) {
     const params = {};

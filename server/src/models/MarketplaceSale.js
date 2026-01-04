@@ -1,16 +1,16 @@
 const mongoose = require('mongoose');
 
-// ✅ Status History Schema - UPDATED
+// Status History Schema - UPDATED
 const statusHistorySchema = new mongoose.Schema({
   previousStatus: {
     type: String,
-    enum: ['dispatched', 'delivered', 'returned', 'wrong_return', 'cancelled', null], // ✅ Removed 'upcoming', added null
-    required: false, // ✅ Changed to false
+    enum: ['dispatched', 'delivered', 'returned', 'wrongreturn', 'cancelled', null], // Keep delivered here for history
+    required: false,
     default: null
   },
   newStatus: {
     type: String,
-    enum: ['dispatched', 'delivered', 'returned', 'wrong_return', 'cancelled'], // ✅ Removed 'upcoming'
+    enum: ['dispatched', 'returned', 'wrongreturn', 'cancelled'], // ✅ REMOVED 'delivered'
     required: true
   },
   changedBy: {
@@ -20,8 +20,14 @@ const statusHistorySchema = new mongoose.Schema({
       required: false,
       default: null
     },
-    userName: { type: String, required: true },
-    userRole: { type: String, required: true }
+    userName: {
+      type: String,
+      required: true
+    },
+    userRole: {
+      type: String,
+      required: true
+    }
   },
   changedAt: {
     type: Date,
@@ -39,7 +45,6 @@ const marketplaceSaleSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  
   // Marketplace Order ID (Flipkart/Amazon/Meesho)
   marketplaceOrderId: {
     type: String,
@@ -48,7 +53,6 @@ const marketplaceSaleSchema = new mongoose.Schema({
     sparse: true,
     index: true
   },
-  
   design: {
     type: String,
     required: true
@@ -71,42 +75,35 @@ const marketplaceSaleSchema = new mongoose.Schema({
     required: true,
     default: Date.now
   },
-  
-  // ✅ UPDATED: Removed 'upcoming', default is 'dispatched'
+  // ✅ UPDATED - Removed 'delivered', default is 'dispatched'
   status: {
     type: String,
-    enum: ['dispatched', 'delivered', 'returned', 'wrong_return', 'cancelled'],
-    default: 'dispatched' // ✅ Changed from 'upcoming' to 'dispatched'
+    enum: ['dispatched', 'returned', 'wrongreturn', 'cancelled'], // ✅ REMOVED 'delivered'
+    default: 'dispatched'
   },
-  
-  // ✅ NEW FIELD - Tracks if stock was restored and how much
+  // NEW FIELD - Tracks if stock was restored and how much
   stockRestoredAmount: {
     type: Number,
-    default: 0,
+    default: 0
   },
-  
   // Status change history
   statusHistory: {
     type: [statusHistorySchema],
     default: []
   },
-  
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: false
   },
-  
   notes: {
     type: String,
     default: ''
   },
-  
   productId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product'
   },
-  
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -116,7 +113,7 @@ const marketplaceSaleSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// ✅ Indexes
+// Indexes
 marketplaceSaleSchema.index({ accountName: 1, saleDate: -1 });
 marketplaceSaleSchema.index({ organizationId: 1, accountName: 1 });
 marketplaceSaleSchema.index({ organizationId: 1, accountName: 1, marketplaceOrderId: 1 });

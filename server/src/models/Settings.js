@@ -17,7 +17,7 @@ const stockThresholdsSchema = new mongoose.Schema({
 const colorPaletteSchema = new mongoose.Schema({
   colorName: { type: String, required: true, trim: true },
   colorCode: { type: String, required: true, trim: true },
-  availableForDesigns: { type: String, trim: true },
+  availableForDesigns: [{ type: String, trim: true }],
   isActive: { type: Boolean, default: true },
   displayOrder: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
