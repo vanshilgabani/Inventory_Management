@@ -1434,11 +1434,11 @@ exports.importFromCSV = async (req, res) => {
         let saleDate;
         if (importType === 'dispatched') {
           // For dispatched orders, use Invoice Date
-          const invoiceDateStr = row['Invoice Date (mmddyy)'];
+          const invoiceDateStr = row['Invoice Date (mm/dd/yy)'];
           saleDate = convertInvoiceDateToISO(invoiceDateStr);
         } else {
           // ✅ NEW: For pending orders, also use Invoice Date
-          const invoiceDateStr = row['Invoice Date (mmddyy)'];
+          const invoiceDateStr = row['Invoice Date (mm/dd/yy)'];
           if (!invoiceDateStr) {
             results.failed.push({
               row: rowNumber,
