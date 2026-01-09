@@ -10,7 +10,11 @@ const statusHistorySchema = new mongoose.Schema({
   },
   newStatus: {
     type: String,
+<<<<<<< HEAD
     enum: ['dispatched','delivered', 'returned', 'wrongreturn', 'cancelled'], // ✅ REMOVED 'delivered'
+=======
+    enum: ['dispatched', 'delivered', 'returned', 'wrongreturn', 'cancelled'], // ✅ REMOVED 'delivered'
+>>>>>>> 418fdf4fe941aa232f4f7303b503eb19180ca79b
     required: true
   },
   changedBy: {
