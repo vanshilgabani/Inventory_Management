@@ -8,40 +8,27 @@ const {
   deleteSale,
   getSalesByDateRange,
   getSalesByCustomer,
-  getAllCustomers,        // ✅ ADD THIS
+  getAllCustomers,
   getCustomerByMobile,
-  createSaleWithReservedBorrow,    // ✅ ADD THIS
+  createSaleWithReservedBorrow
 } = require('../controllers/directSalesController');
 const { protect } = require('../middleware/auth');
-const { canEditDelete } = require('../middleware/checkEditPermission');
+const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
 
-// All routes require authentication
-router.use(protect);
+// Create routes (no middleware needed)
+router.post('/', protect, createSale);
+router.post('/with-reserved-borrow', protect, createSaleWithReservedBorrow);
 
-// ✅ Customer routes - MUST come BEFORE /:id
-router.get('/customers', getAllCustomers);
-router.get('/customers/:mobile', getCustomerByMobile);
+// Read routes (no middleware needed)
+router.get('/', protect, getAllSales);
+router.get('/date-range', protect, getSalesByDateRange);
+router.get('/customer/:customerId', protect, getSalesByCustomer);
+router.get('/customers', protect, getAllCustomers);
+router.get('/customer-mobile/:mobile', protect, getCustomerByMobile);
+router.get('/:id', protect, getSaleById);
 
-// Get all direct sales
-router.get('/', getAllSales);
-
-// Get sales by date range
-router.get('/date-range', getSalesByDateRange);
-
-// Get sales by customer
-router.get('/customer/:customerId', getSalesByCustomer);
-
-// ✅ Parameterized route comes AFTER specific routes
-router.get('/:id', getSaleById);
-
-// Create new sale
-router.post('/', createSale);
-router.post('/with-reserved-borrow', createSaleWithReservedBorrow);
-
-// Update sale
-router.put('/:id', canEditDelete, updateSale);
-
-// Delete sale
-router.delete('/:id', canEditDelete, deleteSale);
+// ✅ UPDATE/DELETE routes - APPLY MIDDLEWARE
+router.put('/:id', protect, canEditDelete, updateSale);
+router.delete('/:id', protect, canEditDelete, deleteSale);
 
 module.exports = router;

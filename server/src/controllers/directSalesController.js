@@ -466,82 +466,93 @@ const updateSale = async (req, res) => {
   }
 };
 
-// Delete sale
 const deleteSale = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const { id } = req.params;
-    const organizationId = req.user.organizationId;
+    const { userId, organizationId, user, editSession } = req;
 
-    const sale = await DirectSale.findOne({ _id: id, organizationId }).session(session);
-
-    if (!sale) {
-      await session.abortTransaction();
-      return res.status(404).json({
-        code: 'SALE_NOT_FOUND',
-        message: 'Sale not found',
-      });
-    }
-
-    // Restore stock
-    for (const item of sale.items) {
-      const product = await Product.findOne({
-        design: item.design,
-        organizationId,
-      }).session(session);
-
-      if (product) {
-        const colorVariant = product.colors.find((c) => c.color === item.color);
-        if (colorVariant) {
-          const sizeIndex = colorVariant.sizes.findIndex((s) => s.size === item.size);
-          if (sizeIndex !== -1) {
-            colorVariant.sizes[sizeIndex].currentStock += item.quantity;
-            await product.save({ session });
-          }
-        }
-      }
-    }
-    // ✅ Update customer stats on delete
-    if (sale.customerId) {
-      const customer = await Customer.findById(sale.customerId).session(session);
-      if (customer) {
-        customer.totalPurchases = Math.max(0, (customer.totalPurchases || 0) - 1);
-        customer.totalSpent = Math.max(0, (customer.totalSpent || 0) - sale.totalAmount);
-        
-        // If no more purchases, clear lastPurchaseDate
-        if (customer.totalPurchases === 0) {
-          customer.lastPurchaseDate = null;
-        }
-        
-        await customer.save({ session });
-        logger.info('Customer stats updated after sale deletion', {
-          customerId: customer._id,
-          totalPurchases: customer.totalPurchases,
-          totalSpent: customer.totalSpent
-        });
-      }
-    }
-
-    await DirectSale.findByIdAndDelete(id).session(session);
-
-    await session.commitTransaction();
-    await decrementEditSession(req, 'edit', 'directSales', req.params.id);
-
-    logger.info('Direct sale deleted', { saleId: id });
-
-    res.json({ message: 'Sale deleted successfully' });
-  } catch (error) {
-    await session.abortTransaction();
-    logger.error('Sale deletion failed', { error: error.message, saleId: req.params.id });
-    res.status(500).json({
-      code: 'DELETE_FAILED',
-      message: 'Failed to delete sale',
-      error: error.message,
+    console.log('🗑️ Delete sale request:', {
+      saleId: id,
+      userId,
+      userRole: user?.role,
+      hasSession: !!editSession
     });
-  } finally {
-    session.endSession();
+
+    // Find the sale
+    const sale = await DirectSale.findOne({ _id: id, organizationId });
+    
+    if (!sale) {
+      return res.status(404).json({ message: 'Sale not found' });
+    }
+
+    // If sales user, update session
+    if (user.role === 'sales' && editSession) {
+      try {
+        // Save to undo buffer
+        editSession.undoBuffer.push({
+          actionType: 'delete',
+          entityType: 'DirectSale',
+          entityId: sale._id,
+          timestamp: new Date(),
+          originalData: sale.toObject()
+        });
+
+        // Decrement remaining changes
+        if (!editSession.isInfinite) {
+          editSession.remainingChanges -= 1;
+        }
+
+        // Log the change
+        editSession.changesLog.push({
+          action: 'delete',
+          entityType: 'DirectSale',
+          entityId: sale._id,
+          timestamp: new Date()
+        });
+
+        await editSession.save();
+        console.log('✅ Session updated - remaining:', editSession.remainingChanges);
+      } catch (sessionError) {
+        console.error('Session update error:', sessionError);
+        // Continue with delete even if session update fails
+      }
+    }
+
+    // Restore inventory stock
+    const product = await Product.findOne({
+      design: sale.design,
+      organizationId
+    });
+
+    if (product) {
+      const colorVariant = product.colors.find(c => c.color === sale.color);
+      if (colorVariant) {
+        const sizeStock = colorVariant.sizes.find(s => s.size === sale.size);
+        if (sizeStock) {
+          sizeStock.currentStock += sale.quantity;
+          await product.save();
+          console.log(`✅ Restored ${sale.quantity} units to inventory`);
+        }
+      }
+    }
+
+    // Delete the sale
+    await DirectSale.findByIdAndDelete(id);
+
+    console.log('✅ Sale deleted successfully');
+
+    res.json({
+      message: 'Sale deleted successfully',
+      undoAvailable: user.role === 'sales' && !!editSession,
+      remainingChanges: editSession?.remainingChanges
+    });
+
+  } catch (error) {
+    console.error('❌ Delete sale error:', error);
+    res.status(500).json({
+      message: 'Failed to delete sale',
+      error: error.message
+    });
   }
 };
 

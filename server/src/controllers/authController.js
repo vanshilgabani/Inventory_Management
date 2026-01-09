@@ -66,6 +66,7 @@ const registerUser = async (req, res) => {
 
     res.status(201).json({
       _id: user._id,
+      id: user._id,
       name: user.name,
       email: user.email,
       businessName: user.businessName,
@@ -111,6 +112,7 @@ const loginUser = async (req, res) => {
 
     res.json({
       _id: user._id,
+      id: user._id,
       name: user.name,
       email: user.email,
       businessName: user.businessName,
@@ -142,13 +144,24 @@ const getUserProfile = async (req, res) => {
 // @access Private (Admin only)
 const getAllUsers = async (req, res) => {
   try {
-    // ✅ Only show users from the same organization
+    console.log('🔍 Fetching users for organization:', req.organizationId);
+    
+    // ✅ Explicitly select all fields except password
     const users = await User.find({
       organizationId: req.organizationId,
-    }).select('-password').sort({ createdAt: -1 });
+    })
+    .select('_id name email role phone businessName isActive createdAt updatedAt organizationId createdBy')
+    .sort({ createdAt: -1 })
+    .lean(); // Convert to plain objects
     
-    res.json(users);
+    console.log('📋 Users found:', users.length);
+    if (users.length > 0) {
+      console.log('🔍 First user data:', JSON.stringify(users[0], null, 2));
+    }
+    
+    res.json({ users });
   } catch (error) {
+    console.error('❌ Get users error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -159,7 +172,6 @@ const getAllUsers = async (req, res) => {
 const updateUser = async (req, res) => {
   try {
     const { name, email, role, isActive, businessName, phone } = req.body;
-    
     const user = await User.findById(req.params.id);
     
     if (!user) {
@@ -169,6 +181,13 @@ const updateUser = async (req, res) => {
     // ✅ Security check - can only update users from same organization
     if (user.organizationId.toString() !== req.organizationId.toString()) {
       return res.status(403).json({ message: 'Not authorized to update this user' });
+    }
+
+    // ✅ NEW: Prevent self-deactivation
+    if (user._id.toString() === req.user._id.toString() && isActive === false) {
+      return res.status(400).json({ 
+        message: 'You cannot deactivate your own account' 
+      });
     }
 
     user.name = name || user.name;
@@ -182,6 +201,7 @@ const updateUser = async (req, res) => {
 
     res.json({
       _id: user._id,
+      id: user._id,
       name: user.name,
       email: user.email,
       role: user.role,

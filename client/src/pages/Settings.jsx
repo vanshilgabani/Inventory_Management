@@ -1,5 +1,6 @@
 // src/pages/Settings.jsx
 import { useState, useEffect } from 'react';
+import{ useSearchParams } from 'react-router-dom';
 import { settingsService } from '../services/settingsService';
 import { productPricingService } from '../services/productPricingService';
 import { inventoryService } from '../services/inventoryService';
@@ -19,6 +20,9 @@ import ColorPaletteManager from '../components/settings/ColorPaletteManager';
 import CompanyManagement from '../components/settings/CompanyManagement';
 
 const Settings = () => {
+  const [searchParams] = useSearchParams();
+  const defaultTab = searchParams.get('') || 'companies'; // ✅ Read from URL
+  const [activeTab, setActiveTab] = useState(defaultTab);
   const [settings, setSettings] = useState({
     companyName: '',
     address: '',
@@ -42,7 +46,6 @@ const Settings = () => {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState('company');
 
   // Marketplace state
   const [editingAccountId, setEditingAccountId] = useState(null);
@@ -316,9 +319,7 @@ const Settings = () => {
     { id: 'sizes-permissions', label: 'Sizes & Permissions', icon: '📏' },
     { id: 'colors', label: 'Color Palette', icon: '🎨' },
     { id: 'thresholds', label: 'Stock Alerts', icon: '🔔' },
-    { id: 'stock-lock', label: 'Stock Lock', icon: '🔒' },
     { id: 'accounts', label: 'Marketplace', icon: '🛒' },
-    { id: 'pricing', label: 'Pricing', icon: '💰' },
     { id: 'notifications', label: 'Notifications', icon: '📧' }
   ];
 
@@ -384,12 +385,7 @@ const Settings = () => {
               handleUpdateSettings={handleUpdateSettings}
               saving={saving}
             />
-            <PermissionsSettings
-              settings={settings}
-              handleNestedChange={handleNestedChange}
-              handleUpdateSettings={handleUpdateSettings}
-              saving={saving}
-            />
+            
           </div>
         )}
 
@@ -400,15 +396,6 @@ const Settings = () => {
             settings={settings}
             handleInputChange={handleInputChange}
             handleNestedChange={handleNestedChange}
-            handleUpdateSettings={handleUpdateSettings}
-            saving={saving}
-          />
-        )}
-
-        {activeTab === 'stock-lock' && (
-          <StockLockSettings
-            settings={settings}
-            handleInputChange={handleInputChange}
             handleUpdateSettings={handleUpdateSettings}
             saving={saving}
           />
@@ -431,23 +418,6 @@ const Settings = () => {
             newAccountIsDefault={newAccountIsDefault}
             setNewAccountIsDefault={setNewAccountIsDefault}
             handleAddMarketplaceAccount={handleAddMarketplaceAccount}
-          />
-        )}
-
-        {activeTab === 'pricing' && (
-          <ProductPricing
-            pricings={pricings}
-            products={products}
-            settings={settings}
-            showPricingModal={showPricingModal}
-            setShowPricingModal={setShowPricingModal}
-            editingPricing={editingPricing}
-            pricingFormData={pricingFormData}
-            handlePricingInputChange={handlePricingInputChange}
-            handlePricingSubmit={handlePricingSubmit}
-            handleEditPricing={handleEditPricing}
-            handleDeletePricing={handleDeletePricing}
-            resetPricingForm={resetPricingForm}
           />
         )}
 

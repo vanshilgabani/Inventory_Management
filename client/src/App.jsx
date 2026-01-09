@@ -19,14 +19,18 @@ import UserManagement from './pages/UserManagement';
 import Settings from './pages/Settings';
 import MonthlyBills from './pages/MonthlyBills';
 import Notifications from './pages/Notifications';
+import ActivityAuditPage from './pages/ActivityAuditPage';
+import GlobalNotificationBanner from './components/GlobalNotificationBanner';
+import AdminRequestNotificationWidget from './components/widgets/AdminRequestNotificationWidget';
+import ActiveSessionsMonitorWidget from './components/widgets/ActiveSessionsMonitorWidget';
+import MyPendingRequests from './pages/MyPendingRequests';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
   const { user, loading } = useAuth();
   
-  console.log('🔒 PROTECTED ROUTE DEBUG:', { user: !!user, loading }); // Keep this for now
+  console.log('🔒 PROTECTED ROUTE DEBUG:', { user: !!user, loading });
   
-  // ✅ FIX: Shorter timeout, direct user check
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-gray-100 min-h-screen">
@@ -63,60 +67,83 @@ const AdminRoute = ({ children }) => {
   return children;
 };
 
+// ✅ NEW: Separate component for routes that uses useAuth INSIDE AuthProvider
+const AppRoutes = () => {
+  const { user } = useAuth();
+
+  return (
+    <>
+      <Toaster position="top-right" />
+      <GlobalNotificationBanner />
+      <Routes>
+        {/* Public Routes */}
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+
+        {/* Protected Routes - WRAPPED with Layout */}
+        <Route 
+          path="/" 
+          element={
+            <ProtectedRoute>
+              <Layout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="inventory" element={<Inventory />} />
+          <Route path="reserved-inventory" element={<ReservedInventory />} />
+          <Route path="transfer-history" element={<TransferHistory />} />
+          <Route path="factory-receiving" element={<FactoryReceiving />} />
+          <Route path="wholesale" element={<Wholesale />} />
+          <Route path="direct-sales" element={<DirectSales />} />
+          <Route path="marketplace-sales" element={<Sales />} />
+          <Route path="wholesale-buyers" element={<WholesaleBuyers />} />
+          <Route path="customers" element={<Customers />} />
+          <Route path="analytics" element={<Analytics />} />
+          <Route path="notifications" element={<Notifications />} />
+          <Route path="/activity-audit" element={<ActivityAuditPage />} />
+          <Route path="my-requests" element={<MyPendingRequests />} />
+          
+          {/* Admin Routes */}
+          <Route path="monthly-bills" element={
+            <AdminRoute>
+              <MonthlyBills />
+            </AdminRoute>
+          } />
+          <Route path="users" element={
+            <AdminRoute>
+              <UserManagement />
+            </AdminRoute>
+          } />
+          <Route path="settings" element={
+            <AdminRoute>
+              <Settings />
+            </AdminRoute>
+          } />
+        </Route>
+
+        {/* Catch all */}
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+
+      {/* ✅ Admin Widgets - Now inside AuthProvider */}
+      {user?.role === 'admin' && (
+        <>
+          <AdminRequestNotificationWidget />
+          <ActiveSessionsMonitorWidget />
+        </>
+      )}
+    </>
+  );
+};
+
+// ✅ Main App Component
 function App() {
   return (
     <AuthProvider>
       <Router>
-        <Toaster position="top-right" />
-        <Routes>
-          {/* Public Routes */}
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} /> {/* Fixed case */}
-
-          {/* Protected Routes - WRAPPED with Layout */}
-          <Route 
-            path="/" 
-            element={
-              <ProtectedRoute>
-                <Layout />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<Navigate to="/dashboard" replace />} />
-            <Route path="dashboard" element={<Dashboard />} />
-            <Route path="inventory" element={<Inventory />} />
-            <Route path="reserved-inventory" element={<ReservedInventory />} />
-            <Route path="transfer-history" element={<TransferHistory />} />
-            <Route path="factory-receiving" element={<FactoryReceiving />} />
-            <Route path="wholesale" element={<Wholesale />} />
-            <Route path="direct-sales" element={<DirectSales />} />
-            <Route path="marketplace-sales" element={<Sales />} />
-            <Route path="wholesale-buyers" element={<WholesaleBuyers />} />
-            <Route path="customers" element={<Customers />} />
-            <Route path="analytics" element={<Analytics />} />
-            <Route path="notifications" element={<Notifications />} />
-            
-            {/* Admin Routes */}
-            <Route path="monthly-bills" element={
-              <AdminRoute>
-                <MonthlyBills />
-              </AdminRoute>
-            } />
-            <Route path="users" element={
-              <AdminRoute>
-                <UserManagement />
-              </AdminRoute>
-            } />
-            <Route path="settings" element={
-              <AdminRoute>
-                <Settings />
-              </AdminRoute>
-            } />
-          </Route>
-
-          {/* Catch all */}
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
+        <AppRoutes />
       </Router>
     </AuthProvider>
   );

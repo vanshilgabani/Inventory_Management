@@ -1,36 +1,34 @@
 const express = require('express');
 const router = express.Router();
-const salesController = require('../controllers/salesController');
-const {protect} = require('../middleware/auth');
-const {isAdmin} = require('../middleware/roleCheck');
+const {
+  createSale,
+  createSaleWithMainStock,
+  getAllSales,
+  getSalesStats,
+  getSaleById,
+  updateSale,
+  deleteSale,
+  bulkMarkDelivered,
+  exportOrders,
+  importFromCSV
+} = require('../controllers/salesController');
+const { protect } = require('../middleware/auth');
+const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
 
-// Get all sales
-router.get('/', protect, salesController.getAllSales);
-// Get sales statistics
-router.get('/stats', protect, salesController.getSalesStats);
+// Create routes (no middleware needed)
+router.post('/', protect, createSale);
+router.post('/with-main-stock', protect, createSaleWithMainStock);
+router.post('/import-csv', protect, importFromCSV);
 
-// Get single sale by ID
-router.get('/:id', protect, salesController.getSaleById);
+// Read routes (no middleware needed)
+router.get('/', protect, getAllSales);
+router.get('/stats', protect, getSalesStats);
+router.get('/export', protect, exportOrders);
+router.get('/:id', protect, getSaleById);
 
-// Create new sale
-router.post('/', protect, salesController.createSale);
-
-// Create sale with main stock (when reserved insufficient)
-router.post('/with-main-stock', protect, salesController.createSaleWithMainStock);
-
-// ✅ NEW: Import from CSV
-router.post('/import-csv', protect, salesController.importFromCSV);
-
-// Update sale
-router.put('/:id', protect, salesController.updateSale);
-
-// Delete sale
-router.delete('/:id', protect, isAdmin, salesController.deleteSale);
-
-// Bulk mark as delivered
-router.post('/bulk-delivered', protect, salesController.bulkMarkDelivered);
-
-// Export orders to CSV
-router.get('/export/csv', protect, salesController.exportOrders);
+// ✅ UPDATE/DELETE routes - APPLY MIDDLEWARE
+router.put('/:id', protect, updateSale);
+router.delete('/:id', protect, canEditDelete, deleteSale);
+router.post('/bulk-delivered', protect, canEditDelete, bulkMarkDelivered);
 
 module.exports = router;

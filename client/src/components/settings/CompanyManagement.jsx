@@ -414,15 +414,7 @@ const CompanyManagement = () => {
                     value={formData.address.line1}
                     onChange={(e) => handleNestedChange('address', 'line1', e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                    placeholder="Address Line 1"
-                  />
-                  
-                  <input
-                    type="text"
-                    value={formData.address.line2}
-                    onChange={(e) => handleNestedChange('address', 'line2', e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                    placeholder="Address Line 2"
+                    placeholder="Address"
                   />
                   
                   <div className="grid grid-cols-2 gap-3">

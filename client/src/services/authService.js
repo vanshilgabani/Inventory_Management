@@ -3,13 +3,11 @@ import api from './api';
 export const authService = {
   async login(email, password) {
     const response = await api.post('/auth/login', { email, password });
-    
     if (response.data.token) {
       localStorage.setItem('token', response.data.token);
-      
-      // Store the user object correctly
       localStorage.setItem('user', JSON.stringify({
-        _id: response.data._id,
+        _id: response.data.id,
+        id: response.data.id,
         name: response.data.name,
         email: response.data.email,
         role: response.data.role,
@@ -17,20 +15,15 @@ export const authService = {
         phone: response.data.phone,
         organizationId: response.data.organizationId,
       }));
-      
       console.log('✅ Token stored:', response.data.token);
     }
-    
     return response.data;
   },
 
   async register(userData) {
     const response = await api.post('/auth/register', userData);
-    
     if (response.data.token) {
       localStorage.setItem('token', response.data.token);
-      
-      // Store the user object correctly
       localStorage.setItem('user', JSON.stringify({
         _id: response.data._id,
         name: response.data.name,
@@ -40,10 +33,8 @@ export const authService = {
         phone: response.data.phone,
         organizationId: response.data.organizationId,
       }));
-      
       console.log('✅ User registered and token stored');
     }
-    
     return response.data;
   },
 
@@ -67,5 +58,11 @@ export const authService = {
 
   getToken() {
     return localStorage.getItem('token');
+  },
+
+  // ✅ NEW: Fetch all users (for Activity Audit page)
+  async getAllUsers() {
+    const response = await api.get('/auth/users');
+    return response.data;
   }
 };

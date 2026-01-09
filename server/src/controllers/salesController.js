@@ -1,6 +1,7 @@
 const MarketplaceSale = require('../models/MarketplaceSale');
 const Product = require('../models/Product');
 const Settings = require('../models/Settings');
+const ActionLog = require('../models/ActionLog');
 const Transfer = require('../models/Transfer');
 const logger = require('../utils/logger');
 const mongoose = require('mongoose');
@@ -64,8 +65,8 @@ const FLIPKART_COLOR_MAP = {
   'GREEN': 'Green',
   
   // Spelling corrections
-  'KHAKHI': 'Khakhi',
-  'KHAKI': 'Khakhi',
+  'KHAKHI': 'Khaki',
+  'KHAKI': 'Khaki',
   
   // Light Grey variations
   'L.GREY': 'Light Grey',
@@ -838,7 +839,7 @@ exports.updateSale = async (req, res) => {
 
               // ✅ Define status categories
               const stockRestoringStatuses = ['returned', 'cancelled'];
-              const stockDeductingStatuses = ['delivered', 'dispatched'];
+              const stockDeductingStatuses = ['dispatched'];
               const noStockChangeStatuses = ['wrong_return'];
 
               const oldStatusType = stockRestoringStatuses.includes(oldStatus) ? 'restoring' :
@@ -998,7 +999,7 @@ exports.updateSale = async (req, res) => {
 
               // ✅ Define status categories
               const stockRestoringStatuses = ['returned', 'cancelled'];
-              const stockDeductingStatuses = ['delivered', 'dispatched'];
+              const stockDeductingStatuses = ['dispatched'];
               const noStockChangeStatuses = ['wrong_return'];
 
               const oldStatusType = stockRestoringStatuses.includes(oldStatus) ? 'restoring' :
@@ -1128,6 +1129,7 @@ exports.updateSale = async (req, res) => {
 /**
  * Delete sale (Admin only)
  */
+
 exports.deleteSale = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();

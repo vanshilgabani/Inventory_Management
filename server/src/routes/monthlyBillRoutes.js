@@ -9,9 +9,17 @@ const {
   recordPayment,
   deleteBill,
   getBillsStats,
-  customizeBill
+  customizeBill,
+  getBuyerBills,
+  getBuyerCurrentMonthPending,
+  recordAdvancePayment,
+  deleteAdvancePayment,
+  recordPaymentForBill,
+  getBillPaymentHistory,
+  deletePaymentFromBill
 } = require('../controllers/monthlyBillController');
 const { protect } = require('../middleware/auth');
+const { isAdmin } = require('../middleware/roleCheck');
 
 // All routes require authentication
 router.use(protect);
@@ -37,6 +45,8 @@ router.get('/:id', getBillById);
 router.post('/generate', generateBill);
 
 router.put('/:id/customize', protect, customizeBill);
+router.get('/bills/:id/payment-history', getBillPaymentHistory);
+
 // @route   PUT /api/monthly-bills/:id/switch-company
 // @desc    Switch company for draft bill
 // @access  Private
@@ -47,10 +57,15 @@ router.put('/:id/switch-company', switchCompany);
 // @access  Private
 router.put('/:id/finalize', finalizeBill);
 
-// @route   POST /api/monthly-bills/:id/payment
-// @desc    Record payment against bill
-// @access  Private
-router.post('/:id/payment', recordPayment);
+// ✅ NEW: Buyer-specific bill routes
+router.get('/buyer/:id/bills', getBuyerBills);
+router.get('/buyer/:id/current-month', getBuyerCurrentMonthPending);
+router.post('/buyer/:id/advance-payment', recordAdvancePayment);
+router.delete('/:billId/payments/:paymentIndex', protect, isAdmin, deletePaymentFromBill);
+router.delete('/buyer/:id/advance-payment/:paymentId', isAdmin, deleteAdvancePayment);
+
+// ✅ NEW: Bill payment route (replaces old recordPayment)
+router.post('/:id/payment', recordPaymentForBill);
 
 // @route   DELETE /api/monthly-bills/:id
 // @desc    Delete draft bill

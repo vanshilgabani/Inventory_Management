@@ -120,10 +120,16 @@ const wholesaleOrderSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
-  // ✅ NEW: GST Fields
+  // ✅ GST Fields
   gstEnabled: {
     type: Boolean,
     default: true
+  },
+  gstPercentage: {  // ⭐ NEW FIELD - Store which % was used
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
   },
   gstAmount: {
     type: Number,
@@ -163,7 +169,6 @@ const wholesaleOrderSchema = new mongoose.Schema({
     enum: ['warehouse', 'factory_direct'],
     default: 'warehouse'
   },
-  
   paymentHistory: [paymentHistorySchema],
   statusHistory: [statusHistorySchema],
   deliveryDate: {
@@ -196,12 +201,10 @@ wholesaleOrderSchema.pre('save', async function(next) {
       const businessName = (this.businessName || this.buyerName || 'Order').replace(/\s+/g, '_');
       const buyer = await this.constructor.model('WholesaleBuyer').findOne({ mobile: this.buyerContact });
       let orderNumber = 1;
-      
       if (buyer) {
         const existingOrders = await this.constructor.find({ buyerId: buyer._id });
         orderNumber = existingOrders.length + 1;
       }
-      
       this.challanNumber = `${businessName}_${String(orderNumber).padStart(2, '0')}`;
     } catch (error) {
       console.error('Error generating challan number:', error);
@@ -215,11 +218,11 @@ wholesaleOrderSchema.pre('validate', function(next) {
   this.items.forEach(item => {
     item.subtotal = item.quantity * item.pricePerUnit;
   });
-  
+
   // Calculate subtotal amount
   const subtotal = this.items.reduce((sum, item) => sum + item.subtotal, 0);
   this.subtotalAmount = subtotal;
-  
+
   // Calculate discount
   let discountAmount = 0;
   if (this.discountType === 'percentage') {
@@ -227,16 +230,16 @@ wholesaleOrderSchema.pre('validate', function(next) {
   } else if (this.discountType === 'fixed') {
     discountAmount = this.discountValue;
   }
-  
+
   if (discountAmount > subtotal) {
     discountAmount = subtotal;
   }
-  
+
   this.discountAmount = discountAmount;
-  
+
   // ✅ Calculate subtotal after discount (before GST)
   const subtotalAfterDiscount = subtotal - discountAmount;
-  
+
   // ✅ Calculate GST if enabled
   if (this.gstEnabled && this.gstAmount > 0) {
     this.cgst = this.gstAmount / 2;
@@ -248,10 +251,10 @@ wholesaleOrderSchema.pre('validate', function(next) {
     this.sgst = 0;
     this.totalAmount = subtotalAfterDiscount;
   }
-  
+
   // Calculate amount due
   this.amountDue = this.totalAmount - (this.amountPaid || 0);
-  
+
   // Update payment status
   if (this.amountDue <= 0) {
     this.paymentStatus = 'Paid';
@@ -260,11 +263,10 @@ wholesaleOrderSchema.pre('validate', function(next) {
   } else {
     this.paymentStatus = 'Pending';
   }
-  
+
   next();
 });
 
-// ✅ FIXED: Compound unique index for challanNumber
 wholesaleOrderSchema.index({ challanNumber: 1, organizationId: 1 }, { unique: true, sparse: true });
 wholesaleOrderSchema.index({ organizationId: 1, orderDate: -1 });
 wholesaleOrderSchema.index({ buyerId: 1, orderDate: -1 });

@@ -454,41 +454,53 @@ const clearAllDrafts = () => {
     return result;
   };
 
-  const calculateTotal = () => {
-    const flattenedItems = [];
-    orderItems.forEach(item => {
-      const colorQuantities = getFinalQuantities(item);
-      colorQuantities.forEach(({ color, quantities }) => {
-        Object.keys(quantities).forEach(size => {
-          if (quantities[size] > 0) {
-            flattenedItems.push({
-              quantity: quantities[size],
-              pricePerUnit: item.pricePerUnit
-            });
-          }
-        });
+const calculateTotal = () => {
+  const flattenedItems = [];
+  orderItems.forEach((item) => {
+    if (!item.design) return; // Skip incomplete items
+    const colorQuantities = getFinalQuantities(item);
+    colorQuantities.forEach(({ color, quantities }) => {
+      Object.keys(quantities).forEach((size) => {
+        if (quantities[size] > 0) {
+          flattenedItems.push({
+            quantity: quantities[size],
+            pricePerUnit: item.pricePerUnit,
+          });
+        }
       });
     });
+  });
 
-    const subtotal = flattenedItems.reduce((sum, item) => 
-      sum + (item.quantity * item.pricePerUnit), 0
-    );
+  const subtotal = flattenedItems.reduce((sum, item) => 
+    sum + (item.quantity * item.pricePerUnit), 0
+  );
 
-    let discountAmount = 0;
-    if (formData.discountType === 'percentage') {
-      discountAmount = (subtotal * formData.discountValue) / 100;
-    } else if (formData.discountType === 'fixed') {
-      discountAmount = formData.discountValue;
-    }
+  // Calculate discount
+  let discountAmount = 0;
+  if (formData.discountType === 'percentage') {
+    discountAmount = (subtotal * formData.discountValue) / 100;
+  } else if (formData.discountType === 'fixed') {
+    discountAmount = formData.discountValue;
+  }
+  if (discountAmount > subtotal) discountAmount = subtotal;
 
-    if (discountAmount > subtotal) {
-      discountAmount = subtotal;
-    }
+  // ✅ FIXED: Calculate GST on taxable amount (after discount)
+  const taxableAmount = subtotal - discountAmount;
+  const gstAmount = gstEnabled ? (taxableAmount * (gstPercentage / 100)) : 0;
+  const cgst = gstAmount / 2;
+  const sgst = gstAmount / 2;
+  const total = taxableAmount + gstAmount;
 
-    const total = subtotal - discountAmount;
-
-    return { subtotal, discountAmount, total };
+  return { 
+    subtotal, 
+    discountAmount, 
+    taxableAmount,
+    gstAmount,
+    cgst,
+    sgst,
+    total 
   };
+};
 
   const getTotalPiecesInItem = (item) => {
     let total = 0;
@@ -1331,16 +1343,13 @@ const handleItemDesignChange = (index, value) => {
               <div>
                 <span className="text-gray-600 text-xs">Discount:</span>
                 <span className="ml-2 font-semibold text-red-600">-₹{calculateTotal().discountAmount.toLocaleString('en-IN')}</span>
-              </div>            
+              </div>        
               <div>
                 <span className="text-gray-600 text-xs">TOTAL:</span>
                 <span className="ml-2 font-bold text-indigo-600">
-                  ₹{(gstEnabled 
-                    ? calculateTotal().total * (1 + gstPercentage / 100) 
-                    : calculateTotal().total
-                  ).toLocaleString('en-IN')}
+                  ₹{calculateTotal().total.toLocaleString('en-IN')}
                 </span>                
-                <p className="text-gray-600 text-xs">GST : <span className='text-yellow-700'>₹{gstEnabled ? ((calculateTotal().total * gstPercentage) / 100).toFixed(0) : 0}</span></p>
+                <p className="text-gray-600 text-xs">GST : <span className='text-yellow-700'>₹{calculateTotal().gstAmount.toFixed(2)}</span></p>
               </div>
               <div>
                 <span className="text-gray-600 text-xs">Qty:</span>
@@ -1897,9 +1906,9 @@ const handleItemDesignChange = (index, value) => {
                 </label>
                 {gstEnabled && (
                   <div className="text-sm text-gray-600 bg-gray-50 p-3 rounded-md">
-                    <div>CGST ({gstPercentage / 2}%): ₹{((calculateTotal().total * gstPercentage) / 200).toFixed(2)}</div>
-                    <div>SGST ({gstPercentage / 2}%): ₹{((calculateTotal().total * gstPercentage) / 200).toFixed(2)}</div>
-                    <div className="font-semibold mt-1">Total GST: ₹{((calculateTotal().total * gstPercentage) / 100).toFixed(2)}</div>
+                    <div>CGST ({(gstPercentage / 2).toFixed(2)}%): ₹{calculateTotal().cgst.toFixed(2)}</div>
+                    <div>SGST ({(gstPercentage / 2).toFixed(2)}%): ₹{calculateTotal().sgst.toFixed(2)}</div>
+                    <div className="font-semibold mt-1">Total GST: ₹{calculateTotal().gstAmount.toFixed(2)}</div>
                   </div>
                 )}
               </div>
@@ -2128,18 +2137,18 @@ const handleItemDesignChange = (index, value) => {
                   </>
                 )}
 
-                {viewingOrder.gstEnabled && (
-                  <>
-                    <div className="flex justify-between text-gray-600">
-                      <span>CGST ({gstPercentage / 2}%)</span>
-                      <span>+₹{viewingOrder.cgst?.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-gray-600">
-                      <span>SGST ({gstPercentage / 2}%)</span>
-                      <span>+₹{viewingOrder.sgst?.toFixed(2)}</span>
-                    </div>
-                  </>
-                )}
+                    {viewingOrder?.gstEnabled && viewingOrder.gstAmount > 0 && (
+                      <>
+                        <div className="flex justify-between text-xs text-gray-500">
+                          <span>CGST (2.50%)</span>
+                          <span>+₹{viewingOrder.cgst?.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-xs text-gray-500">
+                          <span>SGST (2.50%)</span>
+                          <span>+₹{viewingOrder.sgst?.toFixed(2)}</span>
+                        </div>
+                      </>
+                    )}
 
                 <div className="border-t-2 border-gray-400 pt-2"></div>
                 <div className="flex justify-between text-lg">
@@ -2561,8 +2570,12 @@ const handleItemDesignChange = (index, value) => {
         discountValue: formData.discountValue,
         discountAmount: totals.discountAmount,
         gstEnabled: gstEnabled,
-        gstAmount: gstEnabled ? (totals.total * gstPercentage) / 100 : 0,
-        totalAmount: gstEnabled ? totals.total * (1 + gstPercentage / 100) : totals.total,
+        gstPercentage: gstPercentage,
+        gstAmount: totals.gstAmount,  // ✅ Use from calculateTotal
+        cgst: totals.cgst,             // ✅ Use from calculateTotal
+        sgst: totals.sgst,             // ✅ Use from calculateTotal
+        totalAmount: totals.total,     // ✅ Use from calculateTotal
+        amountPaid: 0,
         notes: formData.notes,
         fulfillmentType: formData.fulfillmentType,
       };

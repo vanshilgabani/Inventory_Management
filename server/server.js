@@ -43,10 +43,11 @@ const settingsRoutes = require('./src/routes/settingsRoutes');
 const notificationRoutes = require('./src/routes/notificationRoutes'); // NEW
 const productPricingRoutes = require('./src/routes/productPricingRoutes');
 const settlementRoutes = require('./src/routes/settlementRoutes');
-const editSessionRoutes = require('./src/routes/editSessionRoutes');
 const transferRoutes = require('./src/routes/transferRoutes');
 const monthlyBillRoutes = require('./src/routes/monthlyBillRoutes');
 const initCronJobs = require('./src/utils/cronJobs');
+const actionLogRoutes = require('./src/routes/actionLogRoutes');
+const pendingRequestRoutes = require('./src/routes/pendingRequestRoutes');
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -62,9 +63,10 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/product-pricing', productPricingRoutes);
 app.use('/api/settlements', settlementRoutes);
-app.use('/api/edit-sessions', editSessionRoutes);
 app.use('/api/transfers', transferRoutes);
 app.use('/api/monthly-bills', monthlyBillRoutes);
+app.use('/api/action-logs', actionLogRoutes);
+app.use('/api/pending-requests', pendingRequestRoutes);
 
 // Test route
 app.get('/', (req, res) => {

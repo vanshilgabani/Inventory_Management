@@ -23,7 +23,8 @@ const {
   previewPaymentAllocation,
   getBuyerStats,
   sendChallanEmail,
-  createOrderWithReservedBorrow
+  createOrderWithReservedBorrow,
+  recordSmartPayment
 } = require('../controllers/wholesaleController');
 
 const { protect } = require('../middleware/auth');
@@ -49,6 +50,7 @@ router.post('/buyers/:id/send-credit-warning', protect, isAdmin, sendCreditWarni
 
 // NEW: Bulk Payment Routes
 router.post('/buyers/:id/bulk-payment', protect, recordBulkPayment); // Sales + Admin
+router.post('/buyers/:id/smart-payment', protect, recordSmartPayment);
 router.get('/buyers/:id/payment-history', protect, getBulkPaymentHistory); // Everyone
 router.put('/buyers/:id/payments/:paymentId', protect, isAdmin, updateBulkPayment); // Admin only
 router.delete('/buyers/:id/payments/:paymentId', protect, isAdmin, deleteBulkPayment); // Admin only

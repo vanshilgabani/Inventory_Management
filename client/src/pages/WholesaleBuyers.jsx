@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { wholesaleService } from '../services/wholesaleService';
+import { monthlyBillService } from '../services/monthlyBillService';
 import { useAuth } from '../context/AuthContext';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
@@ -48,6 +49,26 @@ const WholesaleBuyers = () => {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showCreditModal, setShowCreditModal] = useState(false);
   const [selectedBuyer, setSelectedBuyer] = useState(null);
+
+  // ✅ NEW: Bill-based payment states
+  const [showBillSelectionModal, setShowBillSelectionModal] = useState(false);
+  const [showAdvancePaymentModal, setShowAdvancePaymentModal] = useState(false);
+  const [buyerBills, setBuyerBills] = useState([]);
+  const [selectedBill, setSelectedBill] = useState(null);
+  const [currentMonthPending, setCurrentMonthPending] = useState(null);
+  const [pendingFilter, setPendingFilter] = useState('current'); // 'current', 'all', 'specific'
+  const [specificMonth, setSpecificMonth] = useState(null);
+  const [specificYear, setSpecificYear] = useState(null);
+
+  // ✅ NEW: Advance payment form
+  const [advancePaymentForm, setAdvancePaymentForm] = useState({
+    amount: '',
+    paymentMethod: 'Cash',
+    paymentDate: new Date().toISOString().split('T')[0],
+    forMonth: new Date().toLocaleString('en-US', { month: 'long' }),
+    forYear: new Date().getFullYear(),
+    notes: ''
+  });
   
   // Payment form
   const [paymentForm, setPaymentForm] = useState({
@@ -233,54 +254,58 @@ const WholesaleBuyers = () => {
     }
   };
   
-  // Open payment modal
-  const openPaymentModal = (buyer) => {
-    setSelectedBuyer(buyer);
-    setPaymentForm({
-      amount: '',
-      paymentMethod: 'Cash',
-      paymentDate: new Date().toISOString().split('T')[0],
-      notes: ''
-    });
-    setPaymentPreview(null);
-    setShowPaymentModal(true);
-  };
+// ✅ FIXED: Open payment modal (now uses smart payment - no bill selection)
+const openPaymentModal = (buyer) => {
+  setSelectedBuyer(buyer);
+  setPaymentForm({
+    amount: '',
+    paymentMethod: 'Cash',
+    paymentDate: new Date().toISOString().split('T')[0],
+    notes: ''
+  });
+  setPaymentPreview(null);
+  setShowPaymentModal(true);
+};
   
-  // Submit payment
-  const handlePaymentSubmit = async (e) => {
-    e.preventDefault();
-    
-    if (isSubmitting) return;
-    
-    if (!paymentForm.amount || parseFloat(paymentForm.amount) <= 0) {
-      toast.error('Please enter a valid amount');
-      return;
-    }
-    
-    setIsSubmitting(true);
-    
-    try {
-      const result = await wholesaleService.recordBulkPayment(selectedBuyer._id, {
-        amount: parseFloat(paymentForm.amount),
-        paymentMethod: paymentForm.paymentMethod,
-        paymentDate: paymentForm.paymentDate,
-        notes: paymentForm.notes
-      });
-      
+// ✅ UPDATED: Use smart payment
+const handlePaymentSubmit = async (e) => {
+  e.preventDefault();
+  if (isSubmitting) return;
+
+  if (!paymentForm.amount || parseFloat(paymentForm.amount) <= 0) {
+    toast.error('Please enter a valid amount');
+    return;
+  }
+
+  setIsSubmitting(true);
+  try {
+    const result = await wholesaleService.recordSmartPayment(selectedBuyer._id, {
+      amount: parseFloat(paymentForm.amount),
+      paymentMethod: paymentForm.paymentMethod,
+      paymentDate: paymentForm.paymentDate,
+      notes: paymentForm.notes
+    });
+
+    // Check if allocated to bills or orders
+    if (result.data.billsAffected) {
       toast.success(
-        `Payment recorded! ₹${result.data.amountAllocated.toLocaleString('en-IN')} allocated to ${result.data.ordersAffected.length} order(s)`
+        `₹${result.data.amountAllocated.toLocaleString('en-IN')} allocated to ${result.data.billsAffected.length} bill(s)`
       );
-      
-      setShowPaymentModal(false);
-      await fetchInitialData();
-      
-    } catch (error) {
-      const errorMsg = error.response?.data?.message || 'Failed to record payment';
-      toast.error(errorMsg);
-    } finally {
-      setIsSubmitting(false);
+    } else {
+      toast.success(
+        `₹${result.data.amountAllocated.toLocaleString('en-IN')} allocated to ${result.data.ordersAffected.length} order(s)`
+      );
     }
-  };
+
+    setShowPaymentModal(false);
+    await fetchInitialData();
+  } catch (error) {
+    const errorMsg = error.response?.data?.message || 'Failed to record payment';
+    toast.error(errorMsg);
+  } finally {
+    setIsSubmitting(false);
+  }
+};
   
   // Open payment history modal
   const openHistoryModal = async (buyer) => {
@@ -296,24 +321,52 @@ const WholesaleBuyers = () => {
     }
   };
   
-  // Delete payment (Admin only)
-  const handleDeletePayment = async (paymentId) => {
-    if (!window.confirm('Are you sure? This will reverse the payment allocation.')) return;
-    
-    try {
-      await wholesaleService.deleteBulkPayment(selectedBuyer._id, paymentId);
+// ✅ PERFECT: Delete payment from history (challan or bill)
+const handleDeletePayment = async (payment, paymentIndex) => {
+  // Determine if this is a challan or bill payment
+  const isChallanPayment = payment.source === 'challan';
+  const isBillPayment = payment.source === 'bill';
+
+  let confirmMessage = 'Are you sure you want to delete this payment?';
+  
+  if (isChallanPayment) {
+    confirmMessage = `Delete this ₹${payment.amount.toLocaleString('en-IN')} challan payment?\n\nThis will only remove the payment record. Order totals won't change since this payment was made before bill generation.`;
+  } else if (isBillPayment) {
+    confirmMessage = `Delete this ₹${payment.amount.toLocaleString('en-IN')} bill payment?\n\nThis will restore the bill balance by ₹${payment.amount.toLocaleString('en-IN')}.`;
+  }
+
+  if (!window.confirm(confirmMessage)) {
+    return;
+  }
+
+  try {
+    if (isBillPayment) {
+      // Delete from bill
+      await monthlyBillService.deletePayment(payment.billId, paymentIndex);
+      toast.success('Bill payment deleted successfully');
+    } else if (isChallanPayment) {
+      // Delete from challan/order
+      await wholesaleService.deleteOrderPayment(payment.orderId, paymentIndex);
+      toast.success('Challan payment deleted successfully');
+    } else {
+      // Old bulk payment (shouldn't exist anymore but handle it)
+      await wholesaleService.deleteBulkPayment(selectedBuyer._id, payment.id);
       toast.success('Payment deleted successfully');
-      
-      // Refresh history
-      const history = await wholesaleService.getBulkPaymentHistory(selectedBuyer._id);
-      setPaymentHistory(history.payments || []);
-      
-      // Refresh buyer data
-      await fetchInitialData();
-    } catch (error) {
-      toast.error('Failed to delete payment');
     }
-  };
+
+    // Refresh payment history
+    const history = await wholesaleService.getBulkPaymentHistory(selectedBuyer._id);
+    setPaymentHistory(history.payments);
+
+    // Refresh buyer data
+    await fetchInitialData();
+
+  } catch (error) {
+    console.error('Delete payment error:', error);
+    const errorMsg = error.response?.data?.message || 'Failed to delete payment';
+    toast.error(errorMsg);
+  }
+};
   
   // Open credit modal
   const openCreditModal = (buyer) => {
@@ -1081,58 +1134,89 @@ const handleEmailSubmit = async (e) => {
               </div>
             ) : (
               <div className="space-y-3 max-h-96 overflow-y-auto">
-                {paymentHistory.map((payment) => (
-                  <div
-                    key={payment._id}
-                    className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
-                  >
-                    {/* Payment Header */}
-                    <div className="flex items-start justify-between mb-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-lg font-bold text-green-600">
-                            ₹{payment.amount.toLocaleString('en-IN')}
+                {paymentHistory.map((payment, index) => (
+                <div
+                  key={payment._id || index}
+                  className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
+                >
+                  {/* Payment Header */}
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex-1">
+                      {/* ✅ NEW: Source Badge + Reference Number */}
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
+                          payment.source === 'challan' 
+                            ? 'bg-blue-100 text-blue-700' 
+                            : payment.source === 'bill'
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-gray-100 text-gray-700'
+                        }`}>
+                          {payment.source === 'challan' && '📄 Challan Payment'}
+                          {payment.source === 'bill' && '📋 Bill Payment'}
+                          {!payment.source && 'Payment'}
+                        </span>
+                        
+                        {/* ✅ NEW: Show challan or bill reference */}
+                        {payment.challanNumber && (
+                          <span className="text-xs text-gray-600 font-mono bg-gray-50 px-2 py-1 rounded border border-gray-200">
+                            {payment.challanNumber}
                           </span>
-                          <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">
-                            {payment.paymentMethod}
+                        )}
+                        {payment.billNumber && (
+                          <span className="text-xs text-gray-600 font-mono bg-gray-50 px-2 py-1 rounded border border-gray-200">
+                            {payment.billNumber} ({payment.billMonth} {payment.billYear})
                           </span>
-                        </div>
-                        <div className="text-sm text-gray-600 mt-1 flex items-center gap-2">
-                          <FiCalendar size={14} />
-                          {format(new Date(payment.paymentDate), 'dd MMM yyyy, hh:mm a')}
-                        </div>
+                        )}
                       </div>
-                      
-                      {/* Admin Actions */}
-                      {isAdmin && (
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleDeletePayment(payment._id)}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                            title="Delete Payment"
-                          >
-                            <FiTrash2 size={16} />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    
-                    {/* Recorded By */}
-                    <div className="text-xs text-gray-500 mb-3">
-                      Recorded by: {payment.recordedBy} ({payment.recordedByRole})
-                    </div>
-                    
-                    {/* Notes */}
-                    {payment.notes && (
-                      <div className="text-sm text-gray-700 bg-gray-50 p-2 rounded mb-3">
-                        {payment.notes}
+
+                      {/* Amount and Payment Method */}
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-lg font-bold text-green-600">
+                          ₹{payment.amount.toLocaleString('en-IN')}
+                        </span>
+                        <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+                          {payment.paymentMethod}
+                        </span>
                       </div>
-                    )}
-                    
-                    {/* Orders Affected */}
+
+                      {/* Date */}
+                      <div className="text-sm text-gray-600 flex items-center gap-2">
+                        <FiCalendar size={14} />
+                        {format(new Date(payment.paymentDate), 'dd MMM yyyy, hh:mm a')}
+                      </div>
+                    </div>
+
+                    {/* ✅ FIXED: Admin Delete Button for all payment types */}
+                    {isAdmin && (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleDeletePayment(payment, index)}
+                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Delete Payment"
+                        >
+                          <FiTrash2 size={16} />
+                        </button>
+                      </div>
+                    )}  
+                  </div>
+
+                  {/* Recorded By */}
+                  <div className="text-xs text-gray-500 mb-3">
+                    Recorded by: {payment.recordedBy} ({payment.recordedByRole})
+                  </div>
+
+                  {/* Notes */}
+                  {payment.notes && (
+                    <div className="text-sm text-gray-700 bg-gray-50 p-2 rounded mb-3 italic">
+                      "{payment.notes}"
+                    </div>
+                  )}
+
+                  {/* Orders Affected (only for old bulk payments) */}
+                  {payment.ordersAffected && payment.ordersAffected.length > 0 && (
                     <div className="border-t border-gray-200 pt-3">
                       <div className="text-xs font-medium text-gray-700 mb-2">
-                        Orders Affected ({payment.ordersAffected.length}):
+                        Orders Affected ({payment.ordersAffected.length})
                       </div>
                       <div className="space-y-1">
                         {payment.ordersAffected.map((order, index) => (
@@ -1141,7 +1225,7 @@ const handleEmailSubmit = async (e) => {
                             className="text-xs bg-gray-50 p-2 rounded flex items-center justify-between"
                           >
                             <span className="font-medium text-gray-900">
-                              #{order.challanNumber}
+                              {order.challanNumber}
                             </span>
                             <span className="text-gray-600">
                               ₹{order.amountAllocated.toLocaleString('en-IN')}
@@ -1155,8 +1239,9 @@ const handleEmailSubmit = async (e) => {
                         ))}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  )}
+                </div>
+              ))}
               </div>
             )}
             

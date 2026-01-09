@@ -11,6 +11,49 @@ const creditLimitHistorySchema = new mongoose.Schema({
   reason: String
 });
 
+// ✅ Monthly bill tracking (synced from MonthlyBill)
+const monthlyBillTrackingSchema = new mongoose.Schema({
+  billId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'MonthlyBill',
+    required: true
+  },
+  billNumber: {
+    type: String,
+    required: true
+  },
+  month: {
+    type: String,
+    required: true
+  },
+  year: {
+    type: Number,
+    required: true
+  },
+  invoiceTotal: {
+    type: Number,
+    required: true
+  },
+  amountPaid: {
+    type: Number,
+    default: 0
+  },
+  balanceDue: {
+    type: Number,
+    required: true
+  },
+  status: {
+    type: String,
+    enum: ['draft', 'generated', 'sent', 'partial', 'paid', 'overdue'],
+    required: true
+  },
+  generatedAt: {
+    type: Date,
+    required: true
+  }
+});
+
+// Old bulk payment schema (keep for backward compatibility)
 const bulkPaymentSchema = new mongoose.Schema({
   amount: {
     type: Number,
@@ -64,7 +107,6 @@ const wholesaleBuyerSchema = new mongoose.Schema({
   mobile: {
     type: String,
     required: true,
-    // ✅ REMOVED: unique: true (will use compound index instead)
   },
   email: {
     type: String,
@@ -77,6 +119,8 @@ const wholesaleBuyerSchema = new mongoose.Schema({
   address: String,
   businessName: String,
   gstNumber: String,
+  pan: String,
+  stateCode: String,
   creditLimit: {
     type: Number,
     default: 0,
@@ -88,6 +132,11 @@ const wholesaleBuyerSchema = new mongoose.Schema({
   },
   trustUpdatedBy: String,
   trustUpdatedAt: Date,
+  
+  // ✅ NEW: Monthly bill system
+  monthlyBills: [monthlyBillTrackingSchema],
+  
+  // Legacy fields
   totalOrders: {
     type: Number,
     default: 0,
@@ -108,7 +157,10 @@ const wholesaleBuyerSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  
+  // Old bulk payments (keep for backward compatibility)
   bulkPayments: [bulkPaymentSchema],
+  
   challanCounter: {
     type: Number,
     default: 0
@@ -116,15 +168,16 @@ const wholesaleBuyerSchema = new mongoose.Schema({
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true, // ✅ CHANGED: Made required
+    required: true,
   },
 }, {
   timestamps: true,
 });
 
-// ✅ FIXED: Compound unique index (mobile + organizationId)
+// Indexes
 wholesaleBuyerSchema.index({ mobile: 1, organizationId: 1 }, { unique: true });
 wholesaleBuyerSchema.index({ organizationId: 1, totalDue: -1 });
 wholesaleBuyerSchema.index({ organizationId: 1, lastOrderDate: -1 });
+wholesaleBuyerSchema.index({ organizationId: 1, 'monthlyBills.year': -1, 'monthlyBills.month': -1 });
 
 module.exports = mongoose.model('WholesaleBuyer', wholesaleBuyerSchema);

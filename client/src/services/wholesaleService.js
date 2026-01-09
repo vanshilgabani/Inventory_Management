@@ -138,6 +138,12 @@ const createOrderWithReservedBorrow = async (data) => {
   return response.data;
 };
 
+// ✅ NEW: Smart payment recording (bill-aware)
+const recordSmartPayment = async (buyerId, paymentData) => {
+  const response = await api.post(`/wholesale/buyers/${buyerId}/smart-payment`, paymentData);
+  return response.data;
+};
+
 export const wholesaleService = {
   getAllOrders,
   getOrderById,
@@ -161,4 +167,5 @@ export const wholesaleService = {
   updateBulkPayment,
   deleteBulkPayment,
   createOrderWithReservedBorrow,
+  recordSmartPayment
 };

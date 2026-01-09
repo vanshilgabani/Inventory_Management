@@ -59,5 +59,57 @@ export const monthlyBillService = {
   getBillsStats: async () => {
     const response = await api.get('/monthly-bills/stats');
     return response.data.data;
-  }
+  },
+
+  // ✅ NEW: Buyer bill management
+  getBuyerBills: async (buyerId, filters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.month) params.append('month', filters.month);
+    if (filters.year) params.append('year', filters.year);
+    if (filters.status) params.append('status', filters.status);
+    
+    const response = await api.get(`/monthly-bills/buyer/${buyerId}/bills?${params.toString()}`);
+    return response.data;
+  },
+
+  // Get current month pending for buyer
+  getBuyerCurrentMonthPending: async (buyerId) => {
+    const response = await api.get(`/monthly-bills/buyer/${buyerId}/current-month`);
+    return response.data;
+  },
+
+  // Record advance payment (before bill generation)
+  recordAdvancePayment: async (buyerId, paymentData) => {
+    const response = await api.post(`/monthly-bills/buyer/${buyerId}/advance-payment`, paymentData);
+    return response.data;
+  },
+
+  // Delete advance payment
+  deleteAdvancePayment: async (buyerId, paymentId) => {
+    const response = await api.delete(`/monthly-bills/buyer/${buyerId}/advance-payment/${paymentId}`);
+    return response.data;
+  },
+
+  // Record payment for existing bill
+  recordPaymentForBill: async (billId, paymentData) => {
+    const response = await api.post(`/monthly-bills/${billId}/payment`, paymentData);
+    return response.data;
+  },
+
+  // ✅ NEW: Get complete payment history for a bill
+  getBillPaymentHistory: async (billId) => {
+    const response = await api.get(`/monthly-bills/bills/${billId}/payment-history`);
+    return response.data;
+  },
+
+  // ✅ NEW: Delete payment from bill
+  deletePayment: async (billId, paymentIndex) => {
+    const response = await api.delete(`/monthly-bills/${billId}/payments/${paymentIndex}`);
+    return response.data;
+  },
+
+  customizeBill: async (billId, customizeData) => {
+    const response = await api.put(`/monthly-bills/${billId}/customize`, customizeData);
+    return response.data;
+  },
 };

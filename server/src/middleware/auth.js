@@ -12,6 +12,9 @@ const protect = async (req, res, next) => {
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+      // ✅ ADD THIS - Set userId from token
+      req.userId = decoded.id;
+
       // Get user from token (including role)
       req.user = await User.findById(decoded.id).select('-password');
 
@@ -23,10 +26,16 @@ const protect = async (req, res, next) => {
         return res.status(401).json({ message: 'Account is deactivated' });
       }
 
-      // ✅ NEW: Set organizationId for filtering
-      // If user is admin and has no organizationId, they're the main admin (sees their own data)
-      // If user has organizationId, use that for filtering (sub-user sees only their org's data)
+      // Set organizationId for filtering
       req.organizationId = req.user.organizationId || req.user._id;
+
+      // ✅ ADD LOGGING
+      console.log('🔐 Auth middleware:', {
+        userId: req.userId,
+        role: req.user.role,
+        email: req.user.email,
+        organizationId: req.organizationId
+      });
 
       next();
     } catch (error) {

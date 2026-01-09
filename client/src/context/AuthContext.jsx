@@ -63,33 +63,41 @@ export const AuthProvider = ({ children }) => {
   setLoading(false);
 };
 
-  const login = async (email, password) => {
+const login = async (email, password) => {
   try {
-    console.log('🔗 API Login call...'); // DEBUG
+    console.log('🔗 API Login call...');
     const response = await axios.post(`${API_URL}/auth/login`, { email, password });
-    console.log('🔗 API Response:', response.data); // DEBUG
+    console.log('🔗 API Response:', response.data);
     
-    const { token, id, name, email: userEmail, role, organizationId, businessName, phone } = response.data;
+    const { token, _id, id, name, email: userEmail, role, organizationId, businessName, phone } = response.data;
     
-    // ✅ Create user object explicitly
-    const userData = { id, name, email: userEmail, role, organizationId, businessName, phone };
+    // ✅ FIXED: Use destructured variables directly
+    const userData = {
+      _id: _id || id,        // ✅ Use destructured _id and id
+      id: id || _id,         // ✅ Fallback
+      name,                  // ✅ Use destructured name
+      email: userEmail,      // ✅ Use renamed email
+      role,                  // ✅ Use destructured role
+      organizationId,        // ✅ Use destructured organizationId
+      businessName,          // ✅ Use destructured businessName
+      phone,                 // ✅ Use destructured phone
+    };
     
-    console.log('👤 Setting user:', userData); // DEBUG
+    console.log('👤 Setting user:', userData);
     
     localStorage.setItem('token', token);
     localStorage.setItem('user', JSON.stringify(userData));
     axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
     
-    // ✅ FORCE immediate state update
     setUser(userData);
+    console.log('✅ Login complete, user set');
     
-    console.log('✅ Login complete, user set'); // DEBUG
     return { success: true };
   } catch (error) {
     console.error('💥 Login API error:', error.response?.data);
-    return { 
-      success: false, 
-      message: error.response?.data?.message || 'Login failed' 
+    return {
+      success: false,
+      message: error.response?.data?.message || 'Login failed'
     };
   }
 };

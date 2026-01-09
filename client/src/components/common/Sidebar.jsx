@@ -10,7 +10,7 @@ import {
   FiUserCheck,
   FiSettings,
   FiFileText,
-  FiLock, 
+  FiClock, 
   FiRepeat
 } from 'react-icons/fi';
 import { useAuth } from '../../context/AuthContext';
@@ -126,6 +126,7 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
                 </NavLink>
               </li>
             )}
+
             {/* Admin Only - User Management */}
             {isAdmin() && (
               <li>

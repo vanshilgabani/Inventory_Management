@@ -18,15 +18,12 @@ import {
 import { format, parseISO, isToday, isYesterday } from 'date-fns';
 import { useAuth } from '../context/AuthContext';
 import {settingsService} from '../services/settingsService';
-import { useEditSession } from '../hooks/useEditSession'; // ✅ ADD THIS
-import EditSessionManager from '../components/EditSessionManager'; // ✅ ADD THIS
 import { useColorPalette } from '../hooks/useColorPalette';
 
 const FactoryReceiving = () => {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const { enabledSizes, loading: sizesLoading } = useEnabledSizes();
-  const { hasActiveSession, refreshSession } = useEditSession(); // ✅ ADD THIS
   const { colors, getColorsForDesign, getColorCode } = useColorPalette();
 
   // Data states
@@ -78,9 +75,6 @@ const FactoryReceiving = () => {
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Permissions
-  const [permissions, setPermissions] = useState({ allowSalesEdit: false });
 
   useEffect(() => {
     const fetchPermissions = async () => {

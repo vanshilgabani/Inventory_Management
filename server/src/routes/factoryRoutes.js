@@ -8,19 +8,23 @@ const {
   deleteReceiving,
   returnBorrowedStock,
   markPaymentDone,
-  getBorrowHistoryBySource,
+  getBorrowHistoryBySource
 } = require('../controllers/factoryController');
 const { protect } = require('../middleware/auth');
-const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ NEW
+const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
 
-router.route('/').get(protect, getAllReceivings).post(protect, createReceiving);
-router.route('/:id')
-  .get(protect, getReceivingById)
-  .put(protect, canEditDelete, updateReceiving) // ✅ UPDATED
-  .delete(protect, canEditDelete, deleteReceiving); // ✅ UPDATED
-
+// Create routes (no middleware needed)
+router.post('/', protect, createReceiving);
 router.post('/:id/return', protect, returnBorrowedStock);
 router.post('/:id/mark-payment', protect, markPaymentDone);
+
+// Read routes (no middleware needed)
+router.get('/', protect, getAllReceivings);
 router.get('/borrow-history/:sourceName', protect, getBorrowHistoryBySource);
+router.get('/:id', protect, getReceivingById);
+
+// ✅ UPDATE/DELETE routes - APPLY MIDDLEWARE
+router.put('/:id', protect, canEditDelete, updateReceiving);
+router.delete('/:id', protect, canEditDelete, deleteReceiving);
 
 module.exports = router;

@@ -16,8 +16,6 @@ import toast from 'react-hot-toast';
 import { FiShoppingBag, FiPlus, FiTrash2, FiEdit2, FiCheckCircle, FiTruck, FiClock, FiRotateCcw, FiDollarSign, FiXCircle, FiAlertTriangle, FiFilter, FiCalendar, FiChevronDown, FiPackage, FiUpload, FiSearch, FiX, FiArrowLeft, FiAlertCircle, FiFileText, FiInfo } from 'react-icons/fi';
 import { formatCurrency } from '../utils/dateUtils';
 import Papa from 'papaparse';
-import { useEditSession } from '../hooks/useEditSession'; // ✅ ADD THIS
-import EditSessionManager from '../components/EditSessionManager'; // ✅ ADD THIS
 import RefillLockStockModal from '../components/RefillLockStockModal';
 import SettlementsView from '../components/SettlementsView';
 
@@ -25,7 +23,6 @@ const Sales = () => {
   const { user } = useAuth();
   const {enabledSizes} = useEnabledSizes();
   const { canEditSales } = usePermissions();
-  const { hasActiveSession, refreshSession } = useEditSession(); // ✅ ADD THIS
   const navigate = useNavigate();
   
 

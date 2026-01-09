@@ -29,14 +29,11 @@ import {
 import { format } from 'date-fns';
 import { formatDate, formatCurrency } from '../utils/dateUtils'; 
 import SkeletonCard from '../components/common/SkeletonCard';
-import { useEditSession } from '../hooks/useEditSession'; // ✅ ADD THIS
-import EditSessionManager from '../components/EditSessionManager'; // ✅ ADD THIS
 import { useAuth } from '../context/AuthContext';
 import UseLockStockModal from '../components/UseLockStockModal';
 
 const DirectSales = () => {
 const { enabledSizes, loading: sizesLoading } = useEnabledSizes();
-const { hasActiveSession, refreshSession } = useEditSession(); // ✅ ADD THIS
 const { user } = useAuth(); // ✅ ADD THIS (if not already present)
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);

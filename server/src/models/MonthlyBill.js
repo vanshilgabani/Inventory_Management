@@ -14,6 +14,13 @@ const challanItemSchema = new mongoose.Schema({
     type: Date,
     required: true
   },
+  items: [{
+    color: String,
+    size: String,
+    quantity: Number,
+    price: Number,      // Per-unit taxable price
+    amount: Number      // Total taxable amount for this item
+  }],
   itemsQty: {
     type: Number,
     required: true

@@ -34,10 +34,10 @@ const notificationsSchema = new mongoose.Schema({
   creditWarningPercent: { type: Number, default: 80 },
   creditLimitBlock: { type: Boolean, default: true },
   autoEmailOn80Percent: { type: Boolean, default: true },
-  autoEmailMode: { 
-    type: String, 
-    enum: ['all', 'trusted_only', 'not_trusted_only', 'none'], 
-    default: 'not_trusted_only' 
+  autoEmailMode: {
+    type: String,
+    enum: ['all', 'trusted_only', 'not_trusted_only', 'none'],
+    default: 'not_trusted_only'
   },
   dailySummaryEnabled: { type: Boolean, default: true },
   dailySummaryTime: { type: String, default: '09:00' },
@@ -46,7 +46,6 @@ const notificationsSchema = new mongoose.Schema({
   autoEmailChallan: { type: Boolean, default: false }
 });
 
-// ✅ FIXED: Company Schema with isActive field
 const companySchema = new mongoose.Schema({
   id: { type: String, required: true },
   name: { type: String, required: true },
@@ -73,79 +72,120 @@ const companySchema = new mongoose.Schema({
   },
   logo: String,
   isDefault: { type: Boolean, default: false },
-  isActive: { type: Boolean, default: true } // ✅ ADDED THIS
+  isActive: { type: Boolean, default: true }
+});
+
+// ✅ NEW: Permission configuration per salesperson
+const salespersonPermissionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userName: String,
+  email: String,
+  
+  // Permission limits
+  maxChanges: { type: Number, min: 1 },  // null = infinite
+  isInfinite: { type: Boolean, default: false },
+  timeWindowMinutes: { type: Number, required: true, min: 1 },
+  
+  // Permission level (Feature 5)
+  permissionLevel: { 
+    type: String, 
+    enum: ['level1', 'level2', 'level3'],
+    default: 'level2'
+  },
+  
+  // Status
+  isActive: { type: Boolean, default: true },
+  
+  // Stats for smart auto-approve
+  stats: {
+    totalSessionsGranted: { type: Number, default: 0 },
+    totalChangesUsed: { type: Number, default: 0 },
+    averageTimeUsage: { type: Number, default: 0 }, // 0-1 (percentage)
+    extensionRequests: { type: Number, default: 0 },
+    extensionApprovals: { type: Number, default: 0 },
+    lastSessionDate: Date
+  }
 });
 
 const settingsSchema = new mongoose.Schema({
-  organizationId: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User', 
-    required: true, 
-    unique: true 
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    unique: true
   },
-  
-  // ❌ DEPRECATED: Keep for backward compatibility only
+
+  // DEPRECATED: Keep for backward compatibility
   companyName: { type: String, default: 'My Company' },
   address: { type: String, default: '' },
   email: { type: String, default: '' },
   phone: { type: String, default: '' },
   gstNumber: { type: String, default: '' },
-  
+
   // Global settings
   gstPercentage: { type: Number, default: 5, min: 0, max: 100 },
-  enabledSizes: { 
-    type: [String], 
-    enum: ['S', 'M', 'L', 'XL', 'XXL'], 
-    default: ['S', 'M', 'L', 'XL', 'XXL'] 
+  enabledSizes: {
+    type: [String],
+    enum: ['S', 'M', 'L', 'XL', 'XXL'],
+    default: ['S', 'M', 'L', 'XL', 'XXL']
   },
-  
   marketplaceAccounts: { type: [marketplaceAccountSchema], default: [] },
-  stockThresholds: { 
-    type: stockThresholdsSchema, 
-    default: { globalThreshold: 10, designOverrides: [] } 
+  stockThresholds: {
+    type: stockThresholdsSchema,
+    default: { globalThreshold: 10, designOverrides: [] }
   },
   notifications: { type: notificationsSchema, default: {} },
-  colorPalette: { 
-    type: [colorPaletteSchema], 
+  colorPalette: {
+    type: [colorPaletteSchema],
     default: [
       { colorName: 'Black', colorCode: '000000', isActive: true, displayOrder: 0 },
       { colorName: 'Green', colorCode: '22c55e', isActive: true, displayOrder: 1 },
       { colorName: 'Light Grey', colorCode: 'd1d5db', isActive: true, displayOrder: 2 },
       { colorName: 'Dark Grey', colorCode: '4b5563', isActive: true, displayOrder: 3 },
       { colorName: 'Khaki', colorCode: 'a16207', isActive: true, displayOrder: 4 }
-    ] 
+    ]
   },
-  
+
   // Stock lock
   stockLockEnabled: { type: Boolean, default: false },
   stockLockValue: { type: Number, default: 0, min: 0 },
   maxStockLockThreshold: { type: Number, default: 0, min: 0 },
-  
-  // Edit permissions
+
+  // ✅ UPDATED: Edit permissions
   editPermissions: {
     enabled: { type: Boolean, default: false },
-    allowedUsers: [{
-      userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-      userName: String,
-      email: String
-    }],
-    maxChanges: { type: Number, default: 2, min: 1 },
-    timeWindowMinutes: { type: Number, default: 3, min: 1 },
+    salespersons: { type: [salespersonPermissionSchema], default: [] },
     
-    // ✅ NEW: Multi-company management
-    companies: { type: [companySchema], default: [] },
-    
-    // ✅ Billing settings
-    billingSettings: {
-      autoGenerateBills: { type: Boolean, default: true },
-      billGenerationDay: { type: Number, default: 31 },
-      paymentTermDays: { type: Number, default: 30 },
-      defaultCompanyId: { type: String, default: 'company1' },
-      hsnCode: { type: String, default: '6203' },
-      gstRate: { type: Number, default: 5 },
-      billNumberPrefix: { type: String, default: 'VR' }
-    }
+    // Global settings
+    enableUndo: { type: Boolean, default: true },
+    undoWindowSeconds: { type: Number, default: 30, min: 10, max: 300 },
+    enableScreenshots: { type: Boolean, default: true },
+    screenshotRetentionDays: { type: Number, default: 90, min: 30 },
+    autoApproveExtensions: { type: Boolean, default: false },
+    extensionAutoApproveThreshold: { type: Number, default: 0.7, min: 0, max: 1 } // 70% usage
+  },
+
+  // Multi-company management
+  companies: { type: [companySchema], default: [] },
+
+  // Billing settings
+  billingSettings: {
+    autoGenerateBills: { type: Boolean, default: true },
+    billGenerationDay: { type: Number, default: 31 },
+    paymentTermDays: { type: Number, default: 7 },
+    defaultCompanyId: { type: String, default: 'company1' },
+    hsnCode: { type: String, default: '6203' },
+    gstRate: { type: Number, default: 5 },
+    billNumberPrefix: { type: String, default: 'VR' }
+  },
+
+  // Bill counter for financial year based numbering
+  billCounter: {
+    currentFinancialYear: { type: Number, default: null },
+    currentSequence: { type: Number, default: 0 },
+    lastResetDate: { type: Date, default: null },
   }
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('Settings', settingsSchema);
