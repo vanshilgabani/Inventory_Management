@@ -1295,58 +1295,97 @@ const deleteAdvancePayment = async (req, res) => {
   }
 };
 
-// Delete bill (draft only) - Simple deletion without number recycling
 const deleteBill = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
   try {
     const { id } = req.params;
     const organizationId = req.user.organizationId;
 
-    const bill = await MonthlyBill.findOne({
-      _id: id,
-      organizationId
-    }).session(session);
-
+    const bill = await MonthlyBill.findOne({ _id: id, organizationId }).session(session);
+    
     if (!bill) {
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: 'Bill not found'
-      });
+      return res.status(404).json({ success: false, message: 'Bill not found' });
     }
 
     if (bill.status !== 'draft') {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: 'Can only delete draft bills'
-      });
+      return res.status(400).json({ success: false, message: 'Can only delete draft bills' });
     }
 
-    // Just delete - no number recycling
+    // Remove bill from buyer's monthlyBills array
+    const buyer = await WholesaleBuyer.findById(bill.buyer.id).session(session);
+    if (buyer) {
+      // Remove the bill from buyer's monthlyBills array
+      buyer.monthlyBills = buyer.monthlyBills.filter(
+        b => b.billId.toString() !== bill._id.toString()
+      );
+      
+      // ✅ CHECK: If no more bills exist, restore from orders
+      if (buyer.monthlyBills.length === 0) {
+        logger.info('No more bills - recalculating from orders', { buyerId: buyer._id });
+        
+        // Get all orders for this buyer
+        const orders = await WholesaleOrder.find({
+          buyerId: buyer._id,
+          organizationId: buyer.organizationId
+        }).session(session);
+        
+        // Recalculate from orders
+        buyer.totalDue = orders.reduce((sum, o) => sum + (o.amountDue || 0), 0);
+        buyer.totalPaid = orders.reduce((sum, o) => sum + (o.amountPaid || 0), 0);
+        buyer.totalOrders = orders.length;
+        
+        logger.info('Buyer totals restored from orders', {
+          buyerId: buyer._id,
+          totalDue: buyer.totalDue,
+          totalPaid: buyer.totalPaid,
+          totalOrders: buyer.totalOrders
+        });
+      } else {
+        // Still has bills - recalculate from bills
+        buyer.totalDue = buyer.monthlyBills.reduce((sum, b) => sum + (b.balanceDue || 0), 0);
+        buyer.totalPaid = buyer.monthlyBills.reduce((sum, b) => sum + (b.amountPaid || 0), 0);
+        
+        logger.info('Buyer totals recalculated from remaining bills', {
+          buyerId: buyer._id,
+          billsRemaining: buyer.monthlyBills.length,
+          totalDue: buyer.totalDue,
+          totalPaid: buyer.totalPaid
+        });
+      }
+      
+      await buyer.save({ session });
+    }
+
+    // Delete the bill
     await MonthlyBill.findByIdAndDelete(id).session(session);
 
     await session.commitTransaction();
-
-    logger.info('Bill deleted', {
-      billId: id,
-      billNumber: bill.billNumber
+    logger.info('Bill deleted successfully', { 
+      billId: id, 
+      billNumber: bill.billNumber,
+      buyerId: bill.buyer.id
     });
-
-    res.json({
-      success: true,
-      message: 'Bill deleted successfully'
+    
+    res.json({ 
+      success: true, 
+      message: 'Bill deleted successfully',
+      data: {
+        buyerId: bill.buyer.id,
+        billsRemaining: buyer?.monthlyBills.length || 0,
+        newTotalDue: buyer?.totalDue || 0,
+        newTotalPaid: buyer?.totalPaid || 0
+      }
     });
-
   } catch (error) {
     await session.abortTransaction();
-    logger.error('Bill deletion failed:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete bill',
-      error: error.message
+    logger.error('Bill deletion failed', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to delete bill', 
+      error: error.message 
     });
   } finally {
     session.endSession();

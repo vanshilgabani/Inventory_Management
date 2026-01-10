@@ -831,7 +831,7 @@ const getAllBuyers = async (req, res) => {
     const { organizationId } = req.user;
 
     const buyers = await WholesaleBuyer.find({ organizationId })
-      .select('name mobile email businessName gstNumber address creditLimit totalDue totalPaid totalOrders lastOrderDate monthlyBills')
+      .select('name mobile email businessName gstNumber address creditLimit totalDue totalPaid totalSpent totalOrders lastOrderDate monthlyBills')
       .lean()
       .sort({ lastOrderDate: -1 });
 
@@ -857,7 +857,7 @@ const getAllBuyers = async (req, res) => {
           ...buyer,
           totalDue: buyer.totalDue || 0,
           totalPaid: buyer.totalPaid || 0,
-          totalSpent: 0,
+          totalSpent: buyer.totalSpent || 0,
           totalOrders: buyer.totalOrders || 0,
           hasBills: false
         };

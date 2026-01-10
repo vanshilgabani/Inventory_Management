@@ -217,7 +217,7 @@ exports.createSale = async (req, res) => {
     const { organizationId, id: userId } = req.user;
 
     // Validation
-    if (!accountName || !design || !color || !size || !quantity) {
+    if (!accountName || !orderItemId || !design || !color || !size || !quantity) {
       await session.abortTransaction();
       return res.status(400).json({ 
         code: 'INVALID_DATA', 
@@ -301,6 +301,7 @@ exports.createSale = async (req, res) => {
     const sale = await MarketplaceSale.create([{
       accountName,
       marketplaceOrderId: marketplaceOrderId || `MP-${Date.now()}`,
+      orderItemId,
       design,
       color,
       size,
@@ -362,7 +363,7 @@ exports.createSaleWithMainStock = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { accountName, marketplaceOrderId, design, color, size, quantity, saleDate, status, notes, useMainStock } = req.body;
+    const { accountName, marketplaceOrderId, orderItemId, design, color, size, quantity, saleDate, status, notes } = req.body;
     const { organizationId, id: userId } = req.user;
 
     // ✅ Validate flag first
@@ -418,6 +419,7 @@ exports.createSaleWithMainStock = async (req, res) => {
     const sale = await MarketplaceSale.create([{
       accountName,
       marketplaceOrderId: marketplaceOrderId || `MP-${Date.now()}`,
+      orderItemId,
       design,
       color,
       size,
@@ -717,6 +719,7 @@ exports.updateSale = async (req, res) => {
         accountName,
         saleDate,
         marketplaceOrderId,
+        orderItemId,
         design,
         color,
         size,
@@ -805,6 +808,7 @@ exports.updateSale = async (req, res) => {
       if (accountName) sale.accountName = accountName;
       if (saleDate) sale.saleDate = new Date(saleDate);
       if (marketplaceOrderId !== undefined) sale.marketplaceOrderId = marketplaceOrderId;
+      if (orderItemId !== undefined) sale.orderItemId = orderItemId;
       if (notes !== undefined) sale.notes = notes;
 
       // Update status - HANDLE STOCK HERE
@@ -1377,18 +1381,24 @@ exports.importFromCSV = async (req, res) => {
       try {
         // Extract required fields
         const orderId = row['Order Id'];
+        const orderItemId = (row['ORDER ITEM ID'] || '').replace(/'/g, '').trim(); // Remove single quote prefix
 
-        // ✅ ADD: Check for duplicates (dispatched imports only)
-        if (importType === 'dispatched') {
-          const existingOrder = await MarketplaceSale.findOne({ marketplaceOrderId: orderId });
-          if (existingOrder) {
-            results.duplicates.push({
-              row: rowNumber,
-              orderId: orderId,
-              reason: 'Order ID already exists in system'
-            });
-            continue; // Skip this order
-          }
+        // Check for duplicates (both pending and dispatched imports)
+        const existingOrder = await MarketplaceSale.findOne({ 
+          orderItemId: orderItemId,
+          organizationId 
+        });
+
+        if (existingOrder) {
+          results.duplicates.push({ 
+            row: rowNumber, 
+            orderId: orderId,
+            orderItemId: orderItemId,
+            reason: 'Duplicate: Order Item ID already exists' 
+          });
+          continue; // Skip this order
+        }
+
           
           // ✅ ADD: Validate status
           const status = row['Order State'];
@@ -1402,19 +1412,19 @@ exports.importFromCSV = async (req, res) => {
             });
             continue; // Skip this order
           }
-        }
+        
         
         const sku = row['SKU'];
         const quantityStr = row['Quantity'];
         const orderDateStr = row['Ordered On'];
         
         // Basic validation
-        if (!orderId) {
+        if (!orderId || !orderItemId) {
           results.failed.push({
             row: rowNumber,
             orderId: 'Unknown',
             sku: sku || 'Unknown',
-            reason: 'Missing Order ID'
+            reason: 'Missing Order ID or Order Item ID'
           });
           continue;
         }
@@ -1462,28 +1472,6 @@ exports.importFromCSV = async (req, res) => {
             orderId,
             sku,
             reason: 'Could not parse SKU format. Expected format: #D-11-BLACK-XL or #D9-KHAKI-L'
-          });
-          continue;
-        }
-        
-        // Check if order already exists (duplicate detection)
-        const existingOrder = await MarketplaceSale.findOne({
-          marketplaceOrderId: orderId,
-          organizationId
-        }).session(session);
-
-        if (existingOrder) {
-          // ✅ Track duplicates separately
-          if (!results.duplicates) {
-            results.duplicates = [];
-          }
-          
-          results.duplicates.push({
-            row: rowNumber,
-            orderId,
-            sku,
-            reason: `Duplicate - already exists`,
-            existingId: existingOrder._id
           });
           continue;
         }
@@ -1558,6 +1546,7 @@ exports.importFromCSV = async (req, res) => {
         const sale = await MarketplaceSale.create([{
           accountName,
           marketplaceOrderId: orderId,
+          orderItemId,
           design,
           color: matchedColor, // Use matched color from inventory
           size,
@@ -1592,6 +1581,7 @@ exports.importFromCSV = async (req, res) => {
         results.success.push({
           row: rowNumber,
           orderId,
+          orderItemId,
           sku,
           design,
           color: matchedColor,

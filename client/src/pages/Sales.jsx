@@ -86,6 +86,7 @@ const Sales = () => {
   const [saleFormData, setSaleFormData] = useState({
     accountName: '',
     marketplaceOrderId: '',
+    orderItemId: '',
     design: '',
     color: '',
     size: '',
@@ -492,6 +493,7 @@ const handleCSVUpload = (e) => {
           size,     // ✅ 'L' or 'M'
           quantity,
           orderId: row['Order Id'],
+          orderItemId: (row['ORDER ITEM ID'] || '').replace(/'/g, '').trim(), 
           sku
         });
       });
@@ -568,7 +570,7 @@ const handleImportSubmit = async () => {
       if (duplicates.length > 0) {
         console.log('\n📋 Duplicate Orders (Already in Database):');
         duplicates.forEach((dup, idx) => {
-          console.log(`  ${idx + 1}. Order ID: ${dup.orderId} - ${dup.sku}`);
+          console.log(`  ${idx + 1}. Order Item ID: ${dup.orderItemId} - ${dup.sku}`);
         });
       }
       
@@ -1144,6 +1146,7 @@ const handleCancelLockRefill = () => {
     setSaleFormData({
       accountName: sale.accountName,
       marketplaceOrderId: sale.marketplaceOrderId || '',
+      orderItemId: sale.orderItemId || '',
       design: sale.design,
       color: sale.color,
       size: sale.size,
@@ -1315,6 +1318,7 @@ const handleCancelLockRefill = () => {
                     setSaleFormData((prev) => ({
                       ...prev,
                       marketplaceOrderId: '',
+                      orderItemId: '',
                       status: 'dispatched',
                       comments: '',
                       statusDate: new Date().toISOString().split('T')[0]
@@ -1735,6 +1739,21 @@ const handleCancelLockRefill = () => {
                                               </span>
                                             </div>
                                           )}
+                                          {/* Order Item ID Display */}
+                                          {sale.orderItemId && (
+                                            <div className="flex items-center gap-2 mt-1">
+                                              <span
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleCopyOrderId(sale.orderItemId);
+                                                }}
+                                                className="text-xs text-blue-700 font-mono bg-blue-100 px-2 py-1 rounded cursor-pointer hover:bg-blue-200 transition-colors"
+                                                title="Click to copy Order Item ID"
+                                              >
+                                                {sale.orderItemId}
+                                              </span>
+                                            </div>
+                                          )}
                                           
                                           <p className="text-xs text-gray-500">
                                             Order #{idx + 1} • {format(new Date(sale.createdAt), 'hh:mm a')}
@@ -1882,23 +1901,38 @@ const handleCancelLockRefill = () => {
                 </div>
               </div>
 
-              {/* Marketplace Order ID */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Marketplace Order ID
-                  <span className="text-gray-400 font-normal ml-1">(Optional)</span>
-                </label>
-                <input
-                  type="text"
-                  name="marketplaceOrderId"
-                  value={saleFormData.marketplaceOrderId}
-                  onChange={handleFormChange}
-                  className="w-full border rounded p-2 font-mono text-sm"
-                  placeholder="e.g., OD123456789, FKO987654321"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  For tracking with {saleFormData.accountName}
-                </p>
+              {/* Marketplace Order ID and Order Item ID - Side by Side */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Marketplace Order ID */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Marketplace Order ID
+                  </label>
+                  <input
+                    type="text"
+                    name="marketplaceOrderId"
+                    value={saleFormData.marketplaceOrderId}
+                    onChange={handleFormChange}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                    placeholder="e.g., OD123456789"
+                  />
+                </div>
+
+                {/* Order Item ID */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Order Item ID <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    name="orderItemId"
+                    value={saleFormData.orderItemId}
+                    onChange={handleFormChange}
+                    required
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                    placeholder="e.g., 336486744619210100"
+                  />
+                </div>
               </div>
 
               {/* Product Selection */}

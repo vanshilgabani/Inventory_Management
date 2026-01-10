@@ -231,15 +231,9 @@ export const generateMonthlyBillPDF = async (bill, options = {}) => {
         billToY += 4;
       }
 
-      // Mobile number
-      if (bill.buyer.mobile) {
-        doc.text(`Mobile: ${bill.buyer.mobile}`, margin + 3, billToY);
-        billToY += 4;
-      }
-
       // State Code (if still needed)
       if (bill.buyer.stateCode) {
-        doc.text(`State Code: ${bill.buyer.stateCode}`, margin + 3, billToY);
+        doc.text(`STATE CODE: ${bill.buyer.stateCode}`, margin + 3, billToY);
       }
 
       // ✅ FIXED: Bank Details on same line

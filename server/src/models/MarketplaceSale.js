@@ -10,11 +10,7 @@ const statusHistorySchema = new mongoose.Schema({
   },
   newStatus: {
     type: String,
-<<<<<<< HEAD
     enum: ['dispatched','delivered', 'returned', 'wrongreturn', 'cancelled'], // ✅ REMOVED 'delivered'
-=======
-    enum: ['dispatched', 'delivered', 'returned', 'wrongreturn', 'cancelled'], // ✅ REMOVED 'delivered'
->>>>>>> 418fdf4fe941aa232f4f7303b503eb19180ca79b
     required: true
   },
   changedBy: {
@@ -56,6 +52,13 @@ const marketplaceSaleSchema = new mongoose.Schema({
     trim: true,
     sparse: true,
     index: true
+  },
+  // Marketplace Order Item ID (Unique per item in Flipkart)
+  orderItemId: {
+    type: String,
+    required: true,
+    trim: true,
+    index: true,
   },
   design: {
     type: String,
@@ -121,6 +124,7 @@ const marketplaceSaleSchema = new mongoose.Schema({
 marketplaceSaleSchema.index({ accountName: 1, saleDate: -1 });
 marketplaceSaleSchema.index({ organizationId: 1, accountName: 1 });
 marketplaceSaleSchema.index({ organizationId: 1, accountName: 1, marketplaceOrderId: 1 });
+marketplaceSaleSchema.index({ organizationId: 1, orderItemId: 1 });
 marketplaceSaleSchema.index({ saleDate: 1 });
 marketplaceSaleSchema.index({ status: 1 });
 marketplaceSaleSchema.index({ createdBy: 1 });
