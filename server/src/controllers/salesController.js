@@ -206,6 +206,7 @@ exports.createSale = async (req, res) => {
     const { 
       accountName, 
       marketplaceOrderId, 
+      orderItemId,
       design, 
       color, 
       size, 
@@ -363,7 +364,7 @@ exports.createSaleWithMainStock = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { accountName, marketplaceOrderId, orderItemId, design, color, size, quantity, saleDate, status, notes } = req.body;
+    const { accountName, marketplaceOrderId, orderItemId, design, color, size, quantity, saleDate, status, notes,useMainStock } = req.body;
     const { organizationId, id: userId } = req.user;
 
     // ✅ Validate flag first
@@ -419,7 +420,7 @@ exports.createSaleWithMainStock = async (req, res) => {
     const sale = await MarketplaceSale.create([{
       accountName,
       marketplaceOrderId: marketplaceOrderId || `MP-${Date.now()}`,
-      orderItemId,
+      orderItemId: orderItemId,
       design,
       color,
       size,
