@@ -6,6 +6,10 @@
   "installCommand": "npm install",
   "routes": [
     {
+      "src": "/logo.png",
+      "dest": "/logo.png"
+    },
+    {
       "src": "/assets/(.*)",
       "dest": "/assets/$1"
     },
