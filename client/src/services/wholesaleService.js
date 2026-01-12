@@ -144,6 +144,11 @@ const recordSmartPayment = async (buyerId, paymentData) => {
   return response.data;
 };
 
+const getBuyerMonthlyHistory = async (buyerId) => {
+  const response = await api.get(`/wholesale/buyers/${buyerId}/monthly-history`);
+  return response.data;
+};
+
 export const wholesaleService = {
   getAllOrders,
   getOrderById,
@@ -167,5 +172,6 @@ export const wholesaleService = {
   updateBulkPayment,
   deleteBulkPayment,
   createOrderWithReservedBorrow,
-  recordSmartPayment
+  recordSmartPayment,
+  getBuyerMonthlyHistory
 };

@@ -2115,6 +2115,110 @@ const createOrderWithReservedBorrow = async (req, res) => {
   }
 };
 
+// Get buyer monthly purchase history
+const getBuyerMonthlyHistory = async (req, res) => {
+  try {
+    const { id } = req.params; // buyer ID
+    const organizationId = req.user.organizationId;
+
+    // Validate buyer exists
+    const buyer = await WholesaleBuyer.findOne({ _id: id, organizationId });
+    if (!buyer) {
+      return res.status(404).json({
+        code: 'BUYER_NOT_FOUND',
+        message: 'Buyer not found'
+      });
+    }
+
+    // Get all orders for this buyer
+    const orders = await WholesaleOrder.find({
+      buyerId: id,
+      organizationId
+    })
+      .select('challanNumber orderDate createdAt items totalAmount amountPaid amountDue')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!orders || orders.length === 0) {
+      return res.json({
+        success: true,
+        monthlyData: []
+      });
+    }
+
+    // Group orders by month and year
+    const monthlyMap = {};
+
+    orders.forEach(order => {
+      const orderDate = new Date(order.orderDate || order.createdAt);
+      const month = orderDate.toLocaleString('en-US', { month: 'long' });
+      const year = orderDate.getFullYear();
+      const key = `${month}-${year}`;
+
+      if (!monthlyMap[key]) {
+        monthlyMap[key] = {
+          month,
+          year,
+          totalUnits: 0,
+          totalAmount: 0,
+          totalPaid: 0,
+          totalOrders: 0,
+          billGenerated: false,
+          orders: []
+        };
+      }
+
+      // Calculate total units from order items
+      const orderUnits = order.items.reduce((sum, item) => sum + (item.quantity || 0), 0);
+
+      monthlyMap[key].totalUnits += orderUnits;
+      monthlyMap[key].totalAmount += order.totalAmount || 0;
+      monthlyMap[key].totalPaid += order.amountPaid || 0;
+      monthlyMap[key].totalOrders += 1;
+
+      // Check if order has a monthly bill (you might need to adjust this field name)
+      // if (order.monthlyBillId || order.billGenerated) {
+      //   monthlyMap[key].billGenerated = true;
+      // }
+
+      monthlyMap[key].orders.push({
+        challanNumber: order.challanNumber,
+        date: order.orderDate || order.createdAt,
+        totalUnits: orderUnits,
+        totalAmount: order.totalAmount || 0
+      });
+    });
+
+    // Convert map to array and sort by date (newest first)
+    const monthlyData = Object.values(monthlyMap).sort((a, b) => {
+      const dateA = new Date(`${a.month} 1, ${a.year}`);
+      const dateB = new Date(`${b.month} 1, ${b.year}`);
+      return dateB - dateA; // Newest first
+    });
+
+    logger.info('Monthly history fetched successfully', {
+      buyerId: id,
+      monthsCount: monthlyData.length
+    });
+
+    res.json({
+      success: true,
+      monthlyData
+    });
+
+  } catch (error) {
+    logger.error('Failed to fetch monthly history', {
+      error: error.message,
+      buyerId: req.params.id
+    });
+    res.status(500).json({
+      code: 'FETCH_FAILED',
+      message: 'Failed to fetch monthly history',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getAllOrders,
   getOrderById,
@@ -2140,4 +2244,5 @@ module.exports = {
   getBuyerStats,
   sendChallanEmail,
   createOrderWithReservedBorrow,
+  getBuyerMonthlyHistory
 };

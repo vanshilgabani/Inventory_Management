@@ -24,7 +24,8 @@ const {
   getBuyerStats,
   sendChallanEmail,
   createOrderWithReservedBorrow,
-  recordSmartPayment
+  recordSmartPayment,
+  getBuyerMonthlyHistory
 } = require('../controllers/wholesaleController');
 
 const { protect } = require('../middleware/auth');
@@ -41,6 +42,7 @@ router.get('/stats', protect, getBuyerStats);
 router.get('/buyers', protect, getAllBuyers);
 router.get('/buyers/:mobile', protect, getBuyerByMobile);
 router.get('/buyers/:mobile/history', protect, getBuyerHistory);
+router.get('/buyers/:id/monthly-history', protect, getBuyerMonthlyHistory);
 
 // Buyer management routes (Admin)
 router.put('/buyers/:id/credit', protect, isAdmin, updateBuyerCredit);
