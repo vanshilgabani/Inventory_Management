@@ -3,9 +3,10 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  publicDir: 'public', // ✅ Explicitly set
+  publicDir: 'public',
   build: {
     outDir: 'dist',
+    copyPublicDir: true,
   },
   server: {
     port: 3000,
