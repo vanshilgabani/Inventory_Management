@@ -53,12 +53,12 @@ const marketplaceSaleSchema = new mongoose.Schema({
     sparse: true,
     index: true
   },
-  // Marketplace Order Item ID (Unique per item in Flipkart)
   orderItemId: {
-    type: String,
-    required: true,
-    trim: true,
-    index: true,
+      type: String,
+      required: false,  // ✅ CHANGED: Allow old orders without orderItemId
+      trim: true,
+      sparse: true,     // ✅ ADDED: Allows null/undefined in index
+      index: true,
   },
   design: {
     type: String,
