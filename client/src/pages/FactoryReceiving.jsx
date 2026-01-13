@@ -75,6 +75,7 @@ const FactoryReceiving = () => {
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
+  const [permissions, setPermissions] = useState({ allowSalesEdit: false });
 
   useEffect(() => {
     const fetchPermissions = async () => {
