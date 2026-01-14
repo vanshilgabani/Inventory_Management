@@ -55,9 +55,9 @@ const marketplaceSaleSchema = new mongoose.Schema({
   },
   orderItemId: {
       type: String,
-      required: false,  // ✅ CHANGED: Allow old orders without orderItemId
+      required: false,  
       trim: true,
-      sparse: true,     // ✅ ADDED: Allows null/undefined in index
+      sparse: true,     
       index: true,
   },
   design: {
@@ -115,7 +115,54 @@ const marketplaceSaleSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
-  }
+  },
+
+  // ✅ FEATURE 1: Soft Delete Fields
+  deletedAt: {
+    type: Date,
+    default: null,
+    index: true
+  },
+  deletedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  deletionReason: {
+    type: String
+  },
+
+  // ✅ FEATURE 2: Creator Info
+  createdByUser: {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    userName: String,
+    userRole: String,
+    createdAt: {
+      type: Date,
+      default: Date.now
+    }
+  },
+
+  // ✅ FEATURE 2: Edit History
+  editHistory: [{
+    editedBy: {
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      },
+      userName: String,
+      userRole: String
+    },
+    editedAt: {
+      type: Date,
+      default: Date.now
+    },
+    changes: {
+      type: mongoose.Schema.Types.Mixed
+    }
+  }]
 }, {
   timestamps: true
 });
@@ -129,5 +176,7 @@ marketplaceSaleSchema.index({ saleDate: 1 });
 marketplaceSaleSchema.index({ status: 1 });
 marketplaceSaleSchema.index({ createdBy: 1 });
 marketplaceSaleSchema.index({ marketplaceOrderId: 1 });
+// ✅ TTL index for auto-deletion after 60 days
+marketplaceSaleSchema.index({ deletedAt: 1 }, { expireAfterSeconds: 5184000 });
 
 module.exports = mongoose.model('MarketplaceSale', marketplaceSaleSchema);

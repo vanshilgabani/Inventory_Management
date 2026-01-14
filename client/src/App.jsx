@@ -24,6 +24,7 @@ import GlobalNotificationBanner from './components/GlobalNotificationBanner';
 import AdminRequestNotificationWidget from './components/widgets/AdminRequestNotificationWidget';
 import ActiveSessionsMonitorWidget from './components/widgets/ActiveSessionsMonitorWidget';
 import MyPendingRequests from './pages/MyPendingRequests';
+import DeletedOrders from './pages/DeletedOrders';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -109,6 +110,11 @@ const AppRoutes = () => {
           <Route path="monthly-bills" element={
             <AdminRoute>
               <MonthlyBills />
+            </AdminRoute>
+          } />
+          <Route path="deleted-orders" element={
+            <AdminRoute>
+              <DeletedOrders />
             </AdminRoute>
           } />
           <Route path="users" element={

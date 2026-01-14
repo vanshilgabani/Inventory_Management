@@ -46,7 +46,7 @@ const getAllSales = async (req, res) => {
   try {
     const organizationId = req.user.organizationId;
 
-    const sales = await DirectSale.find({ organizationId })
+    const sales = await DirectSale.find({ organizationId, deletedAt: null })
       .populate('customerId', 'name phone')
       .sort({ createdAt: -1 })
       .lean();
@@ -318,7 +318,12 @@ const createSale = async (req, res) => {
       paymentMethod: paymentMethod || 'Cash',
       notes: notes || '',
       organizationId,
-      createdBy: req.user._id,
+      createdByUser: {
+        userId: req.user._id,
+        userName: req.user.name || req.user.email,
+        userRole: req.user.role,
+        createdAt: new Date()
+      },
       saleDate: new Date(),
     }], { session });
 
@@ -445,6 +450,30 @@ const updateSale = async (req, res) => {
 
     // Update sale
     Object.assign(existingSale, req.body);
+    // ✅ FEATURE 2: Track edit history
+    const changesBefore = {
+      items: existingSale.items,
+      subtotalAmount: existingSale.subtotalAmount,
+      totalAmount: existingSale.totalAmount
+    };
+    const changesAfter = {
+      items: req.body.items,
+      subtotalAmount: req.body.subtotalAmount,
+      totalAmount: req.body.totalAmount
+    };
+
+    existingSale.editHistory.push({
+      editedBy: {
+        userId: req.user._id,
+        userName: req.user.name || req.user.email,
+        userRole: req.user.role
+      },
+      editedAt: new Date(),
+      changes: {
+        before: changesBefore,
+        after: changesAfter
+      }
+    });
     await existingSale.save({ session });
 
     await session.commitTransaction();
@@ -466,93 +495,81 @@ const updateSale = async (req, res) => {
   }
 };
 
+// ✅ FEATURE 1: Soft Delete Sale
 const deleteSale = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { id } = req.params;
-    const { userId, organizationId, user, editSession } = req;
+    const { organizationId, _id: userId, name, email } = req.user;
 
-    console.log('🗑️ Delete sale request:', {
-      saleId: id,
-      userId,
-      userRole: user?.role,
-      hasSession: !!editSession
-    });
+    const sale = await DirectSale.findOne({
+      _id: id,
+      organizationId,
+      deletedAt: null  // Only allow deleting active sales
+    }).session(session);
 
-    // Find the sale
-    const sale = await DirectSale.findOne({ _id: id, organizationId });
-    
     if (!sale) {
-      return res.status(404).json({ message: 'Sale not found' });
+      await session.abortTransaction();
+      return res.status(404).json({
+        code: 'SALE_NOT_FOUND',
+        message: 'Sale not found or already deleted'
+      });
     }
 
-    // If sales user, update session
-    if (user.role === 'sales' && editSession) {
-      try {
-        // Save to undo buffer
-        editSession.undoBuffer.push({
-          actionType: 'delete',
-          entityType: 'DirectSale',
-          entityId: sale._id,
-          timestamp: new Date(),
-          originalData: sale.toObject()
-        });
+    // ✅ STEP 1: Restore stock to main inventory
+    for (const item of sale.items) {
+      const product = await Product.findOne({
+        design: item.design,
+        organizationId
+      }).session(session);
 
-        // Decrement remaining changes
-        if (!editSession.isInfinite) {
-          editSession.remainingChanges -= 1;
+      if (product) {
+        const colorVariant = product.colors.find(c => c.color === item.color);
+        if (colorVariant) {
+          const sizeVariant = colorVariant.sizes.find(s => s.size === item.size);
+          if (sizeVariant) {
+            sizeVariant.currentStock = (sizeVariant.currentStock || 0) + item.quantity;
+          }
         }
-
-        // Log the change
-        editSession.changesLog.push({
-          action: 'delete',
-          entityType: 'DirectSale',
-          entityId: sale._id,
-          timestamp: new Date()
-        });
-
-        await editSession.save();
-        console.log('✅ Session updated - remaining:', editSession.remainingChanges);
-      } catch (sessionError) {
-        console.error('Session update error:', sessionError);
-        // Continue with delete even if session update fails
+        await product.save({ session });
       }
     }
 
-    // Restore inventory stock
-    const product = await Product.findOne({
-      design: sale.design,
-      organizationId
+    // ✅ STEP 2: Soft delete the sale
+    sale.deletedAt = new Date();
+    sale.deletedBy = userId;
+    sale.deletionReason = 'User initiated deletion';
+    await sale.save({ session });
+
+    // ✅ Decrement edit session (if applicable)
+    await decrementEditSession(req, 'delete', 'directSales', id);
+
+    await session.commitTransaction();
+
+    logger.info('Direct sale soft deleted', {
+      saleId: id,
+      deletedBy: name || email,
+      stockRestored: sale.items.reduce((sum, item) => sum + item.quantity, 0)
     });
-
-    if (product) {
-      const colorVariant = product.colors.find(c => c.color === sale.color);
-      if (colorVariant) {
-        const sizeStock = colorVariant.sizes.find(s => s.size === sale.size);
-        if (sizeStock) {
-          sizeStock.currentStock += sale.quantity;
-          await product.save();
-          console.log(`✅ Restored ${sale.quantity} units to inventory`);
-        }
-      }
-    }
-
-    // Delete the sale
-    await DirectSale.findByIdAndDelete(id);
-
-    console.log('✅ Sale deleted successfully');
 
     res.json({
+      success: true,
       message: 'Sale deleted successfully',
-      undoAvailable: user.role === 'sales' && !!editSession,
-      remainingChanges: editSession?.remainingChanges
+      stockRestored: sale.items.reduce((sum, item) => sum + item.quantity, 0)
     });
 
   } catch (error) {
-    console.error('❌ Delete sale error:', error);
+    await session.abortTransaction();
+    logger.error('Direct sale deletion failed', { error: error.message });
     res.status(500).json({
+      code: 'DELETE_FAILED',
       message: 'Failed to delete sale',
       error: error.message
     });
+  } finally {
+    session.endSession();
   }
 };
 

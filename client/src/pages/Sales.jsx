@@ -1099,31 +1099,53 @@ const handleCancelLockRefill = () => {
   };
 
     // ============ DELETE HANDLERS ============
-
-  const handleDelete = async (id) => {
+const handleDelete = async (id) => {
   if (!window.confirm('Delete this order? Stock will be restored.')) return;
-  
+
   try {
-    await salesService.deleteSale(id);
-    await refreshSession(); // ✅ Refresh session after delete
-    toast.success('Order deleted');
-    fetchSales();
+    // ✅ Call delete API
+    const response = await salesService.deleteSale(id);
+    
+    // ✅ Check if backend returned success
+    if (response?.success || response?.message) {
+      // ✅ Immediately remove from UI state (optimistic update)
+      setSales(prevSales => prevSales.filter(sale => sale._id !== id || sale.id !== id));
+      
+      // ✅ Then refresh data in background
+      await fetchSales();
+      
+      // ✅ Show detailed success message with stock restoration info
+      const stockInfo = response?.stockRestored 
+        ? ` (${response.stockRestored} units restored to reserved stock)` 
+        : '';
+      
+      toast.success(`Order deleted successfully${stockInfo}`, {
+        icon: '✅',
+        duration: 4000
+      });
+    } else {
+      throw new Error('Delete response invalid');
+    }
   } catch (error) {
-    // ✅ HANDLE SESSION ERRORS
+    console.error('Delete error:', error);
+    
+    // HANDLE SESSION ERRORS
     if (error.response?.status === 403) {
       const errorCode = error.response?.data?.code;
-      
       if (errorCode === 'NO_ACTIVE_SESSION') {
-        toast.error('⚠️ No active edit session. Please start a session first.');
+        toast.error('No active edit session. Please start a session first.');
       } else if (errorCode === 'LIMIT_EXHAUSTED') {
-        toast.error('❌ Edit limit exhausted. Your session has ended.');
+        toast.error('Edit limit exhausted. Your session has ended.');
         await refreshSession();
       } else {
         toast.error(error.response?.data?.message || 'Access denied');
       }
     } else {
-      toast.error('Failed to delete');
+      toast.error(error.response?.data?.message || error.message || 'Failed to delete order');
     }
+    
+    // ✅ Refresh data to restore correct state if error occurred
+    await fetchSales();
   }
 };
 
@@ -2234,6 +2256,11 @@ const handleCancelLockRefill = () => {
                         <b>Order ID:</b> <span className="font-mono text-purple-600">{viewingHistory.marketplaceOrderId}</span>
                       </p>
                     )}
+                    {viewingHistory.orderItemId && (
+                      <p>
+                        <b>Order Item ID:</b> <span className="font-mono text-purple-600">{viewingHistory.orderItemId}</span>
+                      </p>
+                    )}
                   </div>
 
                   {/* Timeline */}
@@ -2242,16 +2269,13 @@ const handleCancelLockRefill = () => {
                       <div key={i} className="relative">
                         <div className="absolute -left-[21px] top-1 w-3 h-3 rounded-full bg-indigo-500 ring-4 ring-white"></div>
                         <p className="font-semibold text-gray-800 capitalize">
-                          {h.newStatus.replace('_', ' ')}
+                          {h.newStatus.replace('_', ' ')} <span className="font-normal text-xs text-gray-500"> by <span className="font-medium text-xs text-red-700">{h.changedBy?.userName || 'System'}</span></span>
                         </p>
                         <p className="text-xs text-gray-500">
                           {new Date(h.changedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                           {' • '}
                           {new Date(h.changedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </p>
-                        <p className="text-xs text-gray-500 mt-1">
-                          by {h.changedBy?.userName || 'System'}
-                        </p>
+                        </p>                        
                         {h.comments && (
                           <p className="text-sm bg-yellow-50 p-2 mt-1 rounded text-gray-700 italic">
                             {h.comments}
@@ -2263,7 +2287,12 @@ const handleCancelLockRefill = () => {
                     {/* Order Created */}
                     <div className="relative">
                       <div className="absolute -left-[21px] top-1 w-3 h-3 rounded-full bg-gray-300"></div>
-                      <p className="font-semibold text-gray-600">Order Created</p>
+                      <p className="font-semibold text-gray-600">
+                        Order Created
+                        {viewingHistory.createdByUser?.userName && (
+                          <span className="font-normal text-gray-500"> by <span className="font-medium text-gray-700">{viewingHistory.createdByUser.userName}</span></span>
+                        )}
+                      </p>
                       <p className="text-xs text-gray-500">
                         {new Date(viewingHistory.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                         {' • '}

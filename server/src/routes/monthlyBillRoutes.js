@@ -16,7 +16,8 @@ const {
   deleteAdvancePayment,
   recordPaymentForBill,
   getBillPaymentHistory,
-  deletePaymentFromBill
+  deletePaymentFromBill,
+  updateBillNumber
 } = require('../controllers/monthlyBillController');
 const { protect } = require('../middleware/auth');
 const { isAdmin } = require('../middleware/roleCheck');
@@ -45,6 +46,7 @@ router.get('/:id', getBillById);
 router.post('/generate', generateBill);
 
 router.put('/:id/customize', protect, customizeBill);
+router.put('/:id/update-bill-number', protect, updateBillNumber);
 router.get('/bills/:id/payment-history', getBillPaymentHistory);
 
 // @route   PUT /api/monthly-bills/:id/switch-company

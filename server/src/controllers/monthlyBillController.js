@@ -76,18 +76,18 @@ const getBillById = async (req, res) => {
   }
 };
 
-// ✅ PERFECT: Generate bill number with REUSE support - finds lowest available number
-const generateBillNumber = async (organizationId, session) => {
+// UPDATED: Generate bill number WITHOUT gap-filling
+const generateBillNumber = async (organizationId, customSequence = null, session) => {
   try {
     const settings = await Settings.findOne({ organizationId }).session(session);
     const prefix = settings?.billingSettings?.billNumberPrefix || 'VR';
-
-    // Calculate current financial year
+    
+    // Calculate current financial year (Apr-Mar cycle)
     const today = new Date();
     const currentMonth = today.getMonth(); // 0-11
     const currentYear = today.getFullYear();
-    const financialYear = currentMonth >= 3 ? currentYear : currentYear - 1; // Apr-Mar cycle
-
+    const financialYear = (currentMonth >= 3) ? currentYear : currentYear - 1;
+    
     // Initialize bill counter if not exists
     if (!settings.billCounter) {
       settings.billCounter = {
@@ -96,64 +96,77 @@ const generateBillNumber = async (organizationId, session) => {
         lastResetDate: new Date(),
       };
     }
-
+    
     // Check if financial year changed (April 1st passed)
     if (settings.billCounter.currentFinancialYear !== financialYear) {
-      // Reset counter for new FY
+      // RESET counter for new FY
       settings.billCounter.currentFinancialYear = financialYear;
       settings.billCounter.currentSequence = 0;
       settings.billCounter.lastResetDate = new Date();
     }
-
-    // ✅ NEW: Get all existing bills for current financial year
-    const existingBills = await MonthlyBill.find({
-      organizationId,
-      financialYear: `${financialYear}-${String(financialYear + 1).slice(-2)}`,
-    })
-      .select('billNumber')
-      .session(session)
-      .lean();
-
-    // Extract sequence numbers from existing bills
-    const usedNumbers = existingBills
-      .map((bill) => {
-        // Extract number from format: VR/2025/01 -> 01
-        const match = bill.billNumber.match(/\/(\d+)$/);
-        return match ? parseInt(match[1], 10) : null;
+    
+    let billSequence;
+    
+    // If custom sequence provided (manual override), use it
+    if (customSequence !== null && customSequence > 0) {
+      billSequence = customSequence;
+      logger.info('Using custom sequence number', { customSequence, financialYear });
+    } else {
+      // Get all existing bills for current financial year
+      const existingBills = await MonthlyBill.find({
+        organizationId,
+        billNumber: new RegExp(`^${prefix}/${financialYear}/`), // Match: VR/2025/XX
       })
-      .filter((num) => num !== null)
-      .sort((a, b) => a - b);
-
-    // ✅ Find the lowest available number (fill gaps first)
-    let billSequence = 1;
-    for (const usedNum of usedNumbers) {
-      if (usedNum === billSequence) {
-        billSequence++; // Number is taken, try next
-      } else {
-        break; // Found a gap!
-      }
+        .select('billNumber')
+        .session(session)
+        .lean();
+      
+      // Extract sequence numbers from existing bills
+      const usedNumbers = existingBills
+        .map(bill => {
+          // Extract number from format: VR/2025/01 -> 01
+          const match = bill.billNumber.match(/\/(\d+)$/);
+          return match ? parseInt(match[1], 10) : null;
+        })
+        .filter(num => num !== null);
+      
+      // ✅ NEW LOGIC: Find HIGHEST number and add 1 (NO GAP-FILLING!)
+      const maxSequence = usedNumbers.length > 0 
+        ? Math.max(...usedNumbers) 
+        : 0;
+      
+      billSequence = maxSequence + 1;
+      
+      logger.info('Bill number generated without gap-filling', {
+        financialYear,
+        maxSequence,
+        billSequence,
+        totalExistingBills: usedNumbers.length,
+        usedNumbers: usedNumbers.sort((a, b) => a - b)
+      });
     }
-
-    // Update settings counter to highest number for reference (optional)
+    
+    // Update settings counter to highest number for reference
     settings.billCounter.currentSequence = Math.max(
-      billSequence,
+      billSequence, 
       settings.billCounter.currentSequence
     );
     await settings.save({ session });
-
+    
     // Format: VR/2025/01
     const formattedNumber = `${prefix}/${financialYear}/${String(billSequence).padStart(2, '0')}`;
-
-    logger.info('Bill number generated with reuse support', {
+    
+    logger.info('Bill number generated', {
       financialYear,
       billSequence,
       formattedNumber,
-      usedNumbers,
+      isCustom: customSequence !== null
     });
-
+    
     return formattedNumber;
+    
   } catch (error) {
-    logger.error('Bill number generation failed', error.message);
+    logger.error('Bill number generation failed', { error: error.message });
     throw error;
   }
 };
@@ -395,8 +408,9 @@ const generateBill = async (req, res) => {
 
     const status = 'draft';
 
-    // Generate bill number
-    const billNumber = await generateBillNumber(organizationId, session);
+    // Generate bill number (with optional custom sequence for first bill)
+    const { customSequence } = req.body; // Get from request
+    const billNumber = await generateBillNumber(organizationId, customSequence, session);
 
     // Calculate financial year
     const billMonth = startDate.getMonth(); // 0-11
@@ -1466,10 +1480,6 @@ const getBillsStats = async (req, res) => {
   }
 };
 
-// Add this after the generateBill function (around line 250)
-
-// Add this function to monthlyBillController.js
-
 const customizeBill = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1588,6 +1598,116 @@ const customizeBill = async (req, res) => {
       message: 'Failed to customize bill',
       error: error.message
     });
+  }
+};
+
+// NEW: Update bill number for draft bills only
+const updateBillNumber = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { id } = req.params;
+    const { customSequence } = req.body; // Just the number: 146
+    const { organizationId } = req.user;
+    
+    // Validation
+    if (!customSequence || customSequence < 1) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Valid sequence number is required (must be >= 1)'
+      });
+    }
+    
+    // Find bill
+    const bill = await MonthlyBill.findOne({ _id: id, organizationId })
+      .session(session);
+    
+    if (!bill) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Bill not found'
+      });
+    }
+    
+    // Only allow for draft bills
+    if (bill.status !== 'draft') {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Can only update bill number for draft bills'
+      });
+    }
+    
+    // Get current bill number parts
+    const currentParts = bill.billNumber.match(/^(.+)\/(\d{4})\/(\d+)$/);
+    if (!currentParts) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid bill number format'
+      });
+    }
+    
+    const prefix = currentParts[1]; // VR
+    const year = currentParts[2];   // 2025
+    
+    // Generate new bill number with custom sequence
+    const newBillNumber = `${prefix}/${year}/${String(customSequence).padStart(2, '0')}`;
+    
+    // Check if new number already exists
+    const existingBill = await MonthlyBill.findOne({
+      billNumber: newBillNumber,
+      organizationId,
+      _id: { $ne: id } // Exclude current bill
+    }).session(session);
+    
+    if (existingBill) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Bill number ${newBillNumber} already exists`,
+        existingBillId: existingBill._id
+      });
+    }
+    
+    // Update bill number
+    const oldBillNumber = bill.billNumber;
+    bill.billNumber = newBillNumber;
+    await bill.save({ session });
+    
+    await session.commitTransaction();
+    
+    logger.info('Bill number updated', {
+      billId: bill._id,
+      oldBillNumber,
+      newBillNumber,
+      customSequence,
+      updatedBy: req.user.email
+    });
+    
+    res.json({
+      success: true,
+      message: 'Bill number updated successfully',
+      data: {
+        oldBillNumber,
+        newBillNumber,
+        bill
+      }
+    });
+    
+  } catch (error) {
+    await session.abortTransaction();
+    logger.error('Bill number update failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update bill number',
+      error: error.message
+    });
+  } finally {
+    session.endSession();
   }
 };
 
@@ -1771,5 +1891,6 @@ module.exports = {
   deleteBill,
   getBillsStats,
   customizeBill,
-  deletePaymentFromBill
+  deletePaymentFromBill,
+  updateBillNumber
 };

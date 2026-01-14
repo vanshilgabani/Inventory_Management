@@ -19,16 +19,17 @@ const shouldUseLockStock = () => {
   return false; // Always disabled
 };
 
-// Get all wholesale orders
 const getAllOrders = async (req, res) => {
   try {
     const { organizationId } = req.user;
-
-    const orders = await WholesaleOrder.find({ organizationId })
+    // ✅ FEATURE 1: Filter out soft-deleted orders
+    const orders = await WholesaleOrder.find({ 
+      organizationId,
+      deletedAt: null // Only show active orders
+    })
       .populate('buyerId', 'name mobile businessName')
       .sort({ createdAt: -1 })
       .lean();
-
     res.json(orders);
   } catch (error) {
     logger.error('Failed to fetch orders', { error: error.message });
@@ -406,7 +407,12 @@ const createOrder = async (req, res) => {
       notes: notes || '',
       fulfillmentType: fulfillmentType || 'warehouse',
       organizationId,
-      createdBy: req.user._id,
+      createdBy: {
+        userId: req.user._id,
+        userName: req.user.name || req.user.email,
+        userRole: req.user.role,
+        createdAt: new Date()
+      },
     }], { session });
 
     // Update buyer's total due
@@ -554,6 +560,14 @@ const sendChallanEmail = async (req, res) => {
 const updateOrder = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
+  // ✅ FEATURE 2: Track what changed
+  const changesBefore = {};
+  const changesAfter = {};
+  const fieldsToTrack = [
+    'buyerName', 'buyerContact', 'buyerEmail', 'buyerAddress',
+    'businessName', 'gstNumber', 'deliveryDate', 'notes',
+    'discountType', 'discountValue', 'amountPaid', 'paymentMethod'
+  ];
 
   try {
     const { id } = req.params;
@@ -707,6 +721,47 @@ const updateOrder = async (req, res) => {
 
     // ✅ STEP 6: Update order
     Object.assign(existingOrder, req.body);
+    // ✅ FEATURE 2: Track edit history
+    if (Object.keys(req.body).length > 0) {
+      const changesBefore = {};
+      const changesAfter = {};
+      
+      // Track changes to specific fields
+      const fieldsToTrack = [
+        'buyerName', 'buyerContact', 'buyerEmail', 'buyerAddress',
+        'businessName', 'gstNumber', 'deliveryDate', 'notes',
+        'discountType', 'discountValue', 'amountPaid', 'paymentMethod'
+      ];
+      
+      fieldsToTrack.forEach(field => {
+        if (req.body[field] !== undefined && req.body[field] !== existingOrder[field]) {
+          changesBefore[field] = existingOrder[field];
+          changesAfter[field] = req.body[field];
+        }
+      });
+      
+      // Track item changes
+      if (req.body.items) {
+        changesBefore.items = existingOrder.items;
+        changesAfter.items = req.body.items;
+      }
+      
+      // Add edit history entry if there are changes
+      if (Object.keys(changesBefore).length > 0) {
+        existingOrder.editHistory.push({
+          editedBy: {
+            userId: req.user._id,
+            userName: req.user.name || req.user.email,
+            userRole: req.user.role
+          },
+          editedAt: new Date(),
+          changes: {
+            before: changesBefore,
+            after: changesAfter
+          }
+        });
+      }
+    }
     await existingOrder.save({ session });
 
     await session.commitTransaction();
@@ -731,70 +786,120 @@ const updateOrder = async (req, res) => {
   }
 };
 
-// Delete order
+// FEATURE 1: Soft Delete Order
 const deleteOrder = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     const { id } = req.params;
-    const organizationId = req.user.organizationId;
+    const { organizationId, id: userId, name, email, role } = req.user;
 
-    const order = await WholesaleOrder.findOne({ _id: id, organizationId }).session(session);
+    const order = await WholesaleOrder.findOne({ 
+      _id: id, 
+      organizationId, 
+      deletedAt: null  // Only allow deleting active orders
+    }).session(session);
 
     if (!order) {
       await session.abortTransaction();
-      return res.status(404).json({
-        code: 'ORDER_NOT_FOUND',
-        message: 'Order not found',
+      return res.status(404).json({ 
+        code: 'ORDER_NOT_FOUND', 
+        message: 'Order not found or already deleted' 
       });
     }
 
-    // ✅ Restore stock ONLY for warehouse orders
-    if (order.fulfillmentType === 'warehouse') {
+    // ✅ STEP 1: Restore stock to MAIN inventory (not reserved)
+    if (order.fulfillmentType !== 'factorydirect') {
       for (const item of order.items) {
-        const product = await Product.findOne({
-          design: item.design,
-          organizationId,
+        const product = await Product.findOne({ 
+          design: item.design, 
+          organizationId 
         }).session(session);
 
         if (product) {
-          const colorVariant = product.colors.find((c) => c.color === item.color);
+          const colorVariant = product.colors.find(c => c.color === item.color);
           if (colorVariant) {
-            const sizeIndex = colorVariant.sizes.findIndex((s) => s.size === item.size);
+            const sizeIndex = colorVariant.sizes.findIndex(s => s.size === item.size);
             if (sizeIndex !== -1) {
+              // ✅ CORRECT: Restore to MAIN inventory (currentStock)
               colorVariant.sizes[sizeIndex].currentStock += item.quantity;
               await product.save({ session });
+
+              logger.debug('Stock restored to main', {
+                design: item.design,
+                color: item.color,
+                size: item.size,
+                restoredQty: item.quantity,
+                newMainStock: colorVariant.sizes[sizeIndex].currentStock
+              });
             }
           }
         }
       }
-    } else {
-      logger.info('Factory direct order - skipping stock restoration', { orderId: id });
     }
 
-    // Update buyer's total due
-    const buyer = await WholesaleBuyer.findById(order.buyerId).session(session);
-    if (buyer) {
-      buyer.totalDue = Math.max(0, (buyer.totalDue || 0) - order.amountDue);
-      buyer.totalOrders = Math.max(0, (buyer.totalOrders || 1) - 1);
-      await buyer.save({ session });
+    // STEP 2: Adjust buyer's totalDue
+    if (order.buyerId) {
+      const buyer = await WholesaleBuyer.findById(order.buyerId).session(session);
+      if (buyer) {
+        buyer.totalDue = Math.max(0, (buyer.totalDue || 0) - (order.amountDue || 0));
+        buyer.totalOrders = Math.max(0, (buyer.totalOrders || 0) - 1);
+        await buyer.save({ session });
+      }
     }
 
-    await WholesaleOrder.findByIdAndDelete(id).session(session);
+    // STEP 3: Remove from monthly bills if present
+    const bills = await MonthlyBill.find({ 
+      organizationId, 
+      'orders.orderId': id 
+    }).session(session);
+
+    for (const bill of bills) {
+      bill.orders = bill.orders.filter(o => o.orderId.toString() !== id);
+      
+      // Recalculate bill financials
+      const newSubtotal = bill.orders.reduce((sum, o) => sum + (o.subtotalAmount || 0), 0);
+      const newGst = bill.orders.reduce((sum, o) => sum + (o.gstAmount || 0), 0);
+      const newTotal = bill.orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+
+      bill.financials.subtotalAmount = newSubtotal;
+      bill.financials.gstAmount = newGst;
+      bill.financials.totalAmount = newTotal;
+      bill.financials.balanceDue = newTotal - (bill.financials.amountPaid || 0);
+
+      await bill.save({ session });
+    }
+
+    // ✅ STEP 4: Soft delete the order
+    order.deletedAt = new Date();
+    order.deletedBy = userId;
+    order.deletionReason = 'User initiated deletion';
+    await order.save({ session });
+
+    // ✅ NO TRANSFER RECORD NEEDED FOR SOFT DELETE
 
     await session.commitTransaction();
 
-    logger.info('Order deleted successfully', { orderId: id, fulfillmentType: order.fulfillmentType });
+    logger.info('Order soft deleted successfully', { 
+      orderId: id, 
+      deletedBy: `${name} ${email}`,
+      stockRestored: order.fulfillmentType !== 'factorydirect'
+    });
 
-    res.json({ message: 'Order deleted successfully' });
+    res.json({ 
+      success: true, 
+      message: 'Order deleted successfully', 
+      stockRestored: order.fulfillmentType !== 'factorydirect'
+    });
+
   } catch (error) {
     await session.abortTransaction();
     logger.error('Order deletion failed', { error: error.message, orderId: req.params.id });
-    res.status(500).json({
-      code: 'DELETE_FAILED',
-      message: 'Failed to delete order',
-      error: error.message,
+    res.status(500).json({ 
+      code: 'DELETE_FAILED', 
+      message: 'Failed to delete order', 
+      error: error.message 
     });
   } finally {
     session.endSession();
@@ -2090,7 +2195,12 @@ const createOrderWithReservedBorrow = async (req, res) => {
       notes: notes || '',
       fulfillmentType: fulfillmentType || 'warehouse',
       organizationId,
-      createdBy: req.user._id,
+      createdBy: {
+        userId: req.user._id,
+        userName: req.user.name || req.user.email,
+        userRole: req.user.role,
+        createdAt: new Date()
+      },
     }], { session });
 
     buyer.totalDue = (buyer.totalDue || 0) + amountDue;

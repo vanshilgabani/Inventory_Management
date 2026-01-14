@@ -780,8 +780,8 @@ const handleBulkTransferSubmit = async () => {
                                       <div key={sizeData.size} className="border-2 border-gray-200 rounded-lg p-3">
                                         <div className="text-center mb-2">
                                           <div className="text-xs text-black-900 font-bold">Size {sizeData.size}</div>
-                                          <div className="text-[9px] text-gray-500">
-                                            Main:{sizeData.currentStock || 0}
+                                          <div className="text-xs text-gray-500">
+                                            {bulkMode === 'return' ? `Reserved:${sizeData.reservedStock || 0}` : `Main:${sizeData.currentStock || 0}`}
                                           </div>
                                         </div>
                                         <input

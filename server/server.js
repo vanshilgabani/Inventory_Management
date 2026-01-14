@@ -48,6 +48,7 @@ const monthlyBillRoutes = require('./src/routes/monthlyBillRoutes');
 const initCronJobs = require('./src/utils/cronJobs');
 const actionLogRoutes = require('./src/routes/actionLogRoutes');
 const pendingRequestRoutes = require('./src/routes/pendingRequestRoutes');
+const deletedOrdersRoutes = require('./src/routes/deletedOrdersRoutes');
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -67,6 +68,7 @@ app.use('/api/transfers', transferRoutes);
 app.use('/api/monthly-bills', monthlyBillRoutes);
 app.use('/api/action-logs', actionLogRoutes);
 app.use('/api/pending-requests', pendingRequestRoutes);
+app.use('/api/deleted-orders', deletedOrdersRoutes);
 
 // Test route
 app.get('/', (req, res) => {

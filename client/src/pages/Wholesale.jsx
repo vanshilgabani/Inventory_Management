@@ -1145,6 +1145,34 @@ const handleItemDesignChange = (index, value) => {
                       </button>
                     )}
                   </div>
+                  {/* FEATURE 2: Creator & Edit History - STACKED BELOW ACTION BUTTONS */}
+                  {(order.createdBy || (order.editHistory && order.editHistory.length > 0)) && (
+                    <div className="mt-3 pt-3 border-t border-gray-200">
+                      <div className="space-y-1 text-xs text-gray-500">
+                        {/* Creator Info */}
+                        {order.createdBy && (
+                          <div className="flex items-center gap-1">
+                            <span className="font-medium">Created by:</span>
+                            <span className="text-gray-700">{order.createdBy.userName}</span>
+                          </div>
+                        )}
+
+                        {/* Edit History - Show last edit only, stacked below */}
+                        {order.editHistory && order.editHistory.length > 0 && (
+                          <div className="flex items-center gap-1">
+                            <span className="font-medium">Edited by:</span>
+                            <span className="text-gray-700">
+                              {order.editHistory[order.editHistory.length - 1]?.editedBy?.userName || 'System'}
+                            </span>
+                            <span className="text-gray-400">
+                              on {format(new Date(order.editHistory[order.editHistory.length - 1].editedAt), 'dd/MM/yyyy')} 
+                              {' '}at {format(new Date(order.editHistory[order.editHistory.length - 1].editedAt), 'h:mm a')}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

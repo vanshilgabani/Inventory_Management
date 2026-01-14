@@ -191,6 +191,53 @@ const wholesaleOrderSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+
+  // ✅ FEATURE 1: Soft Delete Fields
+  deletedAt: {
+    type: Date,
+    default: null,
+    index: true
+  },
+  deletedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  deletionReason: {
+    type: String
+  },
+
+  // ✅ FEATURE 2: Creator Info
+  createdBy: {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    userName: String,
+    userRole: String,
+    createdAt: {
+      type: Date,
+      default: Date.now
+    }
+  },
+
+  // ✅ FEATURE 2: Edit History
+  editHistory: [{
+    editedBy: {
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      },
+      userName: String,
+      userRole: String
+    },
+    editedAt: {
+      type: Date,
+      default: Date.now
+    },
+    changes: {
+      type: mongoose.Schema.Types.Mixed
+    }
+  }],
 }, {
   timestamps: true,
 });
@@ -270,5 +317,7 @@ wholesaleOrderSchema.pre('validate', function(next) {
 wholesaleOrderSchema.index({ challanNumber: 1, organizationId: 1 }, { unique: true, sparse: true });
 wholesaleOrderSchema.index({ organizationId: 1, orderDate: -1 });
 wholesaleOrderSchema.index({ buyerId: 1, orderDate: -1 });
+// ✅ TTL index for auto-deletion after 60 days
+wholesaleOrderSchema.index({ deletedAt: 1 }, { expireAfterSeconds: 5184000 }); // 60 days
 
 module.exports = mongoose.model('WholesaleOrder', wholesaleOrderSchema);

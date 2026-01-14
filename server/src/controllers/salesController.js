@@ -311,7 +311,12 @@ exports.createSale = async (req, res) => {
       status: status || 'dispatched',
       notes,
       organizationId,
-      createdBy: userId
+      createdByUser: {
+        userId: req.user._id,
+        userName: req.user.name || req.user.email,
+        userRole: req.user.role,
+        createdAt: new Date()
+      }
     }], { session });
 
     // Log transfer (reserved stock used)
@@ -429,7 +434,12 @@ exports.createSaleWithMainStock = async (req, res) => {
       status: status || 'dispatched',
       notes: notes ? `${notes} [Used main stock]` : '[Used main stock]',
       organizationId,
-      createdBy: userId
+      createdByUser: {
+        userId: req.user._id,
+        userName: req.user.name || req.user.email,
+        userRole: req.user.role,
+        createdAt: new Date()
+      }
     }], { session });
 
     // Log transfers
@@ -519,7 +529,7 @@ exports.getAllSales = async (req, res) => {
       limit = 0 
     } = req.query;
 
-    const filter = { organizationId };
+    const filter = { organizationId, deletedAt: null };
 
     // Status filter - support multiple statuses
     if (status) {
@@ -922,6 +932,28 @@ exports.updateSale = async (req, res) => {
                     
                     sale.stockRestoredAmount = 0;
                     stockDeducted = amountToDeduct;
+                    // ✅ FEATURE 2: Track edit history
+                    const changesBefore = {
+                      status: sale.status,
+                      comments: sale.comments || ''
+                    };
+                    const changesAfter = {
+                      status: status,
+                      comments: comments || ''
+                    };
+
+                    sale.editHistory.push({
+                      editedBy: {
+                        userId: req.user._id,
+                        userName: req.user.name || req.user.email,
+                        userRole: req.user.role
+                      },
+                      editedAt: new Date(),
+                      changes: {
+                        before: changesBefore,
+                        after: changesAfter
+                      }
+                    });
                     await product.save({ session });
                   }
                 }
@@ -1131,75 +1163,75 @@ exports.updateSale = async (req, res) => {
   }
 };
 
-/**
- * Delete sale (Admin only)
- */
-
+// ✅ FEATURE 1: Soft Delete Sale
 exports.deleteSale = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     const { id } = req.params;
-    const organizationId = req.user.organizationId;
+    const { organizationId, _id: userId, name, email } = req.user;
 
     const sale = await MarketplaceSale.findOne({
       _id: id,
-      organizationId
+      organizationId,
+      deletedAt: null
     }).session(session);
 
     if (!sale) {
       await session.abortTransaction();
       return res.status(404).json({
-        success: false,
-        message: 'Sale not found'
+        code: 'SALE_NOT_FOUND',
+        message: 'Sale not found or already deleted'
       });
     }
 
-    // ✅ SMART RESTORE: Only restore if stock wasn't already restored
-    const shouldRestoreStock = (sale.stockRestoredAmount || 0) === 0;
-    
-    if (shouldRestoreStock) {
-      console.log(`🗑️ Deleting order - restoring stock to RESERVED: +${sale.quantity}`);
-      
-      const product = await Product.findOne({
-        organizationId,
-        design: sale.design,
-        'colors.color': sale.color
-      }).session(session);
+    // ✅ STEP 1: Restore stock to reserved inventory
+    const product = await Product.findOne({
+      organizationId,
+      design: sale.design,
+      'colors.color': sale.color
+    }).session(session);
 
-      if (product) {
-        const colorVariant = product.colors.find(c => c.color === sale.color);
-        if (colorVariant) {
-          const sizeVariant = colorVariant.sizes.find(s => s.size === sale.size);
-          if (sizeVariant) {
-            // ✅ RESTORE TO RESERVED STOCK
-            sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
-            await product.save({ session });
-            console.log(`✅ Stock restored to reserved: ${sale.quantity} units for ${sale.design}-${sale.color}-${sale.size}`);
-          }
+    if (product) {
+      const colorVariant = product.colors.find(c => c.color === sale.color);
+      if (colorVariant) {
+        const sizeVariant = colorVariant.sizes.find(s => s.size === sale.size);
+        if (sizeVariant) {
+          sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+          await product.save({ session });
         }
       }
-    } else {
-      console.log(`🗑️ Deleting order - stock was already restored (${sale.stockRestoredAmount}), no action needed`);
     }
 
-    await MarketplaceSale.deleteOne({ _id: id }).session(session);
+    // ✅ STEP 2: Soft delete the sale
+    sale.deletedAt = new Date();
+    sale.deletedBy = userId;
+    sale.deletionReason = 'User initiated deletion';
+    await sale.save({ session });
+
+    // ✅ Decrement edit session
+    await decrementEditSession(req, 'delete', 'sales', id);
+
     await session.commitTransaction();
-    await decrementEditSession(req, 'delete', 'sales', req.params.id);
+
+    logger.info('Sale soft deleted', {
+      saleId: id,
+      deletedBy: name || email,
+      stockRestored: sale.quantity
+    });
 
     res.json({
       success: true,
-      message: shouldRestoreStock 
-        ? 'Sale deleted and stock restored to reserved inventory' 
-        : 'Sale deleted (stock was already restored)'
+      message: 'Sale deleted successfully',
+      stockRestored: sale.quantity
     });
 
   } catch (error) {
     await session.abortTransaction();
-    console.error('Delete sale error:', error);
+    logger.error('Sale deletion failed', { error: error.message });
     res.status(500).json({
-      success: false,
+      code: 'DELETE_FAILED',
       message: 'Failed to delete sale',
       error: error.message
     });
@@ -1556,7 +1588,12 @@ exports.importFromCSV = async (req, res) => {
           status: 'dispatched', // Always dispatched on import
           notes: '', // Empty notes as requested
           organizationId,
-          createdBy: userId
+          createdByUser: {
+            userId: req.user._id,
+            userName: req.user.name || req.user.email,
+            userRole: req.user.role,
+            createdAt: new Date()
+          }
         }], { session });
         
         // Log transfer

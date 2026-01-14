@@ -548,30 +548,48 @@ const handleSubmit = async (e) => {
   }
 };
 
-  const handleDelete = async (id) => {
+const handleDelete = async (id) => {
   if (!window.confirm('Are you sure you want to delete this sale?')) return;
-  
+
   try {
-    await directSalesService.deleteDirectSale(id);
-    await refreshSession(); // ✅ Refresh session
-    fetchData();
-    toast.success('Sale deleted successfully');
+    // ✅ Call delete API
+    const response = await directSalesService.deleteDirectSale(id);
+    
+    // ✅ Check if backend returned success
+    if (response?.success || response?.message) {
+      // ✅ Immediately remove from UI state (optimistic update)
+      setSales(prevSales => prevSales.filter(sale => sale._id !== id));
+      
+      // ✅ Then refresh data in background
+      await fetchData();
+      
+      toast.success(response?.message || 'Sale deleted successfully', {
+        icon: '✅',
+        duration: 3000
+      });
+    } else {
+      throw new Error('Delete response invalid');
+    }
   } catch (error) {
-    // ✅ HANDLE SESSION ERRORS
+    console.error('Delete error:', error);
+    
+    // HANDLE SESSION ERRORS
     if (error.response?.status === 403) {
       const errorCode = error.response?.data?.code;
-      
       if (errorCode === 'NO_ACTIVE_SESSION') {
-        toast.error('⚠️ No active edit session. Please start a session first.');
+        toast.error('No active edit session. Please start a session first.');
       } else if (errorCode === 'LIMIT_EXHAUSTED') {
-        toast.error('❌ Edit limit exhausted. Your session has ended.');
+        toast.error('Edit limit exhausted. Your session has ended.');
         await refreshSession();
       } else {
         toast.error(error.response?.data?.message || 'Access denied');
       }
     } else {
-      toast.error('Failed to delete sale');
+      toast.error(error.response?.data?.message || error.message || 'Failed to delete sale');
     }
+    
+    // ✅ Refresh data to restore correct state
+    await fetchData();
   }
 };
 
@@ -1023,7 +1041,19 @@ if (loading || sizesLoading) return (
                                       >
                                         <FiTrash2 size={18} />
                                       </button>
-                                    </div>
+                                      {/* FEATURE 2: Creator & Edit History */}
+                                      <div className="mt-4 pt-4 border-t border-gray-200">
+                                        <div className="space-y-1 text-[9px] text-gray-500">
+                                          {/* Creator Info - Username Only */}
+                                          {sale.createdByUser && (
+                                            <div className="flex items-center gap-1">
+                                              <span className="font-medium">Created by:</span>
+                                              <span>{sale.createdByUser.userName}</span>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>                                    
                                   </div>
                                 );
                               })}

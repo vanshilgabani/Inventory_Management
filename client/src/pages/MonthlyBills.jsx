@@ -79,6 +79,7 @@ const MonthlyBills = () => {
     notes: '',
     removeChallans: []
   });
+  const [customSequence, setCustomSequence] = useState('');
 
   // NEW: Preview modal states
   const [showPreviewModal, setShowPreviewModal] = useState(false);
@@ -346,6 +347,41 @@ const MonthlyBills = () => {
     }
   };
 
+  // ✅ NEW: Handle bill number update
+const handleUpdateBillNumber = async () => {
+  if (!customSequence || customSequence < 1) {
+    toast.error('Please enter a valid sequence number (minimum 1)');
+    return;
+  }
+
+  try {
+    setIsSubmitting(true);
+    
+    const result = await monthlyBillService.updateBillNumber(
+      customizingBill._id,
+      parseInt(customSequence, 10)
+    );
+    
+    toast.success(`✅ Bill number updated: ${result.data.oldBillNumber} → ${result.data.newBillNumber}`, {
+      duration: 5000
+    });
+    
+    // Refresh bills list
+    await fetchInitialData();
+    
+    // Update the customizing bill with new data
+    setCustomizingBill(result.data.bill);
+    setCustomSequence(''); // Clear input
+    
+  } catch (error) {
+    console.error('Failed to update bill number:', error);
+    const errorMsg = error.response?.data?.message || 'Failed to update bill number';
+    toast.error(errorMsg);
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+
   // NEW: Generate bills for all buyers
   const handleGenerateAllBills = async () => {
     if (isGeneratingAll) return;
@@ -523,6 +559,7 @@ const MonthlyBills = () => {
       notes: bill.notes || '',
       removeChallans: []
     });
+    setCustomSequence('');
     setShowCustomizeModal(true);
   };
 
@@ -898,7 +935,7 @@ const MonthlyBills = () => {
                     </div>
                   </div>
                   <p className="text-2xl font-bold text-emerald-900">
-                    ₹{((stats.thisMonthRevenue || 0) / 100000).toFixed(1)}L
+                    ₹{((stats.thisMonthRevenue || 0)).toFixed(2)}
                   </p>
                   <p className="text-sm text-emerald-700 font-medium">This Month</p>
                 </div>
@@ -911,7 +948,7 @@ const MonthlyBills = () => {
                     </div>
                   </div>
                   <p className="text-2xl font-bold text-rose-900">
-                    ₹{((stats.totalOutstanding || 0) / 100000).toFixed(1)}L
+                    ₹{((stats.totalOutstanding || 0)).toFixed(2)}
                   </p>
                   <p className="text-sm text-rose-700 font-medium">Outstanding</p>
                 </div>
@@ -1812,7 +1849,7 @@ const MonthlyBills = () => {
           <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
             {/* Bill Info Header */}
             <div className="p-4 bg-blue-50 rounded-xl border border-blue-200">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between mb-4">
                 <div>
                   <p className="text-sm font-medium text-blue-700">Bill Number</p>
                   <p className="text-lg font-bold text-blue-900">{customizingBill.billNumber}</p>
@@ -1828,6 +1865,58 @@ const MonthlyBills = () => {
                   </p>
                 </div>
               </div>
+
+              {/* ✅ NEW: Edit Bill Number - Only for DRAFT bills */}
+              {customizingBill.status === 'draft' && (
+                <div className="mt-4 pt-4 border-t border-blue-200">
+                  <label className="block text-sm font-semibold text-slate-700 mb-3">
+                    📝 Edit Bill Number (Sequence Only)
+                  </label>
+                  
+                  <div className="flex items-center gap-3">
+                    {/* Display format parts */}
+                    <span className="text-lg font-mono text-slate-600">
+                      {customizingBill.billNumber.split('/').slice(0, 2).join('/')} /
+                    </span>
+                    
+                    {/* Editable sequence number */}
+                    <input
+                      type="number"
+                      min="1"
+                      className="w-32 px-4 py-2.5 bg-white border-2 border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-lg font-bold text-blue-900"
+                      placeholder="01"
+                      value={customSequence}
+                      onChange={(e) => setCustomSequence(e.target.value)}
+                    />
+                    
+                    <button
+                      onClick={handleUpdateBillNumber}
+                      disabled={!customSequence || customSequence < 1 || isSubmitting}
+                      className="px-4 py-2.5 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      {isSubmitting ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                          <span>Updating...</span>
+                        </>
+                      ) : (
+                        <>
+                          <FiEdit2 className="w-4 h-4" />
+                          <span>Update</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  
+                  <p className="text-xs text-blue-700 mt-2 flex items-start gap-2">
+                    <FiAlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <span>
+                      💡 <strong>First bill only:</strong> Change sequence number to continue from your Old bills. 
+                      System will auto-increment from this number for future bills.
+                    </span>
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Payment Terms */}

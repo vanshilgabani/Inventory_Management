@@ -112,4 +112,12 @@ export const monthlyBillService = {
     const response = await api.put(`/monthly-bills/${billId}/customize`, customizeData);
     return response.data;
   },
+
+  // NEW: Update bill number for draft bill
+  updateBillNumber: async (billId, customSequence) => {
+    const response = await api.put(`/monthly-bills/${billId}/update-bill-number`, {
+      customSequence
+    });
+    return response.data;
+  },
 };

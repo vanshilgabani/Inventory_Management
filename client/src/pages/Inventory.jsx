@@ -40,7 +40,7 @@ const Inventory = () => {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState(null);
-  const [stockView, setStockView] = useState('available'); // 'available' or 'full'
+  const [clickedDesign, setClickedDesign] = useState(null); // Track which design is clicked
   const [stockLockInfo, setStockLockInfo] = useState({ enabled: false, lockValue: 0 });
 
   
@@ -82,6 +82,19 @@ const Inventory = () => {
     fetchPermissionsAndSettings();
     fetchProducts();
   }, []);
+
+  // Click outside handler to reset to available stock view
+useEffect(() => {
+  const handleClickOutside = (e) => {
+    // Check if click is outside design elements
+    if (!e.target.closest('.design-name')) {
+      setClickedDesign(null);
+    }
+  };
+
+  document.addEventListener('click', handleClickOutside);
+  return () => document.removeEventListener('click', handleClickOutside);
+}, []);
 
   const fetchPermissionsAndSettings = async () => {
     try {
@@ -163,19 +176,22 @@ const allVariants = useMemo(() => {
             color.sizes
               .filter(s => enabledSizes.includes(s.size))
               .forEach(size => {
-                // ... rest of the existing code (don't change anything below)
                 const currentStock = size.currentStock || 0;
                 const lockedStock = size.lockedStock || 0;
-                const availableStock = size.availableStock !== undefined 
-                  ? size.availableStock 
+                const reservedStock = size.reservedStock || 0;
+                const availableStock = size.availableStock !== undefined
+                  ? size.availableStock
                   : currentStock - lockedStock;
-                
-                const stock = stockView === 'available' ? availableStock : currentStock;
+
+                // Determine which stock to show based on clicked design
+                const stock = clickedDesign === product.design 
+                  ? reservedStock 
+                  : availableStock;
                 
                 let status = 'instock';
-                if (stock === 0) {
+                if (availableStock === 0) {
                   status = 'outofstock';
-                } else if (stock <= globalThreshold) {
+                } else if (availableStock <= globalThreshold) {
                   status = 'lowstock';
                 }
                 
@@ -196,7 +212,7 @@ const allVariants = useMemo(() => {
     }
   });
   return variants;
-}, [products, enabledSizes, globalThreshold, stockView, stockLockInfo.enabled, activeColors]); // ← Add activeColors to deps
+}, [products, enabledSizes, globalThreshold, clickedDesign, stockLockInfo.enabled, activeColors]);
 
   // ✅ Apply filters at VARIANT level
   const filteredVariants = useMemo(() => {
@@ -500,6 +516,11 @@ const allVariants = useMemo(() => {
     return badges[status] || badges.in_stock;
   };
 
+  const handleDesignClick = (e, design) => {
+  e.stopPropagation();
+  setClickedDesign(design === clickedDesign ? null : design);
+};
+
   if (loading || sizesLoading) return <Loader />;
 
   return (
@@ -777,7 +798,15 @@ const allVariants = useMemo(() => {
                       </button>
                       <div>
                         <div className="flex items-center gap-3">
-                          <h3 className="text-xl font-bold text-gray-900">{group.design}</h3>
+                          <h3 
+                            className="design-name text-xl font-bold text-gray-900 cursor-pointer hover:text-indigo-600 transition-colors"
+                            onClick={(e) => handleDesignClick(e, group.design)}
+                          >
+                            {group.design}
+                            {clickedDesign === group.design && (
+                              <span className="ml-2 text-sm text-indigo-600">(Reserved Stock)</span>
+                            )}
+                          </h3>
                           {stockFilter !== 'all' && (
                             <span className="px-3 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
                               Filtered View
@@ -873,16 +902,9 @@ const allVariants = useMemo(() => {
                             
                             // Format display text based on view mode
                             let displayText;
-                            if (stockView === 'full' && stockLockInfo.enabled && lockedStock > 0) {
-                              // Full mode with locks: "M - 50/5" (50 available, 5 locked)
-                              displayText = `${size.size} - ${availableStock}/${lockedStock}`;
-                            } else if (stockView === 'available' && stockLockInfo.enabled) {
-                              // Available mode: "M - 50" (available only)
-                              displayText = `${size.size} - ${availableStock}`;
-                            } else {
-                              // Full mode without locks OR stock lock disabled: "M - 50" (total)
-                              displayText = `${size.size} - ${currentStock}`;
-                            }
+
+                              displayText = `${size.size} - ${size.stock}`;
+                            
                             
                             return (
                               <span
