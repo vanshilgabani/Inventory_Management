@@ -11,7 +11,9 @@ const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+// Increase payload limit for CSV imports
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.urlencoded({ extended: true }));
 
 // Health check endpoint for Render
