@@ -2081,30 +2081,106 @@ const getBuyerStats = async (req, res) => {
   }
 };
 
-// ✅ NEW: Create order borrowing from reserved stock
+// NEW: Create order borrowing from reserved stock
 const createOrderWithReservedBorrow = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     const {
-      buyerName, buyerContact, buyerEmail, buyerAddress, businessName, gstNumber,
-      deliveryDate, items, subtotalAmount, discountType, discountValue, discountAmount,
-      gstEnabled, gstAmount, cgst, sgst, totalAmount, amountPaid, paymentMethod, notes,
-      fulfillmentType, borrowFromReserved
+      buyerName,
+      buyerContact,
+      buyerEmail,
+      buyerAddress,
+      businessName,
+      gstNumber,
+      deliveryDate,
+      items,
+      subtotalAmount,
+      discountType,
+      discountValue,
+      discountAmount,
+      gstEnabled,
+      gstAmount,
+      cgst,
+      sgst,
+      totalAmount,
+      amountPaid,
+      paymentMethod,
+      notes,
+      fulfillmentType,
+      borrowFromReserved
     } = req.body;
-    const { organizationId } = req.user;
 
+    const organizationId = req.user.organizationId;
+
+    // Validate borrowFromReserved flag
     if (!borrowFromReserved) {
       await session.abortTransaction();
       return res.status(400).json({
         code: 'INVALID_REQUEST',
-        message: 'This endpoint requires borrowFromReserved flag',
+        message: 'This endpoint requires borrowFromReserved flag'
       });
     }
 
-    // Find or create buyer (same as before)
-    let buyer = await WholesaleBuyer.findOne({ mobile: buyerContact, organizationId }).session(session);
+    // ✅ STEP 1: Fetch GST settings and recalculate (BACKEND SOURCE OF TRUTH)
+    const settings = await Settings.findOne({ organizationId });
+    const gstPercentage = settings?.gstPercentage || 5;
+
+    logger.info('GST Settings fetched', { organizationId, gstPercentage, gstEnabled: gstEnabled !== false });
+
+    // ✅ STEP 2: Recalculate all financial values
+    const calculatedSubtotal = items.reduce((sum, item) => {
+      return sum + (item.quantity * item.pricePerUnit);
+    }, 0);
+
+    // Calculate discount amount
+    let calculatedDiscountAmount = 0;
+    if (discountType === 'percentage') {
+      calculatedDiscountAmount = (calculatedSubtotal * (discountValue || 0)) / 100;
+    } else if (discountType === 'fixed') {
+      calculatedDiscountAmount = discountValue || 0;
+    }
+
+    // Ensure discount doesn't exceed subtotal
+    if (calculatedDiscountAmount > calculatedSubtotal) {
+      calculatedDiscountAmount = calculatedSubtotal;
+    }
+
+    // Calculate taxable amount after discount
+    const taxableAmount = calculatedSubtotal - calculatedDiscountAmount;
+
+    // Calculate GST
+    let calculatedGstAmount = 0;
+    let calculatedCgst = 0;
+    let calculatedSgst = 0;
+
+    if (gstEnabled !== false) {
+      calculatedGstAmount = (taxableAmount * gstPercentage) / 100;
+      calculatedCgst = calculatedGstAmount / 2;
+      calculatedSgst = calculatedGstAmount / 2;
+    }
+
+    // Calculate final total
+    const calculatedTotalAmount = taxableAmount + calculatedGstAmount;
+
+    logger.info('Financial calculations completed', {
+      subtotal: calculatedSubtotal,
+      discountAmount: calculatedDiscountAmount,
+      taxableAmount,
+      gstPercentage,
+      gstAmount: calculatedGstAmount,
+      cgst: calculatedCgst,
+      sgst: calculatedSgst,
+      totalAmount: calculatedTotalAmount
+    });
+
+    // Find or create buyer
+    let buyer = await WholesaleBuyer.findOne({
+      mobile: buyerContact,
+      organizationId
+    }).session(session);
+
     if (!buyer) {
       buyer = await WholesaleBuyer.create([{
         name: buyerName,
@@ -2116,14 +2192,19 @@ const createOrderWithReservedBorrow = async (req, res) => {
         organizationId,
         creditLimit: 0,
         totalDue: 0,
-        isTrusted: false,
+        isTrusted: false
       }], { session });
       buyer = buyer[0];
+      logger.info('New buyer created', { buyerId: buyer._id, name: buyerName });
     }
 
-    // ✅ Deduct stock (main + reserved)
+    // ✅ STEP 3: Deduct stock (main + reserved)
     for (const item of items) {
-      const product = await Product.findOne({ design: item.design, organizationId }).session(session);
+      const product = await Product.findOne({
+        design: item.design,
+        organizationId
+      }).session(session);
+
       const colorVariant = product.colors.find(c => c.color === item.color);
       const sizeIndex = colorVariant.sizes.findIndex(s => s.size === item.size);
 
@@ -2131,13 +2212,15 @@ const createOrderWithReservedBorrow = async (req, res) => {
       const reservedStock = colorVariant.sizes[sizeIndex].reservedStock || 0;
 
       if (item.quantity <= mainStock) {
+        // Sufficient in main
         colorVariant.sizes[sizeIndex].currentStock -= item.quantity;
       } else {
+        // Need to borrow from reserved
         const borrowAmount = item.quantity - mainStock;
         colorVariant.sizes[sizeIndex].currentStock = 0;
         colorVariant.sizes[sizeIndex].reservedStock -= borrowAmount;
 
-        // ✅ Log transfer
+        // Log transfer
         await Transfer.create([{
           design: item.design,
           color: item.color,
@@ -2155,7 +2238,7 @@ const createOrderWithReservedBorrow = async (req, res) => {
           organizationId
         }], { session });
 
-        console.log(`✅ Borrowed ${borrowAmount} from Reserved for ${item.design} ${item.color} ${item.size}`);
+        console.log(`✅ Borrowed ${borrowAmount} from Reserved for ${item.design}-${item.color}-${item.size}`);
       }
 
       await product.save({ session });
@@ -2163,10 +2246,11 @@ const createOrderWithReservedBorrow = async (req, res) => {
 
     // Generate challan number
     const challanNumber = await generateChallanNumber(businessName || buyerName, organizationId, session);
-    const amountDue = totalAmount - (amountPaid || 0);
-    const paymentStatus = amountDue === 0 ? 'Paid' : amountPaid > 0 ? 'Partial' : 'Pending';
 
-    // Create order
+    const amountDue = calculatedTotalAmount - (amountPaid || 0);
+    const paymentStatus = amountDue === 0 ? 'Paid' : (amountPaid > 0 ? 'Partial' : 'Pending');
+
+    // ✅ STEP 4: Create order with RECALCULATED values
     const order = await WholesaleOrder.create([{
       challanNumber,
       buyerId: buyer._id,
@@ -2178,15 +2262,16 @@ const createOrderWithReservedBorrow = async (req, res) => {
       gstNumber: gstNumber || '',
       deliveryDate: deliveryDate || null,
       items,
-      subtotalAmount,
+      subtotalAmount: calculatedSubtotal,
       discountType: discountType || 'none',
       discountValue: discountValue || 0,
-      discountAmount: discountAmount || 0,
-      gstEnabled: gstEnabled || false,
-      gstAmount: finalGstAmount,        // ✅ FIXED - server calculated
-      cgst: finalCgst,                  // ✅ FIXED - server calculated
-      sgst: finalSgst,                  // ✅ FIXED - server calculated
-      totalAmount: finalTotalAmount,    // ✅ FIXED - server calculated
+      discountAmount: calculatedDiscountAmount,
+      gstEnabled: gstEnabled !== false,
+      gstPercentage: gstPercentage,           // STORE THE PERCENTAGE USED
+      gstAmount: calculatedGstAmount,         // ✅ BACKEND CALCULATED
+      cgst: calculatedCgst,                   // ✅ BACKEND CALCULATED
+      sgst: calculatedSgst,                   // ✅ BACKEND CALCULATED
+      totalAmount: calculatedTotalAmount,     // ✅ BACKEND CALCULATED
       amountPaid: amountPaid || 0,
       amountDue,
       paymentStatus,
@@ -2198,18 +2283,27 @@ const createOrderWithReservedBorrow = async (req, res) => {
       createdBy: {
         userId: req.user._id,
         userName: req.user.name || req.user.email,
-        userRole: req.user.role,
-        createdAt: new Date()
+        userRole: req.user.role
       },
+      createdAt: new Date()
     }], { session });
 
+    // Update buyer's total due
     buyer.totalDue = (buyer.totalDue || 0) + amountDue;
     buyer.totalOrders = (buyer.totalOrders || 0) + 1;
     buyer.lastOrderDate = new Date();
     await buyer.save({ session });
 
     await session.commitTransaction();
-    logger.info('Wholesale order created with reserved borrow', { orderId: order[0]._id });
+
+    logger.info('Wholesale order created with reserved borrow', {
+      orderId: order[0]._id,
+      challanNumber,
+      totalAmount: calculatedTotalAmount,
+      gstPercentage,
+      gstAmount: calculatedGstAmount
+    });
+
     res.status(201).json(order[0]);
 
   } catch (error) {
@@ -2218,7 +2312,7 @@ const createOrderWithReservedBorrow = async (req, res) => {
     res.status(500).json({
       code: 'ORDER_CREATION_FAILED',
       message: 'Failed to create order',
-      error: error.message,
+      error: error.message
     });
   } finally {
     session.endSession();
