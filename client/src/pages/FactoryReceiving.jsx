@@ -19,6 +19,7 @@ import { format, parseISO, isToday, isYesterday } from 'date-fns';
 import { useAuth } from '../context/AuthContext';
 import {settingsService} from '../services/settingsService';
 import { useColorPalette } from '../hooks/useColorPalette';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const FactoryReceiving = () => {
   const { user } = useAuth();
@@ -35,6 +36,7 @@ const FactoryReceiving = () => {
   const [returnType, setReturnType] = useState('same'); // 'same' or 'exchange'
   const [exchangeStock, setExchangeStock] = useState({ items: [] });
   const [expandedBorrows, setExpandedBorrows] = useState({}); // Track which borrows are expanded
+  const [deletingIds, setDeletingIds] = useState([]);
 
   const [historyModal, setHistoryModal] = useState({
     show: false,
@@ -75,7 +77,6 @@ const FactoryReceiving = () => {
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
-  const [permissions, setPermissions] = useState({ allowSalesEdit: false });
 
   useEffect(() => {
     const fetchPermissions = async () => {
@@ -582,30 +583,44 @@ const handleReturnSubmit = async (e) => {
     setShowModal(true);
   };
 
-  const handleDelete = async (groupedReceiving) => {
-    if (!isAdmin) {
-      toast.error('Only admins can delete receivings');
-      return;
+const handleDelete = async (groupedReceiving) => {
+  if (!isAdmin) {
+    toast.error('Only admins can delete receivings');
+    return;
+  }
+
+  // Check if already deleting
+  const isDeleting = groupedReceiving.receivingIds.some(id => deletingIds.includes(id));
+  if (isDeleting) {
+    toast.error('Delete already in progress...');
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Are you sure you want to delete all receivings for ${groupedReceiving.design} - ${groupedReceiving.color}?\n\nWill:\n- Delete ${groupedReceiving.receivingIds.length} receiving records\n- Reduce stock by ${groupedReceiving.totalQuantity} units\n\nThis action cannot be undone.`
+  );
+
+  if (!confirmed) return;
+
+  // Mark as deleting
+  setDeletingIds(prev => [...prev, ...groupedReceiving.receivingIds]);
+
+  try {
+    // Delete ONE AT A TIME instead of all at once
+    for (const id of groupedReceiving.receivingIds) {
+      await factoryService.deleteReceiving(id);
     }
 
-    const confirmed = window.confirm(
-      `Are you sure you want to delete all receivings for ${groupedReceiving.design} - ${groupedReceiving.color}?\n\nThis will:\n- Delete ${groupedReceiving.receivingIds.length} receiving record(s)\n- Reduce stock by ${groupedReceiving.totalQuantity} units\n\nThis action cannot be undone.`
-    );
-
-    if (!confirmed) return;
-
-    try {
-      const deletePromises = groupedReceiving.receivingIds.map((id) =>
-        factoryService.deleteReceiving(id)
-      );
-      await Promise.all(deletePromises);
-      toast.success(`Deleted ${groupedReceiving.receivingIds.length} receivings successfully!`);
-      fetchData();
-    } catch (error) {
-      console.error('Delete error:', error);
-      toast.error(error.response?.data?.message || 'Failed to delete receivings');
-    }
-  };
+    toast.success(`Deleted ${groupedReceiving.receivingIds.length} receivings successfully!`);
+    fetchData();
+  } catch (error) {
+    console.error('Delete error:', error);
+    toast.error(error.response?.data?.message || 'Failed to delete receivings');
+  } finally {
+    // Remove from deleting list
+    setDeletingIds(prev => prev.filter(id => !groupedReceiving.receivingIds.includes(id)));
+  }
+}
 
     // ✅ NEW: Add another design entry
   const handleAddDesignEntry = () => {
@@ -1429,10 +1444,13 @@ const handleSubmit = async (e) => {
                                           e.stopPropagation();
                                           handleDelete(colorData);
                                         }}
-                                        className="px-3 py-1 bg-red-500 text-white rounded text-xs font-semibold hover:bg-red-600 transition-all flex items-center gap-1"
+                                        disabled={colorData.receivingIds.some(id => deletingIds.includes(id))}
+                                        className={`px-3 py-1 bg-red-500 text-white rounded text-xs font-semibold hover:bg-red-600 transition-all flex items-center gap-1 ${
+                                          colorData.receivingIds.some(id => deletingIds.includes(id)) ? 'opacity-50 cursor-not-allowed' : ''
+                                        }`}
                                       >
                                         <FiTrash2 size={12} />
-                                        Delete
+                                        {colorData.receivingIds.some(id => deletingIds.includes(id)) ? 'Deleting...' : 'Delete'}
                                       </button>
                                     </div>
                                   </td>
@@ -1461,153 +1479,248 @@ const handleSubmit = async (e) => {
         </div>
       )}
 
-      {/* ==================== ADD/EDIT MODAL ==================== */}
-      <Modal 
-        isOpen={showModal} 
-        onClose={() => { setShowModal(false); resetForm(); }}
-        title={editMode ? 'Edit Factory Receiving' : 'Factory Receiving (Multiple Designs)'}
+      {/* Add/Edit Receiving Modal */}
+      <Modal
+        isOpen={showModal}
+        onClose={() => {
+          setShowModal(false);
+          resetForm();
+        }}
+        title={editMode ? 'Edit Receiving' : 'Receive Stock'}
       >
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Header with Add More button */}
-          {!editMode && (
-            <div className="flex items-center justify-between p-4 bg-blue-50 rounded-lg border-2 border-blue-200">
-              <div>
-                <h3 className="font-bold text-gray-900">
-                  {designEntries.length} Design{designEntries.length > 1 ? 's' : ''} to Add
+          {designEntries.map((entry, entryIndex) => (
+            <div key={entry.id} className="border border-gray-200 rounded-lg p-4 space-y-4">
+              {/* Entry Header */}
+              <div className="flex justify-between items-center pb-2 border-b">
+                <h3 className="font-semibold text-gray-900">
+                  {editMode ? 'Edit Receiving' : `Design Entry ${entryIndex + 1}`}
                 </h3>
-                <p className="text-sm text-gray-600">Add multiple designs in a single submission</p>
-              </div>
-              <button
-                type="button"
-                onClick={handleAddDesignEntry}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg font-semibold hover:bg-blue-600 transition-all"
-              >
-                <FiPlus /> Add More Design
-              </button>
-            </div>
-          )}
-
-          {/* Loop through all design entries */}
-          {designEntries.map((entry, index) => (
-            <div key={entry.id} className="border-2 border-gray-200 rounded-lg p-6 bg-gray-50 relative">
-              {/* Entry header with remove button */}
-              <div className="flex items-center justify-between mb-4 pb-3 border-b-2 border-gray-300">
-                <div className="flex items-center gap-2">
-                  <span className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center font-bold">
-                    {index + 1}
-                  </span>
-                  <h4 className="font-bold text-gray-900">
-                    Design {index + 1} {entry.selectedDesign && `- ${entry.selectedDesign}`}
-                  </h4>
-                </div>
                 {!editMode && designEntries.length > 1 && (
                   <button
                     type="button"
                     onClick={() => handleRemoveDesignEntry(entry.id)}
-                    className="px-3 py-1 bg-red-500 text-white rounded-lg font-semibold hover:bg-red-600 transition-all flex items-center gap-1"
+                    className="text-red-600 hover:text-red-800 text-sm font-medium"
                   >
-                    <FiTrash2 size={14} /> Remove
+                    Remove
                   </button>
                 )}
               </div>
 
               {/* Design Selection */}
-              <div className="mb-4">
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Design Number</label>
-                {editMode ? (
-                  <input
-                    type="text"
-                    value={entry.selectedDesign}
-                    disabled
-                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg bg-gray-100 cursor-not-allowed"
-                  />
-                ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Design {!editMode && '*'}
+                  </label>
+                  {editMode ? (
+                    <input
+                      type="text"
+                      value={entry.selectedDesign}
+                      disabled
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100"
+                    />
+                  ) : (
+                    <select
+                      value={entry.selectedDesign}
+                      onChange={(e) => handleDesignChange(entry.id, e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                      required
+                    >
+                      <option value="">Select existing or create new</option>
+                      <option value="new">➕ Create New Design</option>
+                      <optgroup label="Existing Designs">
+                        {products.map((product) => (
+                          <option key={product._id} value={product.design}>
+                            {product.design}
+                          </option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  )}
+                </div>
+
+                {/* Source Type Selection - ✅ NEW */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Source Type *
+                  </label>
                   <select
-                    value={entry.selectedDesign === 'new' || entry.isNewProduct ? 'new' : entry.selectedDesign}
-                    onChange={(e) => handleDesignChange(entry.id, e.target.value)}
-                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
-                    required={!entry.isNewProduct}
+                    value={entry.sourceType}
+                    onChange={(e) => handleEntryFieldChange(entry.id, 'sourceType', e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    disabled={editMode}
                   >
-                    <option value="">Select Design</option>
-                    {products.map((product) => (
-                      <option key={product._id} value={product.design}>
-                        {product.design}
-                      </option>
-                    ))}
-                    <option value="new">➕ Add New Design</option>
+                    <option value="factory">🏭 Factory</option>
+                    <option value="borrowed_buyer">📦 Borrowed from Buyer</option>
+                    <option value="borrowed_vendor">🔄 Borrowed from Vendor</option>
+                    <option value="other">📋 Other</option>
                   </select>
-                )}
+                </div>
               </div>
 
-              {/* New Design Input */}
-              {entry.isNewProduct && !editMode && (
-                <div className="mb-4">
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">New Design Number</label>
-                  <input
-                    type="text"
-                    value={entry.selectedDesign === 'new' ? '' : entry.selectedDesign}
-                    onChange={(e) => {
-                      const newValue = e.target.value.trim();
-                      handleEntryFieldChange(entry.id, 'selectedDesign', newValue || 'new'); // Keep "new" if empty
-                    }}
-                    placeholder="e.g., D15"
-                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-                    required
-                  />
+              {/* Conditional Fields for Borrowed/Other Types - ✅ NEW */}
+              {['borrowed_buyer', 'borrowed_vendor', 'other'].includes(entry.sourceType) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-orange-50 p-4 rounded-lg">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Party Name *
+                    </label>
+                    <input
+                      type="text"
+                      value={entry.sourceName}
+                      onChange={(e) => handleEntryFieldChange(entry.id, 'sourceName', e.target.value)}
+                      placeholder="Enter party name (e.g., amit shah)"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
+                      disabled={editMode}
+                      required
+                    />
+                    <p className="text-xs text-gray-600 mt-1">
+                      Name of the buyer/vendor you're borrowing from
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Return Due Date
+                    </label>
+                    <input
+                      type="date"
+                      value={entry.returnDueDate}
+                      onChange={(e) => handleEntryFieldChange(entry.id, 'returnDueDate', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
+                      disabled={editMode}
+                      min={format(new Date(), 'yyyy-MM-dd')}
+                    />
+                    <p className="text-xs text-gray-600 mt-1">
+                      When should this stock be returned?
+                    </p>
+                  </div>
                 </div>
               )}
 
-              {/* NEW: Color Selection for New Products */}
-              {entry.isNewProduct && !editMode && (
-                <div className="mb-6 p-4 bg-gradient-to-r from-purple-50 to-pink-50 border-2 border-purple-200 rounded-lg">
-                  <label className="block text-sm font-semibold text-gray-700 mb-3">
-                    Select Colors for This Design <span className="text-red-600">*</span>
+              {/* New Product Fields */}
+              {entry.isNewProduct && entry.selectedDesign === 'new' && (
+                <div className="space-y-4 bg-green-50 p-4 rounded-lg">
+                  <h4 className="font-medium text-green-900">New Product Details</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="md:col-span-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Design Name *
+                      </label>
+                      <input
+                        type="text"
+                        value={entry.selectedDesign === 'new' ? '' : entry.selectedDesign}
+                        onChange={(e) => handleEntryFieldChange(entry.id, 'selectedDesign', e.target.value)}
+                        placeholder="Enter design name (e.g., CP-101)"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Wholesale Price (₹) *
+                      </label>
+                      <input
+                        type="number"
+                        value={entry.wholesalePrice}
+                        onChange={(e) => handleEntryFieldChange(entry.id, 'wholesalePrice', e.target.value)}
+                        placeholder="0"
+                        min="0"
+                        step="0.01"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Retail Price (₹) *
+                      </label>
+                      <input
+                        type="number"
+                        value={entry.retailPrice}
+                        onChange={(e) => handleEntryFieldChange(entry.id, 'retailPrice', e.target.value)}
+                        placeholder="0"
+                        min="0"
+                        step="0.01"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Description
+                      </label>
+                      <input
+                        type="text"
+                        value={entry.description}
+                        onChange={(e) => handleEntryFieldChange(entry.id, 'description', e.target.value)}
+                        placeholder="Optional description"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Batch ID and Notes */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Batch ID
                   </label>
-                  
-                  {/* Color Palette from Settings */}
+                  <input
+                    type="text"
+                    value={entry.batchId}
+                    onChange={(e) => handleEntryFieldChange(entry.id, 'batchId', e.target.value)}
+                    placeholder="Optional batch identifier"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Notes
+                  </label>
+                  <input
+                    type="text"
+                    value={entry.notes}
+                    onChange={(e) => handleEntryFieldChange(entry.id, 'notes', e.target.value)}
+                    placeholder="Optional notes"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Color Selection for New Products */}
+              {entry.isNewProduct && entry.selectedDesign !== 'new' && (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Select Colors *
+                  </label>
                   <div className="flex flex-wrap gap-2">
-                    {colors.map((colorObj) => {
-                      const isSelected = entry.stockData && entry.stockData[colorObj.colorName];
+                    {colors.map((colorOption) => {
+                      const isSelected = entry.stockData.hasOwnProperty(colorOption);
                       return (
                         <button
-                          key={colorObj.colorName}
+                          key={colorOption}
                           type="button"
                           onClick={() => {
-                            setDesignEntries(prev => prev.map(e => {
-                              if (e.id === entry.id) {
-                                const newStockData = { ...e.stockData };
-                                if (isSelected) {
-                                  // Remove color
-                                  delete newStockData[colorObj.colorName];
-                                } else {
-                                  // Add color with default structure
-                                  const pieces = {};
-                                  enabledSizes.forEach(size => {
-                                    pieces[size] = 0;
-                                  });
-                                  newStockData[colorObj.colorName] = {
-                                    mode: 'sets',
-                                    sets: 0,
-                                    pieces: pieces
-                                  };
-                                }
-                                return { ...e, stockData: newStockData };
-                              }
-                              return e;
-                            }));
+                            if (isSelected) {
+                              handleRemoveColorFromEntry(entry.id, colorOption);
+                            } else {
+                              handleAddColorToEntry(entry.id, colorOption);
+                            }
                           }}
-                          className={`px-4 py-2 rounded-lg font-semibold transition-all flex items-center gap-2 ${
+                          className={`flex items-center gap-2 px-3 py-2 rounded-lg border-2 transition-all ${
                             isSelected
-                              ? 'bg-green-500 text-white ring-2 ring-green-600'
-                              : 'bg-white text-gray-700 border-2 border-gray-300 hover:border-purple-400'
+                              ? 'border-blue-500 bg-blue-50 text-blue-900'
+                              : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400'
                           }`}
                         >
                           <div
-                            className="w-5 h-5 rounded-full border-2 border-gray-400"
-                            style={{ backgroundColor: colorObj.hex }}
+                            className="w-4 h-4 rounded border border-gray-300"
+                            style={{ backgroundColor: getColorCode(colorOption) }}
                           />
-                          {colorObj.colorName}
-                          {isSelected && <span>✓</span>}
+                          <span className="text-sm font-medium">{colorOption}</span>
                         </button>
                       );
                     })}
@@ -1615,209 +1728,146 @@ const handleSubmit = async (e) => {
                 </div>
               )}
 
-              {/* Color Stock Entry - Show colors based on context */}
-              {(entry.isNewProduct || Object.keys(entry.stockData).length > 0 || !entry.isNewProduct && entry.selectedDesign) && (
-                <div className="mb-4">
-                  <h5 className="font-bold text-gray-700 mb-3">Stock Quantities</h5>
+              {/* Stock Entry Section */}
+              {entry.selectedDesign && entry.selectedDesign !== 'new' && Object.keys(entry.stockData).length > 0 && (
+                <div className="space-y-4">
+                  <h4 className="font-medium text-gray-900">Stock Quantities</h4>
+                  {Object.keys(entry.stockData).map((color) => (
+                    <div key={color} className="border border-gray-200 rounded-lg p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="w-6 h-6 rounded border border-gray-300"
+                            style={{ backgroundColor: getColorCode(color) }}
+                          />
+                          <span className="font-medium text-gray-900">{color}</span>
+                        </div>
+                        {entry.isNewProduct && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveColorFromEntry(entry.id, color)}
+                            className="text-red-600 hover:text-red-800 text-sm"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
 
-                  {(() => {
-                    let colorsToShow = [];
-                    
-                    if (entry.isNewProduct) {
-                      // NEW PRODUCT: Show only colors user has selected
-                      colorsToShow = Object.keys(entry.stockData);
-                    } else {
-                      // ✅ EXISTING PRODUCT: Show colors from BOTH product + palette
-                      const existingProduct = products.find(p => p.design === entry.selectedDesign);
-                      
-                      if (existingProduct) {
-                        // Get existing colors from product
-                        const existingColors = existingProduct.colors.map(c => c.color);
-                        
-                        // Get available colors from palette for this design
-                        const paletteColors = getColorsForDesign(entry.selectedDesign).map(c => c.colorName);
-                        
-                        // Combine both - existing colors FIRST, then new palette colors
-                        const combinedColors = [...new Set([...existingColors, ...paletteColors])];
-                        colorsToShow = combinedColors;
-                      }
-                    }
+                      {/* Mode Selection */}
+                      <div className="flex gap-4">
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="radio"
+                            checked={entry.stockData[color].mode === 'sets'}
+                            onChange={() => handleModeChange(entry.id, color, 'sets')}
+                            className="text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm font-medium text-gray-700">Full Sets</span>
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="radio"
+                            checked={entry.stockData[color].mode === 'pieces'}
+                            onChange={() => handleModeChange(entry.id, color, 'pieces')}
+                            className="text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm font-medium text-gray-700">Individual Pieces</span>
+                        </label>
+                      </div>
 
-                    // Auto-initialize missing colors
-                    return colorsToShow.map(color => {
-                      if (!entry.stockData[color]) {
-                        const pieces = {};
-                        enabledSizes.forEach(size => {
-                          pieces[size] = 0;
-                        });
-                        entry.stockData[color] = {
-                          mode: 'sets',
-                          sets: 0,
-                          pieces: pieces
-                        };
-                      }
+                      {/* Sets Input */}
+                      {entry.stockData[color].mode === 'sets' && (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Number of Sets
+                          </label>
+                          <input
+                            type="number"
+                            value={entry.stockData[color].sets}
+                            onChange={(e) => handleSetsChange(entry.id, color, e.target.value)}
+                            placeholder="0"
+                            min="0"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                          />
+                          <p className="text-xs text-gray-600 mt-1">
+                            Each set contains one piece of each size ({enabledSizes.join(', ')})
+                          </p>
+                        </div>
+                      )}
 
-                      const colorData = entry.stockData[color];
-                      
-                      return (
-                        <div key={color} className="mb-6 last:mb-0 bg-gray-50 rounded-lg p-4 border border-gray-200">
-                          {/* Color Header */}
-                          <div className="flex items-center justify-between mb-4">
-                            <div className="flex items-center gap-2">
-                              <div 
-                                className="w-6 h-6 rounded-full border-2 border-gray-300"
-                                style={{ backgroundColor: getColorCode(color) }}
-                              />
-                              <h4 className="font-bold text-gray-900">{color}</h4>
-                            </div>
-                            
-                            {/* Mode toggle buttons */}
-                            {!editMode && (
-                              <div className="flex gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => handleModeChange(entry.id, color, 'sets')}
-                                  className={`px-3 py-1 rounded-lg font-semibold text-sm transition-all ${
-                                    colorData.mode === 'sets'
-                                      ? 'bg-blue-500 text-white'
-                                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                  }`}
-                                >
-                                  Sets
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleModeChange(entry.id, color, 'pieces')}
-                                  className={`px-3 py-1 rounded-lg font-semibold text-sm transition-all ${
-                                    colorData.mode === 'pieces'
-                                      ? 'bg-blue-500 text-white'
-                                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                  }`}
-                                >
-                                  Pieces
-                                </button>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Sets/Pieces Input */}
-                          {colorData.mode === 'sets' && !editMode ? (
-                            <div>
-                              <label className="block text-xs font-semibold text-gray-600 mb-1">
-                                Number of Sets (1 set = 1 of each size)
+                      {/* Pieces Input */}
+                      {entry.stockData[color].mode === 'pieces' && (
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                          {enabledSizes.map((size) => (
+                            <div key={size}>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                                {size}
                               </label>
                               <input
                                 type="number"
-                                value={colorData.sets || 0}
-                                onChange={(e) => handleSetsChange(entry.id, color, e.target.value)}
-                                className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500"
+                                value={entry.stockData[color].pieces[size] || ''}
+                                onChange={(e) => handlePiecesChange(entry.id, color, size, e.target.value)}
                                 placeholder="0"
                                 min="0"
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                               />
                             </div>
-                          ) : (
-                            <div className="grid grid-cols-3 gap-2">
-                              {enabledSizes.map(size => (
-                                <div key={size}>
-                                  <label className="block text-xs font-semibold text-gray-600 mb-1">
-                                    {size}
-                                  </label>
-                                  <input
-                                    type="number"
-                                    value={colorData.pieces?.[size] || 0}
-                                    onChange={(e) => handlePiecesChange(entry.id, color, size, e.target.value)}
-                                    className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500"
-                                    placeholder="0"
-                                    min="0"
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                          )}
+                          ))}
                         </div>
-                      );
-                    });
-                  })()}
-                </div>
-              )}
+                      )}
 
-              {/* Batch ID & Notes */}
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Batch ID</label>
-                  <input
-                    type="text"
-                    value={entry.batchId}
-                    onChange={(e) => handleEntryFieldChange(entry.id, 'batchId', e.target.value)}
-                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-                    placeholder="Optional"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Notes</label>
-                  <input
-                    type="text"
-                    value={entry.notes}
-                    onChange={(e) => handleEntryFieldChange(entry.id, 'notes', e.target.value)}
-                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-                    placeholder="Optional"
-                  />
-                </div>
-              </div>
-
-              {/* New Product Pricing */}
-              {entry.isNewProduct && (
-                <div className="grid grid-cols-2 gap-4 mb-4 p-4 bg-yellow-50 border-2 border-yellow-200 rounded-lg">
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Wholesale Price <span className="text-red-600">*</span>
-                    </label>
-                    <input
-                      type="number"
-                      value={entry.wholesalePrice}
-                      onChange={(e) => handleEntryFieldChange(entry.id, 'wholesalePrice', e.target.value)}
-                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500"
-                      placeholder="0"
-                      min="0"
-                      step="0.01"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Retail Price <span className="text-red-600">*</span>
-                    </label>
-                    <input
-                      type="number"
-                      value={entry.retailPrice}
-                      onChange={(e) => handleEntryFieldChange(entry.id, 'retailPrice', e.target.value)}
-                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500"
-                      placeholder="0"
-                      min="0"
-                      step="0.01"
-                      required
-                    />
-                  </div>
+                      {/* Quantity Preview */}
+                      <div className="bg-gray-50 p-3 rounded">
+                        <p className="text-sm font-medium text-gray-700">
+                          Total for {color}:{' '}
+                          <span className="text-blue-600">
+                            {entry.stockData[color].mode === 'sets'
+                              ? entry.stockData[color].sets * enabledSizes.length
+                              : Object.values(entry.stockData[color].pieces || {}).reduce(
+                                  (sum, qty) => sum + (Number(qty) || 0),
+                                  0
+                                )}
+                          </span>{' '}
+                          units
+                        </p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
           ))}
 
-          {/* Submit Button */}
-          <div className="flex justify-end gap-3 pt-4 border-t">
+          {/* Add Another Design Button */}
+          {!editMode && (
             <button
               type="button"
-              onClick={() => { setShowModal(false); resetForm(); }}
-              className="px-6 py-2 border-2 border-gray-300 rounded-lg font-semibold hover:bg-gray-100 transition-all"
+              onClick={handleAddDesignEntry}
+              className="w-full py-2 border-2 border-dashed border-gray-300 rounded-lg text-gray-600 hover:border-blue-500 hover:text-blue-600 transition-colors"
+            >
+              + Add Another Design
+            </button>
+          )}
+
+          {/* Submit Buttons */}
+          <div className="flex gap-3 pt-4">
+            <button
+              type="button"
+              onClick={() => {
+                setShowModal(false);
+                resetForm();
+              }}
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+              disabled={submitting}
             >
               Cancel
             </button>
             <button
               type="submit"
+              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
               disabled={submitting}
-              className="px-6 py-2 bg-blue-500 text-white rounded-lg font-semibold hover:bg-blue-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {submitting ? 'Saving...' : editMode ? 'Update' : 'Create Receivings'}
+              {submitting ? 'Processing...' : editMode ? 'Update Receiving' : 'Add Receiving'}
             </button>
           </div>
         </form>
@@ -2728,6 +2778,7 @@ const handleSubmit = async (e) => {
           </div>
         )}
       </Modal>
+      <ScrollToTop />
     </div>
   );
 };

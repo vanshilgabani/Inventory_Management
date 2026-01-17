@@ -14,7 +14,7 @@ import StockThresholds from '../components/settings/StockThresholds';
 import StockLockSettings from '../components/settings/StockLockSettings';
 import MarketplaceAccounts from '../components/settings/MarketplaceAccounts';
 import ProductPricing from '../components/settings/ProductPricing';
-import PermissionsSettings from '../components/settings/PermissionsSettings';
+import ScrollToTop from '../components/common/ScrollToTop';
 import NotificationsSettings from '../components/settings/NotificationsSettings';
 import ColorPaletteManager from '../components/settings/ColorPaletteManager';
 import CompanyManagement from '../components/settings/CompanyManagement';
@@ -431,6 +431,7 @@ const Settings = () => {
           />
         )}
       </div>
+      <ScrollToTop />
     </div>
   );
 };

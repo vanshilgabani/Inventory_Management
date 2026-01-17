@@ -4,7 +4,7 @@ import { settingsService } from '../../services/settingsService';
 import { inventoryService } from '../../services/inventoryService';
 import toast from 'react-hot-toast';
 import { 
-  FiPlus, FiEdit2,FiTrash2, FiCheck, FiX, FiEye, FiEyeOff, 
+  FiPlus, FiEdit2, FiTrash2, FiCheck, FiX, FiEye, FiEyeOff, 
   FiChevronUp, FiChevronDown, FiDroplet, FiGrid, FiList, 
   FiPackage, FiZap, FiStar 
 } from 'react-icons/fi';
@@ -456,13 +456,14 @@ const ColorPaletteManager = () => {
                     >
                       <FiEdit2 />
                     </button>
-                    {/* Delete */}
-                  <button
-                    onClick={() => handleDeleteColor(color._id, color.colorName)}
-                    className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"
-                  >
-                    <FiTrash2 />
-                  </button>
+                    {/* Delete 
+                    <button
+                      onClick={() => handleDeleteColor(color._id, color.colorName)}
+                      className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"
+                    >
+                      <FiTrash2 />
+                    </button>
+                    */}
                   </div>
                 </div>
               </Card>

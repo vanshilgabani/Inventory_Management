@@ -18,6 +18,7 @@ import {
   FiPackage
 } from 'react-icons/fi';
 import { format } from 'date-fns';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const DeletedOrders = () => {
   const { user } = useAuth();
@@ -540,6 +541,7 @@ const DeletedOrders = () => {
           animation: slideUp 0.6s ease-out;
         }
       `}</style>
+      <ScrollToTop />
     </div>
   );
 };

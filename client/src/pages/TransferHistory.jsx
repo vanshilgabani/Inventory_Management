@@ -22,6 +22,7 @@ import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { useColorPalette } from '../hooks/useColorPalette';
 import { format } from 'date-fns';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const TransferHistory = () => {
   const navigate = useNavigate();
@@ -650,6 +651,7 @@ const stats = useMemo(() => {
           </div>
         )}
       </Card>
+      <ScrollToTop />
     </div>
   );
 };

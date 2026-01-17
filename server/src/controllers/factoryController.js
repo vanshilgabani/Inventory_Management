@@ -1,6 +1,7 @@
 const FactoryReceiving = require('../models/FactoryReceiving');
 const Product = require('../models/Product');
 const Settings = require('../models/Settings');
+const mongoose = require('mongoose'); 
 
 // ✅ ADD THIS HELPER AT THE TOP OF EACH CONTROLLER FILE
 const decrementEditSession = async (req, action, module, itemId) => {
@@ -397,34 +398,36 @@ const createReceiving = async (req, res) => {
   }
 };
 
-// @desc Get all factory receivings
-// @route GET /api/factory
-// @access Private
+// ===== GET ALL RECEIVINGS (exclude deleted) =====
 const getAllReceivings = async (req, res) => {
   try {
-    const receivings = await FactoryReceiving.find({ organizationId: req.organizationId }).sort({
-      receivedDate: -1,
-    });
+    const receivings = await FactoryReceiving.find({
+      organizationId: req.organizationId,
+      deletedAt: null, // ✅ Only get non-deleted
+    }).sort({ receivedDate: -1 });
     res.json(receivings);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// @desc Get single receiving
-// @route GET /api/factory/:id
-// @access Private
+// ===== GET SINGLE RECEIVING (exclude deleted) =====
 const getReceivingById = async (req, res) => {
   try {
-    const receiving = await FactoryReceiving.findById(req.params.id);
+    const receiving = await FactoryReceiving.findOne({
+      _id: req.params.id,
+      deletedAt: null, // ✅ Only get non-deleted
+    });
+    
     if (!receiving) {
       return res.status(404).json({ message: 'Receiving not found' });
     }
+    
     res.json(receiving);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
-};
+}
 
 // @desc Update factory receiving
 // @route PUT /api/factory/:id
@@ -435,6 +438,7 @@ const updateReceiving = async (req, res) => {
     const receiving = await FactoryReceiving.findOne({
       _id: req.params.id,
       organizationId: req.organizationId,
+      deletedAt: null, 
     });
 
     if (!receiving) {
@@ -553,25 +557,31 @@ const updateReceiving = async (req, res) => {
   }
 };
 
-// @desc Delete factory receiving and adjust stock
-// @route DELETE /api/factory/:id
-// @access Private
+// ===== SOFT DELETE RECEIVING (with transaction) =====
 const deleteReceiving = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const receiving = await FactoryReceiving.findOne({
       _id: req.params.id,
       organizationId: req.organizationId,
-    });
+      deletedAt: null, // ✅ Only delete non-deleted items
+    }).session(session);
 
     if (!receiving) {
-      return res.status(404).json({ message: 'Receiving record not found' });
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Receiving record not found or already deleted' });
     }
 
-    if (['borrowed_buyer', 'borrowed_vendor'].includes(receiving.sourceType)) {
+    // Check borrowed stock status
+    if (['borrowedbuyer', 'borrowedvendor'].includes(receiving.sourceType)) {
       if (receiving.borrowStatus === 'active' || receiving.borrowStatus === 'partial') {
+        await session.abortTransaction();
+        session.endSession();
         return res.status(400).json({
-          message:
-            'Cannot delete borrowed stock that has not been fully returned. Please return the stock first or mark it as returned.',
+          message: 'Cannot delete borrowed stock that has not been fully returned. Please return the stock first or mark it as returned.',
           code: 'BORROWED_STOCK_ACTIVE',
         });
       }
@@ -580,18 +590,25 @@ const deleteReceiving = async (req, res) => {
     console.log('Deleting receiving:', req.params.id);
     console.log('Design:', receiving.design, 'Color:', receiving.color);
 
-    const product = await Product.findOne({ design: receiving.design, organizationId: req.organizationId });
+    const product = await Product.findOne({
+      design: receiving.design,
+      organizationId: req.organizationId,
+    }).session(session);
 
     if (!product) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ message: 'Product not found' });
     }
 
     const colorIndex = product.colors.findIndex((c) => c.color === receiving.color);
     if (colorIndex === -1) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ message: 'Color not found in product' });
     }
 
-    // ✅ CORRECTED: Reverse the original operation
+    // Determine stock direction
     const isReturn = receiving.sourceType === 'return';
     const isIncoming = !isReturn;
 
@@ -605,23 +622,26 @@ const deleteReceiving = async (req, res) => {
       console.log('Quantities to remove:', quantities);
 
       Object.keys(quantities).forEach((size) => {
-        if (size !== 'undefined') {
+        if (size !== undefined) {
           const sizeIndex = product.colors[colorIndex].sizes.findIndex(
             (s) => s.size === size
           );
           if (sizeIndex !== -1) {
             const oldStock = product.colors[colorIndex].sizes[sizeIndex].currentStock;
             product.colors[colorIndex].sizes[sizeIndex].currentStock -= quantities[size];
+
             if (product.colors[colorIndex].sizes[sizeIndex].currentStock < 0) {
               product.colors[colorIndex].sizes[sizeIndex].currentStock = 0;
             }
+
             console.log(
               `Reduced stock for ${size}: ${oldStock} → ${product.colors[colorIndex].sizes[sizeIndex].currentStock}`
             );
           }
         }
       });
-      await product.save();
+
+      await product.save({ session });
     } else {
       // Original was return (subtracted stock), so now ADD back
       const quantities =
@@ -632,7 +652,7 @@ const deleteReceiving = async (req, res) => {
       console.log('Adding stock back from deleted return:', quantities);
 
       Object.keys(quantities).forEach((size) => {
-        if (size !== 'undefined') {
+        if (size !== undefined) {
           const sizeIndex = product.colors[colorIndex].sizes.findIndex(
             (s) => s.size === size
           );
@@ -645,17 +665,178 @@ const deleteReceiving = async (req, res) => {
           }
         }
       });
-      await product.save();
+
+      await product.save({ session });
     }
 
-    await FactoryReceiving.findByIdAndDelete(req.params.id);
-    console.log('Receiving deleted successfully');
+    // ✅ SOFT DELETE instead of hard delete
+    receiving.deletedAt = new Date();
+    receiving.deletedBy = req.user?.id || req.user?._id;
+    receiving.deletionReason = 'User deleted';
+    await receiving.save({ session });
 
-    await decrementEditSession(req, 'edit', 'factory', req.params.id);
+    console.log('✅ Receiving soft deleted successfully');
+
+    await decrementEditSession(req, 'delete', 'factory', req.params.id);
+
+    await session.commitTransaction();
+    session.endSession();
 
     res.json({ message: 'Receiving deleted and stock updated' });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.error('Delete Receiving Error:', error);
+    res.status(500).json({ message: error.message });
+  }
+}
+
+// ===== ✅ NEW: RESTORE DELETED RECEIVING =====
+const restoreReceiving = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const receiving = await FactoryReceiving.findOne({
+      _id: req.params.id,
+      organizationId: req.organizationId,
+      deletedAt: { $ne: null }, // ✅ Only restore deleted items
+    }).session(session);
+
+    if (!receiving) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Deleted receiving not found' });
+    }
+
+    console.log('Restoring receiving:', req.params.id);
+    console.log('Design:', receiving.design, 'Color:', receiving.color);
+
+    const product = await Product.findOne({
+      design: receiving.design,
+      organizationId: req.organizationId,
+    }).session(session);
+
+    if (!product) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const colorIndex = product.colors.findIndex((c) => c.color === receiving.color);
+    if (colorIndex === -1) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Color not found in product' });
+    }
+
+    // Reverse the deletion - add stock back
+    const isReturn = receiving.sourceType === 'return';
+    const isIncoming = !isReturn;
+
+    const quantities =
+      receiving.quantities instanceof Map
+        ? Object.fromEntries(receiving.quantities)
+        : receiving.quantities;
+
+    if (isIncoming) {
+      // Was incoming, so ADD stock back
+      Object.keys(quantities).forEach((size) => {
+        if (size !== undefined) {
+          const sizeIndex = product.colors[colorIndex].sizes.findIndex(
+            (s) => s.size === size
+          );
+          if (sizeIndex !== -1) {
+            const oldStock = product.colors[colorIndex].sizes[sizeIndex].currentStock;
+            product.colors[colorIndex].sizes[sizeIndex].currentStock += quantities[size];
+            console.log(
+              `Restored stock for ${size}: ${oldStock} → ${product.colors[colorIndex].sizes[sizeIndex].currentStock}`
+            );
+          }
+        }
+      });
+    } else {
+      // Was return, so SUBTRACT stock
+      Object.keys(quantities).forEach((size) => {
+        if (size !== undefined) {
+          const sizeIndex = product.colors[colorIndex].sizes.findIndex(
+            (s) => s.size === size
+          );
+          if (sizeIndex !== -1) {
+            const oldStock = product.colors[colorIndex].sizes[sizeIndex].currentStock;
+            product.colors[colorIndex].sizes[sizeIndex].currentStock -= quantities[size];
+            
+            if (product.colors[colorIndex].sizes[sizeIndex].currentStock < 0) {
+              product.colors[colorIndex].sizes[sizeIndex].currentStock = 0;
+            }
+            
+            console.log(
+              `Restored return: ${size}: ${oldStock} → ${product.colors[colorIndex].sizes[sizeIndex].currentStock}`
+            );
+          }
+        }
+      });
+    }
+
+    await product.save({ session });
+
+    // Restore the record
+    receiving.deletedAt = null;
+    receiving.deletedBy = null;
+    receiving.deletionReason = '';
+    await receiving.save({ session });
+
+    console.log('✅ Receiving restored successfully');
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.json({ message: 'Receiving restored successfully', receiving });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error('Restore Receiving Error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ===== ✅ NEW: GET ALL DELETED RECEIVINGS =====
+const getDeletedReceivings = async (req, res) => {
+  try {
+    const deletedReceivings = await FactoryReceiving.find({
+      organizationId: req.organizationId,
+      deletedAt: { $ne: null }, // ✅ Only get deleted items
+    })
+      .sort({ deletedAt: -1 })
+      .populate('deletedBy', 'name email')
+      .lean();
+
+    res.json(deletedReceivings);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ===== ✅ NEW: PERMANENTLY DELETE =====
+const permanentlyDeleteReceiving = async (req, res) => {
+  try {
+    const receiving = await FactoryReceiving.findOne({
+      _id: req.params.id,
+      organizationId: req.organizationId,
+      deletedAt: { $ne: null }, // ✅ Only permanently delete already soft-deleted items
+    });
+
+    if (!receiving) {
+      return res.status(404).json({ message: 'Deleted receiving not found' });
+    }
+
+    await FactoryReceiving.findByIdAndDelete(req.params.id);
+    
+    console.log('✅ Receiving permanently deleted:', req.params.id);
+
+    res.json({ message: 'Receiving permanently deleted' });
+  } catch (error) {
+    console.error('Permanent Delete Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -1134,4 +1315,7 @@ module.exports = {
   returnBorrowedStock,
   markPaymentDone,
   getBorrowHistoryBySource,
+  restoreReceiving,
+  getDeletedReceivings,
+  permanentlyDeleteReceiving,
 };

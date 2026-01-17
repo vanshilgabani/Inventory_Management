@@ -28,15 +28,6 @@ const protect = async (req, res, next) => {
 
       // Set organizationId for filtering
       req.organizationId = req.user.organizationId || req.user._id;
-
-      // ✅ ADD LOGGING
-      console.log('🔐 Auth middleware:', {
-        userId: req.userId,
-        role: req.user.role,
-        email: req.user.email,
-        organizationId: req.organizationId
-      });
-
       next();
     } catch (error) {
       console.error('Auth middleware error:', error);

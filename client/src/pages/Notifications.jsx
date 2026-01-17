@@ -5,6 +5,7 @@ import Card from '../components/common/Card';
 import Loader from '../components/common/Loader';
 import { FiBell, FiFilter, FiDownload } from 'react-icons/fi';
 import toast from 'react-hot-toast';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const Notifications = () => {
   const [notifications, setNotifications] = useState([]);
@@ -317,6 +318,7 @@ const fetchNotifications = async () => {
           ))
         )}
       </div>
+      <ScrollToTop />
     </div>
   );
 };

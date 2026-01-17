@@ -8,6 +8,7 @@ import BuyerDetailPanel from '../components/buyers/BuyerDetailPanel';
 import PaymentModal from '../components/modals/PaymentModal';
 import PaymentHistoryModal from '../components/modals/PaymentHistoryModal';
 import MonthlyHistoryModal from '../components/modals/MonthlyHistoryModal';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const WholesaleBuyers = () => {
   const { user } = useAuth();
@@ -436,6 +437,9 @@ const WholesaleBuyers = () => {
         selectedBuyer={selectedBuyer}
         monthlyHistory={monthlyHistory}
       />
+
+      <ScrollToTop />
+      
     </div>
   );
 };

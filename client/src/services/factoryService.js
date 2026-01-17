@@ -40,4 +40,22 @@ export const factoryService = {
     const response = await api.get(`/factory/borrow-history/${encodeURIComponent(sourceName)}`);
     return response.data;
   },
-}; // ✅ Fixed closing brace
+
+  // ✅ NEW: Get deleted receivings
+  getDeletedReceivings: async () => {
+    const response = await api.get('/factory/deleted/all');
+    return response.data;
+  },
+
+  // ✅ NEW: Restore receiving
+  restoreReceiving: async (id) => {
+    const response = await api.post(`/factory/${id}/restore`);
+    return response.data;
+  },
+
+  // ✅ NEW: Permanently delete
+  permanentlyDeleteReceiving: async (id) => {
+    const response = await api.delete(`/factory/${id}/permanent`);
+    return response.data;
+  },
+};

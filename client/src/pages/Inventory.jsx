@@ -29,6 +29,7 @@ import { settingsService } from '../services/settingsService';
 import { format } from 'date-fns';
 import {useColorPalette} from '../hooks/useColorPalette';
 import { useNavigate } from 'react-router-dom';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const Inventory = () => {
   const { enabledSizes, loading: sizesLoading } = useEnabledSizes();
@@ -1234,6 +1235,7 @@ const allVariants = useMemo(() => {
           </div>
         )}
       </Modal>
+      <ScrollToTop />
     </div>
   );
 };

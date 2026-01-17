@@ -8,7 +8,10 @@ const {
   deleteReceiving,
   returnBorrowedStock,
   markPaymentDone,
-  getBorrowHistoryBySource
+  getBorrowHistoryBySource,
+  restoreReceiving,
+  getDeletedReceivings,
+  permanentlyDeleteReceiving
 } = require('../controllers/factoryController');
 const { protect } = require('../middleware/auth');
 const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
@@ -17,6 +20,10 @@ const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ A
 router.post('/', protect, createReceiving);
 router.post('/:id/return', protect, returnBorrowedStock);
 router.post('/:id/mark-payment', protect, markPaymentDone);
+
+router.get('/deleted/all', protect, getDeletedReceivings);        // Get all deleted
+router.post('/:id/restore', protect, restoreReceiving);           // Restore deleted
+router.delete('/:id/permanent', protect, permanentlyDeleteReceiving); // Permanent delete
 
 // Read routes (no middleware needed)
 router.get('/', protect, getAllReceivings);

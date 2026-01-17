@@ -22,6 +22,7 @@ import { useEnabledSizes } from '../hooks/useEnabledSizes';
 import { useColorPalette } from '../hooks/useColorPalette';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const ReservedInventory = () => {
   const { enabledSizes } = useEnabledSizes();
@@ -885,6 +886,7 @@ const handleBulkTransferSubmit = async () => {
           </Card>
         </div>
       )}
+      <ScrollToTop />
     </div>
   );
 };

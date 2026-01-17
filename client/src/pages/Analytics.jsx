@@ -13,6 +13,7 @@ import {
   FiUsers,
 } from 'react-icons/fi';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const Analytics = () => {
   const [salesByChannel, setSalesByChannel] = useState(null);
@@ -260,6 +261,9 @@ const Analytics = () => {
             </table>
         </div>
       </Card>
+
+    <ScrollToTop />
+
     </div>
   );
 };

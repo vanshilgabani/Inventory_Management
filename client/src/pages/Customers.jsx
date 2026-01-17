@@ -15,6 +15,7 @@ import {
   FiTrendingUp,
 } from 'react-icons/fi';
 import { format } from 'date-fns';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const Customers = () => {
   const [customers, setCustomers] = useState([]);
@@ -353,6 +354,9 @@ const Customers = () => {
           )}
         </div>
       </Card>
+
+      <ScrollToTop />
+      
     </div>
   );
 };

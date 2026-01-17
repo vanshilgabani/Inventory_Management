@@ -37,6 +37,7 @@ import {
   FiEdit2
 } from 'react-icons/fi';
 import { format } from 'date-fns';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const MonthlyBills = () => {
   const { user } = useAuth();
@@ -2876,6 +2877,7 @@ const handleUpdateBillNumber = async () => {
           </div>
         </Modal>
       )}
+      <ScrollToTop />
     </div>
   );
 };

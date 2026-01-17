@@ -18,6 +18,7 @@ import { formatCurrency } from '../utils/dateUtils';
 import Papa from 'papaparse';
 import RefillLockStockModal from '../components/RefillLockStockModal';
 import SettlementsView from '../components/SettlementsView';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const Sales = () => {
   const { user } = useAuth();
@@ -2834,6 +2835,7 @@ const handleDelete = async (id) => {
           </div>
         </div>
       )}
+      <ScrollToTop />
     </div>
   );
 };

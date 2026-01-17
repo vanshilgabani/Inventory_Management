@@ -19,7 +19,7 @@ import { useAuth } from '../context/AuthContext';
 import { debounce } from '../utils/debounce';
 import { formatDate, getDaysFromNow } from '../utils/dateUtils';
 import SkeletonCard from '../components/common/SkeletonCard';
-import UseLockStockModal from '../components/UseLockStockModal';
+import ScrollToTop from '../components/common/ScrollToTop';
 import { useColorPalette } from '../hooks/useColorPalette';
 
 const Wholesale = () => {
@@ -2404,6 +2404,8 @@ const handleItemDesignChange = (index, value) => {
         </div>
       </Modal>
 
+      <ScrollToTop />
+      
       {/* Payment Modal */}
       {showPaymentModal && paymentOrder && (
         <Modal

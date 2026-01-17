@@ -30,8 +30,7 @@ import { format } from 'date-fns';
 import { formatDate, formatCurrency } from '../utils/dateUtils'; 
 import SkeletonCard from '../components/common/SkeletonCard';
 import { useAuth } from '../context/AuthContext';
-import UseLockStockModal from '../components/UseLockStockModal';
-
+import ScrollToTop from '../components/common/ScrollToTop';
 const DirectSales = () => {
 const { enabledSizes, loading: sizesLoading } = useEnabledSizes();
 const { user } = useAuth(); // ✅ ADD THIS (if not already present)
@@ -1393,6 +1392,7 @@ if (loading || sizesLoading) return (
         insufficientItems={borrowData?.insufficientItems}
         totalNeededFromReserved={borrowData?.totalNeededFromReserved || 0}
       />
+      <ScrollToTop />
     </div>
   );
 };

@@ -27,6 +27,7 @@ import {
 } from 'react-icons/fi';
 import { format } from 'date-fns';
 import { useAuth } from '../context/AuthContext';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -689,6 +690,8 @@ const { totalRevenue, revenueBreakdown } = useMemo(() => {
           </div>
       </Modal>
 
+      <ScrollToTop />
+      
     </div>
   );
 };
