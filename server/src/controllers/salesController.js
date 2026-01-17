@@ -77,6 +77,8 @@ const FLIPKART_COLOR_MAP = {
   'LIGHT GRAY': 'Light Grey',
   'LIGHTGREY': 'Light Grey',
   'LIGHTGRAY': 'Light Grey',
+  'L GREY': 'Light Grey',     // ✅ ADD THIS
+  'L GRAY': 'Light Grey',
   
   // Dark Grey variations
   'D.GREY': 'Dark Grey',
@@ -87,6 +89,8 @@ const FLIPKART_COLOR_MAP = {
   'DARK GRAY': 'Dark Grey',
   'DARKGREY': 'Dark Grey',
   'DARKGRAY': 'Dark Grey',
+  'D GREY': 'Dark Grey',      // ✅ ADD THIS
+  'D GRAY': 'Dark Grey',
   
   // Navy Blue variations
   'NAVY': 'Navy Blue',
@@ -1519,8 +1523,21 @@ exports.importFromCSV = async (req, res) => {
         continue;
       }
 
-      // Find color variant
-      const colorVariant = product.colors.find(c => c.color === color);
+      // ✅ Match color using existing mapper
+      const availableColors = product.colors.map(c => ({ color: c.color }));
+      const matchedColor = matchColorToInventory(color, availableColors);
+
+      if (!matchedColor) {
+        results.failed.push({
+          orderItemId,
+          reason: `Color "${color}" not matched. Available: ${availableColors.map(c => c.color).join(', ')}`
+        });
+        continue;
+      }
+
+      // Find color variant with matched color
+      const colorVariant = product.colors.find(c => c.color === matchedColor);
+
       if (!colorVariant) {
         results.failed.push({
           orderItemId,
