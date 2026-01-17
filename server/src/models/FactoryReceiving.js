@@ -18,7 +18,7 @@ const factoryReceivingSchema = new mongoose.Schema(
     },
     sourceType: {
       type: String,
-      enum: ['factory', 'borrowedbuyer', 'borrowedvendor', 'return', 'transfer', 'other'],
+      enum: ['factory', 'borrowed_buyer', 'borrowed_vendor', 'return', 'transfer', 'other'],
       default: 'factory',
     },
     sourceName: { type: String },

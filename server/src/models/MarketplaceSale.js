@@ -4,13 +4,13 @@ const mongoose = require('mongoose');
 const statusHistorySchema = new mongoose.Schema({
   previousStatus: {
     type: String,
-    enum: ['dispatched', 'delivered', 'returned', 'wrongreturn', 'cancelled', null], // Keep delivered here for history
+    enum: ['dispatched', 'delivered', 'returned', 'wrongreturn', 'cancelled', null],
     required: false,
     default: null
   },
   newStatus: {
     type: String,
-    enum: ['dispatched','delivered', 'returned', 'wrongreturn', 'cancelled'], // ✅ REMOVED 'delivered'
+    enum: ['dispatched','delivered', 'returned', 'wrongreturn', 'cancelled'],
     required: true
   },
   changedBy: {
@@ -45,7 +45,6 @@ const marketplaceSaleSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  // Marketplace Order ID (Flipkart/Amazon/Meesho)
   marketplaceOrderId: {
     type: String,
     required: false,
@@ -54,11 +53,11 @@ const marketplaceSaleSchema = new mongoose.Schema({
     index: true
   },
   orderItemId: {
-      type: String,
-      required: false,  
-      trim: true,
-      sparse: true,     
-      index: true,
+    type: String,
+    required: false,
+    trim: true,
+    sparse: true,
+    index: true,
   },
   design: {
     type: String,
@@ -82,18 +81,15 @@ const marketplaceSaleSchema = new mongoose.Schema({
     required: true,
     default: Date.now
   },
-  // ✅ UPDATED - Removed 'delivered', default is 'dispatched'
   status: {
     type: String,
-    enum: ['dispatched', 'returned', 'wrongreturn', 'cancelled'], // ✅ REMOVED 'delivered'
+    enum: ['dispatched', 'returned', 'wrongreturn', 'cancelled'],
     default: 'dispatched'
   },
-  // NEW FIELD - Tracks if stock was restored and how much
   stockRestoredAmount: {
     type: Number,
     default: 0
   },
-  // Status change history
   statusHistory: {
     type: [statusHistorySchema],
     default: []
@@ -116,8 +112,6 @@ const marketplaceSaleSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-
-  // ✅ FEATURE 1: Soft Delete Fields
   deletedAt: {
     type: Date,
     default: null,
@@ -130,8 +124,6 @@ const marketplaceSaleSchema = new mongoose.Schema({
   deletionReason: {
     type: String
   },
-
-  // ✅ FEATURE 2: Creator Info
   createdByUser: {
     userId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -144,8 +136,6 @@ const marketplaceSaleSchema = new mongoose.Schema({
       default: Date.now
     }
   },
-
-  // ✅ FEATURE 2: Edit History
   editHistory: [{
     editedBy: {
       userId: {
@@ -167,16 +157,21 @@ const marketplaceSaleSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Indexes
+// ✅ OPTIMIZED INDEXES FOR PAGINATION & SEARCH
+marketplaceSaleSchema.index({ organizationId: 1, deletedAt: 1, saleDate: -1 }); // Main query
+marketplaceSaleSchema.index({ organizationId: 1, status: 1, saleDate: -1 }); // Filter by status
+marketplaceSaleSchema.index({ organizationId: 1, accountName: 1, saleDate: -1 }); // Filter by account
+marketplaceSaleSchema.index({ organizationId: 1, design: 1 }); // Search by design
+marketplaceSaleSchema.index({ organizationId: 1, orderItemId: 1 }); // Search by order item ID
+marketplaceSaleSchema.index({ organizationId: 1, marketplaceOrderId: 1 }); // Search by order ID
+
+// Keep existing indexes
 marketplaceSaleSchema.index({ accountName: 1, saleDate: -1 });
-marketplaceSaleSchema.index({ organizationId: 1, accountName: 1 });
-marketplaceSaleSchema.index({ organizationId: 1, accountName: 1, marketplaceOrderId: 1 });
-marketplaceSaleSchema.index({ organizationId: 1, orderItemId: 1 });
 marketplaceSaleSchema.index({ saleDate: 1 });
 marketplaceSaleSchema.index({ status: 1 });
 marketplaceSaleSchema.index({ createdBy: 1 });
-marketplaceSaleSchema.index({ marketplaceOrderId: 1 });
-// ✅ TTL index for auto-deletion after 60 days
+
+// TTL index for auto-deletion after 60 days
 marketplaceSaleSchema.index({ deletedAt: 1 }, { expireAfterSeconds: 5184000 });
 
 module.exports = mongoose.model('MarketplaceSale', marketplaceSaleSchema);

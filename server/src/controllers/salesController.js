@@ -514,33 +514,36 @@ exports.createSaleWithMainStock = async (req, res) => {
   }
 };
 
-/**
- * Get all sales with filtering
- */
+// ============================================
+// GET SALES WITH PAGINATION (UPDATED)
+// ============================================
 exports.getAllSales = async (req, res) => {
   try {
     const organizationId = req.user.organizationId;
-    const { 
-      status, 
-      accountName, 
-      startDate, 
-      endDate, 
-      page = 1, 
-      limit = 0 
+    const {
+      status,
+      accountName,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 100, // ✅ Default 100 per page
+      search = '' // ✅ NEW: Search query
     } = req.query;
 
     const filter = { organizationId, deletedAt: null };
 
-    // Status filter - support multiple statuses
+    // Status filter
     if (status) {
       const statuses = status.split(',').map(s => s.trim());
       filter.status = { $in: statuses };
     }
 
+    // Account filter
     if (accountName && accountName !== 'all') {
       filter.accountName = accountName;
     }
 
+    // Date range filter
     if (startDate || endDate) {
       filter.saleDate = {};
       if (startDate) filter.saleDate.$gte = new Date(startDate);
@@ -551,14 +554,28 @@ exports.getAllSales = async (req, res) => {
       }
     }
 
+    // ✅ SEARCH FILTER (design, orderItemId, marketplaceOrderId)
+    if (search && search.trim()) {
+      const searchTerm = search.trim();
+      filter.$or = [
+        { design: { $regex: searchTerm, $options: 'i' } },
+        { orderItemId: { $regex: searchTerm, $options: 'i' } },
+        { marketplaceOrderId: { $regex: searchTerm, $options: 'i' } },
+        { color: { $regex: searchTerm, $options: 'i' } },
+        { size: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
+    // ✅ PARALLEL QUERIES for speed
     const [sales, total] = await Promise.all([
       MarketplaceSale.find(filter)
         .sort({ saleDate: -1, createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit))
-        .lean(),
+        .lean()
+        .maxTimeMS(5000), // Timeout after 5 seconds
       MarketplaceSale.countDocuments(filter)
     ]);
 
@@ -568,15 +585,75 @@ exports.getAllSales = async (req, res) => {
       pagination: {
         total,
         page: parseInt(page),
-        pages: Math.ceil(total / parseInt(limit))
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit)),
+        hasMore: skip + sales.length < total
       }
     });
-
   } catch (error) {
     console.error('Get sales error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch sales',
+      error: error.message
+    });
+  }
+};
+
+// ✅ NEW: GLOBAL SEARCH API (Search across all pages)
+exports.searchSales = async (req, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { query, accountName, status } = req.query;
+
+    if (!query || query.trim().length < 2) {
+      return res.json({
+        success: true,
+        data: [],
+        message: 'Search query too short'
+      });
+    }
+
+    const filter = { organizationId, deletedAt: null };
+
+    // Apply account and status filters
+    if (accountName && accountName !== 'all') {
+      filter.accountName = accountName;
+    }
+
+    if (status && status !== 'all') {
+      const statuses = status.split(',').map(s => s.trim());
+      filter.status = { $in: statuses };
+    }
+
+    // Search across multiple fields
+    const searchTerm = query.trim();
+    filter.$or = [
+      { design: { $regex: searchTerm, $options: 'i' } },
+      { orderItemId: { $regex: searchTerm, $options: 'i' } },
+      { marketplaceOrderId: { $regex: searchTerm, $options: 'i' } },
+      { color: { $regex: searchTerm, $options: 'i' } },
+      { size: { $regex: searchTerm, $options: 'i' } }
+    ];
+
+    // Limit search results to 200 for performance
+    const results = await MarketplaceSale.find(filter)
+      .sort({ saleDate: -1 })
+      .limit(200)
+      .lean()
+      .maxTimeMS(3000);
+
+    res.json({
+      success: true,
+      data: results,
+      count: results.length,
+      limited: results.length === 200
+    });
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Search failed',
       error: error.message
     });
   }
@@ -1369,324 +1446,307 @@ exports.exportOrders = async (req, res) => {
 };
 
 // ============================================
-// CSV IMPORT - Import orders from Flipkart CSV
+// CSV IMPORT WITH AUTO-DETECTION
 // ============================================
 exports.importFromCSV = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
+    const { csvData, accountName, dispatchDate } = req.body;
     const { organizationId, id: userId } = req.user;
-    const { csvData, accountName, importType = 'pending', filterDate } = req.body;
-    
-    // Validation
+
     if (!csvData || !Array.isArray(csvData) || csvData.length === 0) {
       await session.abortTransaction();
       return res.status(400).json({
-        success: false,
+        code: 'INVALID_DATA',
         message: 'CSV data is required and must be an array'
       });
     }
-    
+
     if (!accountName) {
       await session.abortTransaction();
       return res.status(400).json({
-        success: false,
+        code: 'INVALID_DATA',
         message: 'Account name is required'
       });
     }
-    
+
+    if (!dispatchDate) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        code: 'INVALID_DATA',
+        message: 'Dispatch date is required'
+      });
+    }
+
     const results = {
       success: [],
       failed: [],
-      duplicates: [],  // ✅ ADD THIS
-      invalidStatus: [],
-      total: csvData.length
+      duplicates: []
     };
-    
-    logger.info(`Starting CSV import: ${csvData.length} rows for account ${accountName}`);
-    
-    // Process each row
-    for (let i = 0; i < csvData.length; i++) {
-      const row = csvData[i];
-      const rowNumber = i + 1;
-      
-      try {
-        // Extract required fields
-        const orderId = row['Order Id'];
-        const orderItemId = (row['ORDER ITEM ID'] || '').replace(/'/g, '').trim(); // Remove single quote prefix
 
-        // Check for duplicates (both pending and dispatched imports)
-        const existingOrder = await MarketplaceSale.findOne({ 
-          orderItemId: orderItemId,
-          organizationId 
-        });
+    // Process each order
+    for (const row of csvData) {
+      const { design, color, size, quantity, orderId, orderItemId, sku } = row;
 
-        if (existingOrder) {
-          results.duplicates.push({ 
-            row: rowNumber, 
-            orderId: orderId,
-            orderItemId: orderItemId,
-            reason: 'Duplicate: Order Item ID already exists' 
-          });
-          continue; // Skip this order
-        }
+      // Check for duplicate
+      const existingOrder = await MarketplaceSale.findOne({
+        orderItemId,
+        organizationId,
+        deletedAt: null
+      }).session(session);
 
-          
-          // ✅ ADD: Validate status
-          const status = row['Order State'];
-          const validStatuses = ['Shipped', 'Ready to dispatch', 'Dispatched'];
-          if (!validStatuses.includes(status)) {
-            results.invalidStatus.push({
-              row: rowNumber,
-              orderId: orderId,
-              status: status,
-              reason: `Invalid status: ${status}`
-            });
-            continue; // Skip this order
-          }
-        
-        
-        const sku = row['SKU'];
-        const quantityStr = row['Quantity'];
-        const orderDateStr = row['Ordered On'];
-        
-        // Basic validation
-        if (!orderId || !orderItemId) {
-          results.failed.push({
-            row: rowNumber,
-            orderId: 'Unknown',
-            sku: sku || 'Unknown',
-            reason: 'Missing Order ID or Order Item ID'
-          });
-          continue;
-        }
-        
-        if (!sku) {
-          results.failed.push({
-            row: rowNumber,
-            orderId,
-            sku: 'Unknown',
-            reason: 'Missing SKU'
-          });
-          continue;
-        }
-        
-        // Parse quantity
-        const quantity = parseInt(quantityStr) || 1;
-        
-        // ✅ UPDATED: Use Invoice Date for both pending and dispatched
-        let saleDate;
-        if (importType === 'dispatched') {
-          // For dispatched orders, use Invoice Date
-          const invoiceDateStr = row['Invoice Date (mm/dd/yy)'];
-          saleDate = convertInvoiceDateToISO(invoiceDateStr);
-        } else {
-          // ✅ NEW: For pending orders, also use Invoice Date
-          const invoiceDateStr = row['Invoice Date (mm/dd/yy)'];
-          if (!invoiceDateStr) {
-            results.failed.push({
-              row: rowNumber,
-              orderId,
-              sku,
-              reason: 'Missing Invoice Date',
-            });
-            continue;
-          }
-          saleDate = convertInvoiceDateToISO(invoiceDateStr);
-        }
-
-        // Parse SKU
-        const { design, color, size } = parseFlipkartSKU(sku);
-        
-        if (!design || !color || !size) {
-          results.failed.push({
-            row: rowNumber,
-            orderId,
-            sku,
-            reason: 'Could not parse SKU format. Expected format: #D-11-BLACK-XL or #D9-KHAKI-L'
-          });
-          continue;
-        }
-        
-        // Find product in inventory
-        const product = await Product.findOne({ 
-          design, 
-          organizationId 
-        }).session(session);
-        
-        if (!product) {
-          results.failed.push({
-            row: rowNumber,
-            orderId,
-            sku,
-            reason: `Product "${design}" not found in inventory. Available designs: Check your inventory.`
-          });
-          continue;
-        }
-        
-        // Match color with fuzzy logic
-        const matchedColor = matchColorToInventory(color, product.colors);
-        
-        if (!matchedColor) {
-          const availableColors = product.colors.map(c => c.color).join(', ');
-          results.failed.push({
-            row: rowNumber,
-            orderId,
-            sku,
-            reason: `Color "${color}" not found in ${design}. Available colors: ${availableColors}`
-          });
-          continue;
-        }
-        
-        // Find color variant
-        const colorVariant = product.colors.find(c => c.color === matchedColor);
-        
-        // Find size
-        const sizeIndex = colorVariant.sizes.findIndex(s => s.size === size);
-        
-        if (sizeIndex === -1) {
-          const availableSizes = colorVariant.sizes.map(s => s.size).join(', ');
-          results.failed.push({
-            row: rowNumber,
-            orderId,
-            sku,
-            reason: `Size "${size}" not found in ${design}-${matchedColor}. Available sizes: ${availableSizes}`
-          });
-          continue;
-        }
-        
-        const sizeVariant = colorVariant.sizes[sizeIndex];
-        const reservedStock = sizeVariant.reservedStock || 0;
-        
-        // Check reserved stock availability
-        if (reservedStock < quantity) {
-          results.failed.push({
-            row: rowNumber,
-            orderId,
-            sku,
-            reason: `Insufficient reserved stock for ${design}-${matchedColor}-${size}. Need: ${quantity}, Available: ${reservedStock}`
-          });
-          continue;
-        }
-        
-        // Deduct from reserved stock
-        const colorIndex = product.colors.findIndex(c => c.color === matchedColor);
-        product.colors[colorIndex].sizes[sizeIndex].reservedStock -= quantity;
-        await product.save({ session });
-        
-        // Create sale record
-        const sale = await MarketplaceSale.create([{
-          accountName,
-          marketplaceOrderId: orderId,
+      if (existingOrder) {
+        results.duplicates.push({
           orderItemId,
-          design,
-          color: matchedColor, // Use matched color from inventory
-          size,
-          quantity,
-          saleDate: saleDate,
-          status: 'dispatched', // Always dispatched on import
-          notes: '', // Empty notes as requested
-          organizationId,
-          createdByUser: {
-            userId: req.user._id,
-            userName: req.user.name || req.user.email,
-            userRole: req.user.role,
-            createdAt: new Date()
-          }
-        }], { session });
-        
-        // Log transfer
-        await Transfer.create([{
-          design,
-          color: matchedColor,
-          size,
-          quantity,
-          type: 'marketplace_order',
-          from: 'reserved',
-          to: 'sold',
-          mainStockBefore: sizeVariant.currentStock || 0,
-          reservedStockBefore: reservedStock,
-          mainStockAfter: sizeVariant.currentStock || 0,
-          reservedStockAfter: reservedStock - quantity,
-          relatedOrderId: sale[0]._id,
-          relatedOrderType: 'marketplace',
-          performedBy: userId,
-          notes: `CSV Import - Flipkart Order ${orderId} (SKU: ${sku})`,
-          organizationId
-        }], { session });
-        
-        results.success.push({
-          row: rowNumber,
-          orderId,
-          orderItemId,
-          sku,
-          design,
-          color: matchedColor,
-          size,
-          quantity,
-          saleId: sale[0]._id
+          reason: 'Order already exists'
         });
-        
-      } catch (error) {
+        continue;
+      }
+
+      // Find product
+      const product = await Product.findOne({
+        design,
+        organizationId
+      }).session(session);
+
+      if (!product) {
         results.failed.push({
-          row: rowNumber,
-          orderId: row['Order Id'] || 'Unknown',
-          sku: row['SKU'] || 'Unknown',
-          reason: error.message
+          orderItemId,
+          reason: `Product ${design} not found`
         });
+        continue;
       }
-    }
-    
-    // ✅ NEW LOGIC: Only abort if there are REAL errors (not just duplicates)
-    if (results.success.length === 0) {
-      // Check if we have any real failures (not just duplicates)
-      if (results.failed.length > 0) {
-        // There are validation errors - abort
-        await session.abortTransaction();
-        logger.error(`CSV Import failed: ${results.failed.length} validation errors`);
-        return res.status(400).json({
-          success: false,
-          message: `Import failed - ${results.failed.length} validation errors. Please fix and retry.`,
-          data: results
+
+      // Find color variant
+      const colorVariant = product.colors.find(c => c.color === color);
+      if (!colorVariant) {
+        results.failed.push({
+          orderItemId,
+          reason: `Color ${color} not found in ${design}`
         });
-      } else if (results.duplicates && results.duplicates.length > 0) {
-        // Only duplicates - this is OK, just inform the user
-        await session.commitTransaction();
-        logger.info(`CSV Import: All ${results.duplicates.length} orders were duplicates (already imported)`);
-        return res.status(200).json({
-          success: true,
-          message: `All ${results.duplicates.length} orders were already imported (duplicates skipped)`,
-          data: results
-        });
+        continue;
       }
+
+      // Find size
+      const sizeIndex = colorVariant.sizes.findIndex(s => s.size === size);
+      if (sizeIndex === -1) {
+        results.failed.push({
+          orderItemId,
+          reason: `Size ${size} not found in ${design}-${color}`
+        });
+        continue;
+      }
+
+      const sizeVariant = colorVariant.sizes[sizeIndex];
+      const reservedStock = sizeVariant.reservedStock || 0;
+
+      // Check stock
+      if (reservedStock < quantity) {
+        results.failed.push({
+          orderItemId,
+          reason: `Insufficient reserved stock. Available: ${reservedStock}, Need: ${quantity}`,
+          design,
+          color,
+          size
+        });
+        continue;
+      }
+
+      // Deduct stock
+      const reservedBefore = sizeVariant.reservedStock;
+      colorVariant.sizes[sizeIndex].reservedStock -= quantity;
+      await product.save({ session });
+
+      // Create sale
+      const sale = await MarketplaceSale.create([{
+        accountName,
+        marketplaceOrderId: orderId,
+        orderItemId,
+        design,
+        color,
+        size,
+        quantity,
+        saleDate: new Date(dispatchDate),
+        status: 'dispatched',
+        notes: `Imported from CSV`,
+        organizationId,
+        createdByUser: {
+          userId: req.user._id,
+          userName: req.user.name || req.user.email,
+          userRole: req.user.role,
+          createdAt: new Date()
+        }
+      }], { session });
+
+      // Log transfer
+      await Transfer.create([{
+        design,
+        color,
+        size,
+        quantity,
+        type: 'marketplace_order',
+        from: 'reserved',
+        to: 'sold',
+        mainStockBefore: sizeVariant.currentStock,
+        reservedStockBefore: reservedBefore,
+        mainStockAfter: sizeVariant.currentStock,
+        reservedStockAfter: sizeVariant.reservedStock,
+        relatedOrderId: sale[0]._id,
+        relatedOrderType: 'marketplace',
+        performedBy: userId,
+        notes: `CSV Import - ${orderId}`,
+        organizationId
+      }], { session });
+
+      results.success.push({
+        orderItemId,
+        saleId: sale[0]._id
+      });
     }
 
-    // ✅ Import successful orders even if some fail or are duplicates
-    if (results.failed.length > 0 || results.duplicates.length > 0) {
-      logger.warn(`CSV Import partial: ${results.success.length} succeeded, ${results.failed.length} failed, ${results.duplicates.length} duplicates`);
-    }
-
-    // All successful - commit transaction
     await session.commitTransaction();
-    logger.info(`CSV Import completed: ${results.success.length} orders imported`);
+
+    logger.info('CSV Import completed', {
+      success: results.success.length,
+      failed: results.failed.length,
+      duplicates: results.duplicates.length
+    });
 
     res.json({
       success: true,
-      message: `Successfully imported ${results.success.length} orders`,
+      message: `Imported ${results.success.length} orders`,
       data: results
     });
 
-    
   } catch (error) {
     await session.abortTransaction();
-    logger.error('CSV import failed:', error);
+    logger.error('CSV Import failed', { error: error.message });
     res.status(500).json({
-      success: false,
+      code: 'IMPORT_FAILED',
       message: 'CSV import failed',
       error: error.message
     });
   } finally {
     session.endSession();
+  }
+};
+
+// ✅ ADD THIS - Get date summary
+exports.getDateSummary = async (req, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { status, accountName, startDate, endDate } = req.query;
+
+    const filter = { organizationId, deletedAt: null };
+
+    if (status && status !== 'all') {
+      const statuses = status.split(',').map(s => s.trim());
+      filter.status = { $in: statuses };
+    }
+
+    if (accountName && accountName !== 'all') {
+      filter.accountName = accountName;
+    }
+
+    if (startDate || endDate) {
+      filter.saleDate = {};
+      if (startDate) filter.saleDate.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        filter.saleDate.$lte = end;
+      }
+    }
+
+    const dateSummary = await MarketplaceSale.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: '%Y-%m-%d', date: '$saleDate' }
+          },
+          count: { $sum: 1 },
+          accounts: { $addToSet: '$accountName' }
+        }
+      },
+      { $sort: { _id: -1 } },
+      {
+        $project: {
+          date: '$_id',
+          count: 1,
+          accounts: 1,
+          _id: 0
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      data: dateSummary
+    });
+  } catch (error) {
+    console.error('Get date summary error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch date summary',
+      error: error.message
+    });
+  }
+};
+
+// ✅ ADD THIS - Get orders by specific date
+exports.getOrdersByDate = async (req, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { date, status, accountName } = req.query;
+
+    if (!date) {
+      return res.status(400).json({
+        success: false,
+        message: 'Date parameter is required'
+      });
+    }
+
+    const filter = { organizationId, deletedAt: null };
+
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(date);
+    endOfDay.setHours(23, 59, 59, 999);
+    
+    filter.saleDate = {
+      $gte: startOfDay,
+      $lte: endOfDay
+    };
+
+    if (status && status !== 'all') {
+      const statuses = status.split(',').map(s => s.trim());
+      filter.status = { $in: statuses };
+    }
+
+    if (accountName && accountName !== 'all') {
+      filter.accountName = accountName;
+    }
+
+    const orders = await MarketplaceSale.find(filter)
+      .sort({ createdAt: -1 })
+      .lean()
+      .maxTimeMS(10000);
+
+    res.json({
+      success: true,
+      data: orders,
+      count: orders.length,
+      date: date
+    });
+  } catch (error) {
+    console.error('Get orders by date error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch orders',
+      error: error.message
+    });
   }
 };

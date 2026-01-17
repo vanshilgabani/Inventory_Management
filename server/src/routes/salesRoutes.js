@@ -10,10 +10,17 @@ const {
   deleteSale,
   bulkMarkDelivered,
   exportOrders,
-  importFromCSV
+  importFromCSV,
+  searchSales,
+  getOrdersByDate,
+  getDateSummary
 } = require('../controllers/salesController');
 const { protect } = require('../middleware/auth');
 const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
+
+router.get('/dates-summary', protect, getDateSummary);
+router.get('/by-date', protect, getOrdersByDate);
+router.get('/search', protect, searchSales);
 
 // Create routes (no middleware needed)
 router.post('/', protect, createSale);

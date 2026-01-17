@@ -73,7 +73,6 @@ const Sales = () => {
   const [importAccount, setImportAccount] = useState('');
   const [isImporting, setIsImporting] = useState(false);
 
-  const [importType, setImportType] = useState(null); // 'pending' or 'dispatched'
   const [importFilterDate, setImportFilterDate] = useState(''); // DD/MM/YYYY format  
 
   // Search state
@@ -248,15 +247,17 @@ const fetchInitialData = async () => {
   }
 };
 
-  const fetchSales = async () => {
-    try {
-      const { start, end } = getEffectiveDateRange();
-      const data = await salesService.getAllSales(selectedAccount, 'all', start, end, { limit: 0 });
-      setSales(data);
-    } catch (error) {
-      toast.error('Failed to fetch sales');
-    }
-  };
+const fetchSales = async () => {
+  try {
+    const { start, end } = getEffectiveDateRange();
+    const data = await salesService.getAllSales(selectedAccount, 'all', start, end, { limit: 999999999999 });
+    
+    // ✅ FIX: Ensure we always have an array
+    setSales(Array.isArray(data) ? data : (data?.data || []));
+  } catch (error) {
+    toast.error('Failed to fetch sales');
+  }
+};
 
 const fetchSettlements = async () => {
   try {
@@ -286,12 +287,15 @@ const fetchSettlements = async () => {
 
     // ============ STATS COMPUTATION ============
 
-  const stats = {
-    dispatched: sales.filter(s => s.status === 'dispatched').length,
-    returned: sales.filter(s => s.status === 'returned').length,
-    cancelled: sales.filter(s => s.status === 'cancelled').length,
-    wrong_return: sales.filter(s => s.status === 'wrong_return').length
-  };
+// ✅ SAFETY: Ensure sales is always an array
+const salesArray = Array.isArray(sales) ? sales : [];
+
+const stats = {
+  dispatched: salesArray.filter((s) => s.status === 'dispatched').length,
+  returned: salesArray.filter((s) => s.status === 'returned').length,
+  cancelled: salesArray.filter((s) => s.status === 'cancelled').length,
+  wrongreturn: salesArray.filter((s) => s.status === 'wrongreturn').length,
+};
 
   const handleStatClick = (status) => {
     setStatusFilter(status);
@@ -308,37 +312,37 @@ const fetchSettlements = async () => {
   };
 
   // ============ FILTERING ============
+const filteredSales = sales.filter(sale => {
+  // 1. Tab Filter
+  let matchesTab = false;
+  if (activeTab === 'dispatched') {
+    matchesTab = sale.status === 'dispatched';
+  } else if (activeTab === 'delivered') {
+    matchesTab = sale.status === 'delivered';
+  } else if (activeTab === 'returned') {
+    matchesTab = ['returned', 'wrongreturn', 'cancelled'].includes(sale.status);
+  }
 
-  const filteredSales = sales.filter(sale => {
-    // 1. Tab Filter
-    let matchesTab = false;
-    if (activeTab === 'dispatched') {
-      matchesTab = sale.status === 'dispatched';
-    } else if (activeTab === 'delivered') {
-      matchesTab = sale.status === 'delivered';
-    } else if (activeTab === 'returned') {
-      matchesTab = ['returned', 'wrongreturn', 'cancelled'].includes(sale.status);
-    }
+  // 2. Specific Status Filter from Stats Card
+  let matchesStatus = true;
+  if (statusFilter !== 'all') {
+    matchesStatus = sale.status === statusFilter;
+  }
 
-    // 2. Specific Status Filter from Stats Card
-    let matchesStatus = true;
-    if (statusFilter !== 'all') {
-      matchesStatus = sale.status === statusFilter;
-    }
+  // ✅ 3. SEARCH FILTER (Design, Order Item ID, Order ID, Color, Size)
+  let matchesSearch = true;
+  if (searchQuery.trim()) {
+    const query = searchQuery.toLowerCase();
+    matchesSearch = 
+      sale.design?.toLowerCase().includes(query) ||           // ✅ Search by Design (D11, D9)
+      sale.orderItemId?.toLowerCase().includes(query) ||      // ✅ Search by Order Item ID
+      sale.marketplaceOrderId?.toLowerCase().includes(query) || // Existing: Order ID
+      sale.color?.toLowerCase().includes(query) ||            // Existing: Color
+      sale.size?.toLowerCase().includes(query);               // Existing: Size
+  }
 
-      // ✅ ADD SEARCH FILTER
-    let matchesSearch = true;
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      matchesSearch = 
-        sale.marketplaceOrderId?.toLowerCase().includes(query) ||
-        sale.design?.toLowerCase().includes(query) ||
-        sale.color?.toLowerCase().includes(query) ||
-        sale.size?.toLowerCase().includes(query);
-    }
-
-    return matchesTab && matchesStatus && matchesSearch;
-  });
+  return matchesTab && matchesStatus && matchesSearch;
+});
 
     // ============ SELECTION HANDLERS ============
 
@@ -389,96 +393,99 @@ const handleCSVUpload = (e) => {
     return;
   }
 
-  if (importType === 'dispatched' && !importFilterDate) {
-    toast.error('Please select an invoice date first');
+  if (!importFilterDate) {
+    toast.error('Please enter dispatch date first');
     return;
   }
 
-  // Validate date format for dispatched orders
-  if (importType === 'dispatched') {
-    const dateRegex = /^\d{2}\/\d{2}\/\d{4}$/;
-    if (!dateRegex.test(importFilterDate)) {
-      toast.error('Invalid date format. Please use DD/MM/YYYY');
-      return;
-    }
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(importFilterDate)) {
+    toast.error('Invalid date format');
+    return;
   }
 
   Papa.parse(file, {
     header: true,
     skipEmptyLines: true,
     complete: (results) => {
-      console.log('📋 CSV Parsed - Total rows:', results.data.length);
-      
-      let filteredData = results.data;
-      let filterInfo = { total: results.data.length, filtered: 0, reason: '' };
+      console.log('CSV Parsed - Total rows:', results.data.length);
 
-      // FILTER FOR DISPATCHED ORDERS
-      if (importType === 'dispatched' && importFilterDate) {
-        // Convert DD/MM/YYYY to multiple formats for CSV matching
-        const [day, month, year] = importFilterDate.split('/');
-        const format1 = `${month}${day}${year.slice(-2)}`; // "010326"
-        const format2 = `${month}-${day}-${year}`; // "01-03-2026"
-        const format3 = `${month}/${day}/${year.slice(-2)}`; // "01/03/26"
+      // ✅ STEP 1: AUTO-DETECT CSV TYPE
+      const allStatuses = new Set();
+      results.data.forEach(row => {
+        const status = row['Order State'];
+        if (status) allStatuses.add(status);
+      });
 
-        console.log('🔍 Looking for dates:', { format1, format2, format3 });
+      const hasPending = allStatuses.has('Ready to dispatch');
+      const hasShipped = allStatuses.has('Shipped');
+      const hasReturnRequested = allStatuses.has('Return Requested');
+      const hasReturned = allStatuses.has('Returned');
 
-        filteredData = results.data.filter(row => {
-          const invoiceDate = row['Invoice Date (mm/dd/yy)'];
-          
-          // Remove any spaces and normalize
-          const cleaned = invoiceDate?.replace(/\s/g, '') || '';
-          
-          // Check all possible formats
-          return cleaned === format1 || cleaned === format2 || cleaned === format3;
-        });
+      let detectedType = null;
+      let validStatuses = [];
+      let skipStatuses = [];
 
-        filterInfo.filtered = filteredData.length;
-        filterInfo.reason = `Invoice Date: ${importFilterDate}`;
-
-        console.log(`📅 Found ${filteredData.length} orders for ${importFilterDate}`);
-
-        if (filteredData.length === 0) {
-          toast.error(`No orders found with Invoice Date ${importFilterDate}`);
-          e.target.value = ''; // Reset file input
-          return;
-        }
+      // Detection logic
+      if (hasPending && !hasShipped && !hasReturnRequested && !hasReturned) {
+        detectedType = 'pending';
+        validStatuses = ['Ready to dispatch'];
+        skipStatuses = [];
+      } else if (!hasPending && (hasShipped || hasReturnRequested || hasReturned)) {
+        detectedType = 'dispatched';
+        validStatuses = ['Shipped'];
+        skipStatuses = ['Return Requested', 'Returned'];
+      } else {
+        toast.error('Mixed CSV detected! Please download separate CSVs for pending and dispatched orders.');
+        return;
       }
 
-      setParsedCsvData(filteredData);
-      
-      // ✅ GENERATE ENHANCED PREVIEW
+      console.log(`🔍 Detected CSV Type: ${detectedType}`);
+      console.log(`✅ Valid Statuses: ${validStatuses.join(', ')}`);
+      console.log(`⚠️ Skip Statuses: ${skipStatuses.join(', ')}`);
+
+      // ✅ STEP 2: GENERATE PREVIEW
       const preview = {
         success: [],
-        failed: []
+        failed: [],
+        skipped: [],
+        detectedType,
+        productBreakdown: new Map()
       };
-      
-      const validStatuses = ['Shipped', 'Ready to dispatch', 'Dispatched'];
-      
-      filteredData.forEach((row, idx) => {
-        const rowNumber = idx + 2; // +2 because CSV has header and arrays are 0-indexed
-        
-        // Check if status is valid (for dispatched orders)
-        if (importType === 'dispatched') {
-          const status = row['Order State'];
-          if (!validStatuses.includes(status)) {
-            preview.failed.push({
-              row: rowNumber,
-              reason: `Invalid status: ${status} (Only Shipped, Ready to dispatch, Dispatched allowed)`,
-              sku: row['SKU'],
-              orderId: row['Order Id']
-            });
-            return;
-          }
+
+      results.data.forEach((row, idx) => {
+        const rowNumber = idx + 2;
+        const status = row['Order State'];
+
+        // Skip orders
+        if (skipStatuses.includes(status)) {
+          preview.skipped.push({
+            orderId: row['Order Id'],
+            sku: row['SKU'],
+            status: status
+          });
+          return;
         }
-        
-        // Parse SKU using the existing CORRECT parser
+
+        // Check if status is valid
+        if (!validStatuses.includes(status)) {
+          preview.failed.push({
+            row: rowNumber,
+            reason: `Invalid status "${status}"`,
+            sku: row['SKU'],
+            orderId: row['Order Id']
+          });
+          return;
+        }
+
+        // Parse SKU
         const sku = row['SKU'];
         const { design, color, size } = parseFlipkartSKU(sku);
 
         if (!design || !color || !size) {
           preview.failed.push({
             row: rowNumber,
-            reason: 'Unable to parse SKU - invalid format',
+            reason: 'Unable to parse SKU',
             sku: sku || 'N/A',
             orderId: row['Order Id']
           });
@@ -487,32 +494,44 @@ const handleCSVUpload = (e) => {
 
         const quantity = parseInt(row['Quantity']) || 1;
 
-        // Now push with correctly parsed values
+        // Add to success
         preview.success.push({
-          design,   // ✅ 'D11' or 'D1'
-          color,    // ✅ 'KHAKHI' or 'BLACK'
-          size,     // ✅ 'L' or 'M'
+          design,
+          color,
+          size,
           quantity,
           orderId: row['Order Id'],
-          orderItemId: (row['ORDER ITEM ID'] || '').replace(/'/g, '').trim(), 
+          orderItemId: row['ORDER ITEM ID']?.replace(/'/g, '').trim(),
           sku
         });
+
+        // ✅ Product breakdown for preview
+        const variantKey = `${design}-${color}-${size}`;
+        if (preview.productBreakdown.has(variantKey)) {
+          const existing = preview.productBreakdown.get(variantKey);
+          existing.quantity += quantity;
+          existing.orderCount += 1;
+        } else {
+          preview.productBreakdown.set(variantKey, {
+            design,
+            color,
+            size,
+            quantity,
+            orderCount: 1
+          });
+        }
       });
-      
+
       setImportPreview(preview);
-      
-      // Show summary toast
-      if (importType === 'dispatched') {
-        toast.success(
-          `Found ${preview.success.length} valid orders for ${importFilterDate}`,
-          { duration: 4000 }
-        );
-      } else {
-        toast.success(
-          `Parsed ${preview.success.length} orders from CSV`,
-          { duration: 4000 }
-        );
-      }
+      setParsedCsvData(preview.success);
+
+      const typeLabel = detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS';
+      toast.success(
+        `🔍 Detected: ${typeLabel}\n` +
+        `✅ ${preview.success.length} orders to import\n` +
+        `⚠️ ${preview.skipped.length} orders skipped (returns)`,
+        { duration: 5000 }
+      );
     },
     error: (error) => {
       console.error('CSV Parse Error:', error);
@@ -527,129 +546,64 @@ const handleImportSubmit = async () => {
     return;
   }
 
-  if (!parsedCsvData.length) {
+  if (!importFilterDate) {
+    toast.error('Please enter dispatch date');
+    return;
+  }
+
+if (!parsedCsvData || parsedCsvData.length === 0) {  // ✅ FIXED CHECK
     toast.error('No data to import');
     return;
   }
 
   try {
     setIsImporting(true);
-    
-    // ✅ ADD: Prepare import payload
-    const importPayload = {
-      csvData: parsedCsvData,
-      account: importAccount,
-      importType: importType,  // 'pending' or 'dispatched'
-    };
-    
-    // ✅ ADD: Include filterDate for dispatched orders
-    if (importType === 'dispatched' && importFilterDate) {
-      const [day, month, year] = importFilterDate.split('/');
-      const csvDateFormat = `${month}/${day}/${year.slice(-2)}`;
-      importPayload.filterDate = csvDateFormat;
-    }
-    
+
+    // ✅ Send only successful orders (already filtered)
+    const ordersToImport = importPreview.success;
+
     const result = await salesService.importFromCSV(
-      importPayload.csvData,
-      importPayload.account,
-      importPayload.importType,  // ✅ ADD THIS
-      importPayload.filterDate   // ✅ ADD THIS
+      ordersToImport,
+      importAccount,
+      importFilterDate
     );
 
-    const { success, failed, duplicates = [], invalidStatus = [] } = result.data;
+    const { success, failed, duplicates } = result.data;
 
-    const totalSkipped = failed.length + duplicates.length + invalidStatus.length;
-
-    if (totalSkipped > 0) {
-      console.log('⚠️ Import Summary:');
-      console.log(`  ✅ Imported: ${success.length}`);
-      console.log(`  ❌ Failed: ${failed.length}`);
-      console.log(`  🔄 Duplicates: ${duplicates.length}`);
-      console.log(`  ⚠️ Invalid Status: ${invalidStatus.length}`);
-      
-      // Show detailed logs
-      if (duplicates.length > 0) {
-        console.log('\n📋 Duplicate Orders (Already in Database):');
-        duplicates.forEach((dup, idx) => {
-          console.log(`  ${idx + 1}. Order Item ID: ${dup.orderItemId} - ${dup.sku}`);
-        });
-      }
-      
-      if (invalidStatus.length > 0) {
-        console.log('\n❌ Invalid Status Orders:');
-        invalidStatus.forEach((inv, idx) => {
-          console.log(`  ${idx + 1}. Order ID: ${inv.orderId} - Status: ${inv.status}`);
-        });
-      }
-      
-      if (failed.length > 0) {
-        console.log('\n⚠️ Validation Errors:');
-        failed.forEach((fail, idx) => {
-          console.log(`  ${idx + 1}. Row ${fail.row} - ${fail.reason}`);
-          console.log(`     Order ID: ${fail.orderId}, SKU: ${fail.sku}`);
-        });
-      }
-      
-      // Build user-friendly message
-      let message = '';
-      if (success.length > 0) {
-        message = `✅ ${success.length} orders imported!\n`;
-      } else {
-        message = 'No orders imported:\n';
-      }
-      
-      if (duplicates.length > 0) {
-        message += `🔄 ${duplicates.length} duplicates skipped\n`;
-      }
-      if (invalidStatus.length > 0) {
-        message += `⚠️ ${invalidStatus.length} invalid status\n`;
-      }
-      if (failed.length > 0) {
-        message += `❌ ${failed.length} validation errors\n`;
-      }
-      
-      message += '\nCheck console for details';
-      
-      toast[success.length > 0 ? 'success' : 'error'](message, { duration: 8000 });
+    let message = '';
+    if (success.length > 0) {
+      message = `✅ ${success.length} orders imported!`;
     } else {
-      toast.success(`✅ All ${success.length} orders imported successfully!`, { duration: 5000 });
+      message = 'No orders imported';
     }
 
-    // Close modal and refresh
+    if (importPreview.skipped.length > 0) {
+      message += ` (${importPreview.skipped.length} returns skipped)`;
+    }
+
+    if (duplicates.length > 0) {
+      message += ` (${duplicates.length} duplicates)`;
+    }
+
+    if (failed.length > 0) {
+      message += ` (${failed.length} failed)`;
+      console.log('Failed orders:', failed);
+    }
+
+    toast[success.length > 0 ? 'success' : 'error'](message, { duration: 5000 });
+
     setShowImportModal(false);
     setParsedCsvData([]);
     setImportPreview(null);
-    setImportType(null);
     setImportFilterDate('');
     setImportAccount('');
     fetchSales();
-    
-    } catch (error) {
-    console.error('❌ Import error:', error);
-    console.error('📦 Full error response:', error.response?.data);  // ✅ ADD THIS
-
-    const errorData = error.response?.data;
-
-    // ✅ Show detailed errors from backend
-    if (errorData?.data?.failed) {
-      console.log('❌ Failed orders:', errorData.data.failed);
-      
-      // Show first few errors
-      const firstErrors = errorData.data.failed.slice(0, 3);
-      firstErrors.forEach((fail, idx) => {
-        console.log(`  ${idx + 1}. Row ${fail.row}: ${fail.reason}`);
-        console.log(`     Order ID: ${fail.orderId}, SKU: ${fail.sku}`);
-      });
-      
-      toast.error(`Import failed: ${errorData.data.failed.length} errors. Check console for details.`, {
-        duration: 8000
-      });
-    } else {
-      toast.error(errorData?.message || 'Import failed');
-    }
-    } finally {
+  } catch (error) {
+    console.error('Import error:', error);
+    toast.error(error.response?.data?.message || 'Import failed');
+  } finally {
     setIsImporting(false);
-    }
+  }
 };
 
 const executeBulkAction = async () => {
@@ -1306,10 +1260,10 @@ const handleDelete = async (id) => {
               <FiSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search Order ID, Design, Color..."
+                placeholder="Search by Design, Order Item ID, Order ID, Color, Size..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10 pr-10 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 w-64"
+                className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
               {searchQuery && (
                 <button
@@ -2418,10 +2372,11 @@ const handleDelete = async (id) => {
           required={insufficientReservedData.required}
         />
       )}
-      {/* IMPORT CSV MODAL - ENHANCED VERSION */}
+      {/* IMPORT CSV MODAL - MANUAL DISPATCH DATE */}
       {showImportModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
             <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between">
               <h2 className="text-2xl font-bold text-gray-800">Import Orders from CSV</h2>
               <button
@@ -2429,9 +2384,8 @@ const handleDelete = async (id) => {
                   setShowImportModal(false);
                   setParsedCsvData([]);
                   setImportPreview(null);
-                  setImportType(null);
-                  setImportFilterDate('');
                   setImportAccount('');
+                  setImportFilterDate(''); // Dispatch date
                 }}
                 className="text-gray-400 hover:text-gray-600 transition-colors"
               >
@@ -2439,91 +2393,12 @@ const handleDelete = async (id) => {
               </button>
             </div>
 
+            {/* Modal Body */}
             <div className="p-6">
-              {/* STEP 1: CHOOSE IMPORT TYPE */}
-              {!importType && (
+              {/* NO PREVIEW YET - Show Form */}
+              {!parsedCsvData.length && (
                 <div className="space-y-6">
-                  <div className="text-center mb-8">
-                    <p className="text-gray-600 text-lg">
-                      Select the type of orders you want to import:
-                    </p>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* Pending Handover Card */}
-                    <button
-                      onClick={() => setImportType('pending')}
-                      className="group p-8 border-2 border-gray-200 rounded-xl hover:border-indigo-500 hover:shadow-lg transition-all duration-200 text-left"
-                    >
-                      <div className="flex items-start space-x-4">
-                        <div className="p-3 bg-indigo-100 rounded-lg group-hover:bg-indigo-200 transition-colors">
-                          <FiPackage className="text-3xl text-indigo-600" />
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="font-bold text-xl mb-2 text-gray-800">Pending Handover</h3>
-                          <p className="text-sm text-gray-600 mb-3">
-                            Import new orders waiting for dispatch from Flipkart
-                          </p>
-                          <ul className="text-xs text-gray-500 space-y-1">
-                            <li>• Imports all orders from CSV</li>
-                            <li>• Deducts from reserved stock</li>
-                            <li>• Creates new dispatch records</li>
-                          </ul>
-                        </div>
-                      </div>
-                    </button>
-                    
-                    {/* Dispatched Orders Card */}
-                    <button
-                      onClick={() => setImportType('dispatched')}
-                      className="group p-8 border-2 border-gray-200 rounded-xl hover:border-green-500 hover:shadow-lg transition-all duration-200 text-left"
-                    >
-                      <div className="flex items-start space-x-4">
-                        <div className="p-3 bg-green-100 rounded-lg group-hover:bg-green-200 transition-colors">
-                          <FiTruck className="text-3xl text-green-600" />
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="font-bold text-xl mb-2 text-gray-800">Dispatched Orders</h3>
-                          <p className="text-sm text-gray-600 mb-3">
-                            Import already dispatched orders by specific date
-                          </p>
-                          <ul className="text-xs text-gray-500 space-y-1">
-                            <li>• Filter by invoice date (DD/MM/YYYY)</li>
-                            <li>• Skip duplicate Order IDs</li>
-                            <li>• Skip invalid status orders</li>
-                          </ul>
-                        </div>
-                      </div>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* STEP 2: PENDING HANDOVER - FILE UPLOAD */}
-              {importType === 'pending' && !parsedCsvData.length && (
-                <div className="space-y-6">
-                  <button
-                    onClick={() => {
-                      setImportType(null);
-                      setImportAccount('');
-                    }}
-                    className="flex items-center text-sm text-indigo-600 hover:text-indigo-800 transition-colors"
-                  >
-                    <FiArrowLeft className="mr-2" />
-                    Back to selection
-                  </button>
-
-                  <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
-                    <div className="flex items-start space-x-3">
-                      <FiInfo className="text-indigo-600 mt-0.5 flex-shrink-0" />
-                      <div className="text-sm text-indigo-800">
-                        <p className="font-medium mb-1">Pending Handover Import</p>
-                        <p>Download CSV from: Flipkart Seller Portal → Orders → Pending Handover</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Account Selection */}
+                  {/* STEP 1: Select Account */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Select Marketplace Account *
@@ -2535,15 +2410,40 @@ const handleDelete = async (id) => {
                     >
                       <option value="">-- Select Account --</option>
                       {marketplaceAccounts.map((acc) => (
-                        <option key={acc._id} value={acc.accountName}>
+                        <option key={acc.id} value={acc.accountName}>
                           {acc.accountName} ({acc.platform})
                         </option>
                       ))}
                     </select>
                   </div>
 
-                  {/* File Upload */}
+                  {/* ✅ STEP 2: Dispatch Date (MANUAL INPUT) */}
                   {importAccount && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Dispatch Date *{' '}
+                        <span className="text-xs text-gray-500 font-normal">
+                          (When you dispatched these orders)
+                        </span>
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="date"
+                          value={importFilterDate}
+                          onChange={(e) => setImportFilterDate(e.target.value)}
+                          max={new Date().toISOString().split('T')[0]} // Can't be future date
+                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        />
+                        <FiCalendar className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" />
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        All orders in this CSV will be marked as dispatched on this date
+                      </p>
+                    </div>
+                  )}
+
+                  {/* ✅ STEP 3: Upload CSV */}
+                  {importAccount && importFilterDate && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Upload CSV File *
@@ -2552,285 +2452,211 @@ const handleDelete = async (id) => {
                         type="file"
                         accept=".csv"
                         onChange={handleCSVUpload}
-                        className="block w-full text-sm text-gray-500 
-                          file:mr-4 file:py-3 file:px-6 
-                          file:rounded-lg file:border-0 
-                          file:text-sm file:font-semibold 
-                          file:bg-indigo-50 file:text-indigo-700 
-                          hover:file:bg-indigo-100 
-                          file:cursor-pointer cursor-pointer
-                          border border-gray-300 rounded-lg"
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* STEP 3: DISPATCHED ORDERS - DATE & FILE UPLOAD */}
-              {importType === 'dispatched' && !parsedCsvData.length && (
-                <div className="space-y-6">
-                  <button
-                    onClick={() => {
-                      setImportType(null);
-                      setImportFilterDate('');
-                      setImportAccount('');
-                    }}
-                    className="flex items-center text-sm text-green-600 hover:text-green-800 transition-colors"
-                  >
-                    <FiArrowLeft className="mr-2" />
-                    Back to selection
-                  </button>
-
-                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                    <div className="flex items-start space-x-3">
-                      <FiAlertCircle className="text-yellow-600 mt-0.5 flex-shrink-0" />
-                      <div className="text-sm text-yellow-800">
-                        <p className="font-medium mb-1">Important Notes:</p>
-                        <ul className="list-disc list-inside space-y-1">
-                          <li>Only orders matching the selected invoice date will be imported</li>
-                          <li>Orders with duplicate Order IDs will be skipped</li>
-                          <li>Orders with invalid status (Returned/Cancelled) will be skipped</li>
-                        </ul>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Account Selection */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Select Marketplace Account *
-                    </label>
-                    <select
-                      value={importAccount}
-                      onChange={(e) => setImportAccount(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                    >
-                      <option value="">-- Select Account --</option>
-                      {marketplaceAccounts.map((acc) => (
-                        <option key={acc._id} value={acc.accountName}>
-                          {acc.accountName} ({acc.platform})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Date Selection */}
-                  {importAccount && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Select Invoice Date * (DD/MM/YYYY)
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          placeholder="DD/MM/YYYY (e.g., 03/01/2026)"
-                          value={importFilterDate}
-                          onChange={(e) => {
-                            let value = e.target.value.replace(/[^\d]/g, '');
-                            if (value.length >= 2) value = value.slice(0, 2) + '/' + value.slice(2);
-                            if (value.length >= 5) value = value.slice(0, 5) + '/' + value.slice(5, 9);
-                            setImportFilterDate(value);
-                          }}
-                          maxLength="10"
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                        />
-                        <FiCalendar className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                      </div>
-                      <p className="text-xs text-gray-500 mt-1">
-                        Format: Day/Month/Year (e.g., 03/01/2026 for 3rd January 2026)
-                      </p>
-                    </div>
-                  )}
-
-                  {/* File Upload */}
-                  {importAccount && importFilterDate.length === 10 && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Upload Dispatched Orders CSV *
-                      </label>
-                      <input
-                        type="file"
-                        accept=".csv"
-                        onChange={handleCSVUpload}
-                        className="block w-full text-sm text-gray-500 
-                          file:mr-4 file:py-3 file:px-6 
-                          file:rounded-lg file:border-0 
-                          file:text-sm file:font-semibold 
-                          file:bg-green-50 file:text-green-700 
-                          hover:file:bg-green-100 
+                        className="block w-full text-sm text-gray-500
+                          file:mr-4 file:py-3 file:px-6
+                          file:rounded-lg file:border-0
+                          file:text-sm file:font-semibold
+                          file:bg-indigo-50 file:text-indigo-700
+                          hover:file:bg-indigo-100
                           file:cursor-pointer cursor-pointer
                           border border-gray-300 rounded-lg"
                       />
                       <p className="text-xs text-gray-500 mt-2">
-                        Download from: Flipkart Seller Portal → Orders → Dispatched
+                        Download CSV from Flipkart Seller Portal → Orders → Dispatched
                       </p>
                     </div>
                   )}
-                </div>
-              )}
 
-              {/* STEP 4: ENHANCED PREVIEW */}
-              {importPreview && parsedCsvData.length > 0 && (
-                <div className="space-y-6">
-                  {/* Header with back button */}
-                  <div className="flex items-center justify-between">
-                    <button
-                      onClick={() => {
-                        setParsedCsvData([]);
-                        setImportPreview(null);
-                      }}
-                      className="flex items-center text-sm text-gray-600 hover:text-gray-800 transition-colors"
-                    >
-                      <FiArrowLeft className="mr-2" />
-                      Upload different file
-                    </button>
-                    
-                    <span className="text-sm text-gray-500">
-                      {importType === 'dispatched' && `Filter: ${importFilterDate}`}
-                    </span>
-                  </div>
-
-                  {/* Summary Cards */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-4 border border-green-200">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-green-700 font-medium">Ready to Import</p>
-                          <p className="text-3xl font-bold text-green-800 mt-1">
-                            {importPreview.success.length}
-                          </p>
-                        </div>
-                        <FiCheckCircle className="text-4xl text-green-600" />
-                      </div>
-                    </div>
-
-                    <div className="bg-gradient-to-br from-red-50 to-red-100 rounded-lg p-4 border border-red-200">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-red-700 font-medium">Validation Issues</p>
-                          <p className="text-3xl font-bold text-red-800 mt-1">
-                            {importPreview.failed.length}
-                          </p>
-                        </div>
-                        <FiAlertCircle className="text-4xl text-red-600" />
-                      </div>
-                    </div>
-
-                    <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-blue-700 font-medium">Total Parsed</p>
-                          <p className="text-3xl font-bold text-blue-800 mt-1">
-                            {parsedCsvData.length}
-                          </p>
-                        </div>
-                        <FiFileText className="text-4xl text-blue-600" />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Orders Breakdown - Success */}
-                  {importPreview.success.length > 0 && (
-                    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-                      <div className="bg-green-50 px-4 py-3 border-b border-green-200">
-                        <h3 className="font-semibold text-green-800 flex items-center">
-                          <FiCheckCircle className="mr-2" />
-                          {importPreview.success.length} Orders Ready to Import
-                        </h3>
-                      </div>
-                      <div className="p-4 max-h-60 overflow-y-auto">
-                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                          {Object.entries(
-                            importPreview.success.reduce((acc, item) => {
-                              const key = `${item.design}-${item.color}-${item.size}`;
-                              acc[key] = (acc[key] || 0) + item.quantity;
-                              return acc;
-                            }, {})
-                          ).map(([sku, qty]) => (
-                            <div key={sku} className="flex items-center justify-between bg-green-50 rounded px-3 py-2 border border-green-200">
-                              <span className="text-sm font-medium text-gray-700">{sku}</span>
-                              <span className="text-sm font-bold text-green-700">× {qty}</span>
-                            </div>
-                          ))}
+                  {/* Instructions */}
+                  {!importAccount && (
+                    <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+                      <div className="flex items-start space-x-3">
+                        <FiInfo className="text-indigo-600 mt-0.5 flex-shrink-0" />
+                        <div className="text-sm text-indigo-800">
+                          <p className="font-medium mb-1">Import Instructions</p>
+                          <ol className="list-decimal list-inside space-y-1">
+                            <li>Select your marketplace account</li>
+                            <li>Enter the date you dispatched these orders</li>
+                            <li>Upload the CSV file from Flipkart</li>
+                          </ol>
                         </div>
                       </div>
                     </div>
                   )}
-
-                  {/* Orders Breakdown - Failed */}
-                  {importPreview.failed.length > 0 && (
-                    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-                      <div className="bg-red-50 px-4 py-3 border-b border-red-200">
-                        <h3 className="font-semibold text-red-800 flex items-center">
-                          <FiAlertCircle className="mr-2" />
-                          {importPreview.failed.length} Orders Have Issues
-                        </h3>
-                      </div>
-                      <div className="p-4 max-h-60 overflow-y-auto">
-                        <div className="space-y-2">
-                          {importPreview.failed.map((item, idx) => (
-                            <div key={idx} className="flex items-start space-x-3 p-3 bg-red-50 rounded border border-red-200">
-                              <FiXCircle className="text-red-500 mt-0.5 flex-shrink-0" />
-                              <div className="flex-1 text-sm">
-                                <p className="font-medium text-gray-800">Row {item.row}</p>
-                                <p className="text-red-700">{item.reason}</p>
-                                {item.sku && <p className="text-gray-600 text-xs mt-1">SKU: {item.sku}</p>}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Action Buttons */}
-                  <div className="flex items-center justify-between pt-4 border-t">
-                    <div className="text-sm text-gray-600">
-                      {importPreview.success.length > 0 ? (
-                        <span>Stock will be deducted from <strong>{importAccount}</strong> reserved inventory</span>
-                      ) : (
-                        <span className="text-red-600">Cannot import - all orders have validation issues</span>
-                      )}
-                    </div>
-                    
-                    <div className="flex space-x-3">
-                      <button
-                        onClick={() => {
-                          setShowImportModal(false);
-                          setParsedCsvData([]);
-                          setImportPreview(null);
-                          setImportType(null);
-                          setImportFilterDate('');
-                          setImportAccount('');
-                        }}
-                        className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-                      >
-                        Cancel
-                      </button>
-                      
-                      {importPreview.success.length > 0 && (
-                        <button
-                          onClick={handleImportSubmit}
-                          disabled={isImporting}
-                          className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white rounded-lg hover:from-indigo-700 hover:to-indigo-800 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
-                        >
-                          {isImporting ? (
-                            <>
-                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                              <span>Importing...</span>
-                            </>
-                          ) : (
-                            <>
-                              <FiUpload />
-                              <span>Import {importPreview.success.length} Orders</span>
-                            </>
-                          )}
-                        </button>
-                      )}
-                    </div>
-                  </div>
                 </div>
               )}
+
+              {/* ✅ PREVIEW - Show After Upload */}
+              {importPreview && (
+              <div className="space-y-4">
+                {/* Detection Summary */}
+                <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <FiInfo className="text-blue-600 text-xl" />
+                    <h3 className="font-semibold text-blue-900">
+                      🔍 Detected: {importPreview.detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS'}
+                    </h3>
+                  </div>
+                  
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Total Orders in CSV:</span>
+                      <span className="font-semibold">{parsedCsvData.length}</span>
+                    </div>
+                    
+                    <div className="flex justify-between text-green-700">
+                      <span>✅ Will Import:</span>
+                      <span className="font-semibold">{importPreview.success.length} orders</span>
+                    </div>
+                    
+                    {importPreview.skipped.length > 0 && (
+                      <div className="flex justify-between text-yellow-700">
+                        <span>⚠️ Will Skip (Returns):</span>
+                        <span className="font-semibold">{importPreview.skipped.length} orders</span>
+                      </div>
+                    )}
+                    
+                    {importPreview.failed.length > 0 && (
+                      <div className="flex justify-between text-red-700">
+                        <span>❌ Validation Errors:</span>
+                        <span className="font-semibold">{importPreview.failed.length} orders</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Product Breakdown */}
+                {importPreview.success.length > 0 && (
+                  <div className="border rounded-lg overflow-hidden">
+                    <div className="bg-gray-50 px-4 py-2 border-b">
+                      <h4 className="font-semibold text-gray-700">📦 Products Breakdown ({importPreview.success.length} orders)</h4>
+                    </div>
+                    
+                    <div className="max-h-64 overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-100 sticky top-0">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Design</th>
+                            <th className="px-3 py-2 text-left">Color</th>
+                            <th className="px-3 py-2 text-left">Size</th>
+                            <th className="px-3 py-2 text-right">Quantity</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Array.from(importPreview.productBreakdown.values()).map((item, idx) => (
+                            <tr key={idx} className="border-b hover:bg-gray-50">
+                              <td className="px-3 py-2 font-medium">{item.design}</td>
+                              <td className="px-3 py-2">{item.color}</td>
+                              <td className="px-3 py-2">{item.size}</td>
+                              <td className="px-3 py-2 text-right font-semibold">{item.quantity}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    
+                    <div className="bg-gray-50 px-4 py-2 border-t text-sm text-gray-600">
+                      Total: {importPreview.productBreakdown.size} unique variants
+                    </div>
+                  </div>
+                )}
+
+                {/* Skipped Orders (Collapsible) */}
+                {importPreview.skipped.length > 0 && (
+                  <details className="border rounded-lg overflow-hidden">
+                    <summary className="bg-yellow-50 px-4 py-3 cursor-pointer hover:bg-yellow-100 flex items-center gap-2">
+                      <FiAlertTriangle className="text-yellow-600" />
+                      <span className="font-medium text-yellow-800">
+                        ⚠️ Skipped Orders ({importPreview.skipped.length} returns - not imported)
+                      </span>
+                    </summary>
+                    
+                    <div className="max-h-48 overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-100">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Order ID</th>
+                            <th className="px-3 py-2 text-left">SKU</th>
+                            <th className="px-3 py-2 text-left">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {importPreview.skipped.map((item, idx) => (
+                            <tr key={idx} className="border-b">
+                              <td className="px-3 py-2 text-xs">{item.orderId}</td>
+                              <td className="px-3 py-2">{item.sku}</td>
+                              <td className="px-3 py-2">
+                                <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+                                  {item.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                )}
+
+                {/* Failed Validation */}
+                {importPreview.failed.length > 0 && (
+                  <details className="border border-red-200 rounded-lg overflow-hidden">
+                    <summary className="bg-red-50 px-4 py-3 cursor-pointer hover:bg-red-100 flex items-center gap-2">
+                      <FiAlertCircle className="text-red-600" />
+                      <span className="font-medium text-red-800">
+                        ❌ Validation Issues ({importPreview.failed.length})
+                      </span>
+                    </summary>
+                    
+                    <div className="max-h-48 overflow-y-auto p-3 space-y-2">
+                      {importPreview.failed.map((item, idx) => (
+                        <div key={idx} className="text-sm bg-red-50 p-2 rounded border border-red-200">
+                          <div className="font-medium text-red-900">Row {item.row}</div>
+                          <div className="text-red-700">{item.reason}</div>
+                          {item.sku && <div className="text-xs text-red-600">SKU: {item.sku}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+            )}
+            {/* Modal Footer - Action Buttons */}
+<div className="flex justify-end gap-3 pt-4 border-t">
+  <button
+    type="button"
+    onClick={() => {
+      setShowImportModal(false);
+      setParsedCsvData([]);
+      setImportPreview(null);
+      setImportFilterDate('');
+    }}
+    className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+    disabled={isImporting}
+  >
+    Cancel
+  </button>
+  
+  <button
+    type="button"
+    onClick={handleImportSubmit}
+    disabled={!importPreview || importPreview.success.length === 0 || isImporting}
+    className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+  >
+    {isImporting ? (
+      <>
+        <FiClock className="animate-spin" />
+        Importing...
+      </>
+    ) : (
+      <>
+        <FiUpload />
+        Import {importPreview?.success.length || 0} Orders
+      </>
+    )}
+  </button>
+</div>
+
             </div>
           </div>
         </div>
