@@ -21,8 +21,8 @@ import MonthlyBills from './pages/MonthlyBills';
 import Notifications from './pages/Notifications';
 import ActivityAuditPage from './pages/ActivityAuditPage';
 import GlobalNotificationBanner from './components/GlobalNotificationBanner';
-import AdminRequestNotificationWidget from './components/widgets/AdminRequestNotificationWidget';
-import ActiveSessionsMonitorWidget from './components/widgets/ActiveSessionsMonitorWidget';
+//import AdminRequestNotificationWidget from './components/widgets/AdminRequestNotificationWidget';
+//import ActiveSessionsMonitorWidget from './components/widgets/ActiveSessionsMonitorWidget';
 import MyPendingRequests from './pages/MyPendingRequests';
 import DeletedOrders from './pages/DeletedOrders';
 
@@ -133,13 +133,14 @@ const AppRoutes = () => {
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
 
-      {/* ✅ Admin Widgets - Now inside AuthProvider */}
+      {/* ✅ Admin Widgets - Now inside AuthProvider 
       {user?.role === 'admin' && (
         <>
           <AdminRequestNotificationWidget />
           <ActiveSessionsMonitorWidget />
         </>
       )}
+      */}
     </>
   );
 };

@@ -314,7 +314,13 @@ wholesaleOrderSchema.pre('validate', function(next) {
   next();
 });
 
-wholesaleOrderSchema.index({ challanNumber: 1, organizationId: 1 }, { unique: true, sparse: true });
+wholesaleOrderSchema.index(
+  { challanNumber: 1, organizationId: 1 }, 
+  { 
+    unique: true,
+    partialFilterExpression: { deletedAt: null } // Only enforce uniqueness for active orders
+  }
+);
 wholesaleOrderSchema.index({ organizationId: 1, orderDate: -1 });
 wholesaleOrderSchema.index({ buyerId: 1, orderDate: -1 });
 // ✅ TTL index for auto-deletion after 60 days

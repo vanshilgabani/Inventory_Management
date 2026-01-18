@@ -149,6 +149,12 @@ const getBuyerMonthlyHistory = async (buyerId) => {
   return response.data;
 };
 
+// Delete a specific payment from order
+const deleteOrderPayment = async (orderId, paymentIndex) => {
+  const response = await api.delete(`/wholesale/${orderId}/payments/${paymentIndex}`);
+  return response.data;
+};
+
 export const wholesaleService = {
   getAllOrders,
   getOrderById,
@@ -173,5 +179,6 @@ export const wholesaleService = {
   deleteBulkPayment,
   createOrderWithReservedBorrow,
   recordSmartPayment,
-  getBuyerMonthlyHistory
+  getBuyerMonthlyHistory,
+  deleteOrderPayment
 };

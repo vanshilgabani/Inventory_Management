@@ -470,39 +470,62 @@ const createOrder = async (req, res) => {
   }
 };
 
-// ✅ UPDATED: Per-business sequential challan number generation
+// FIXED: Generate challan number - Reuse ONLY latest deleted, skip old gaps
 const generateChallanNumber = async (businessName, organizationId, session) => {
   try {
-    // Clean business name first for consistent counting
+    // Clean business name for consistent formatting
     const cleanBusinessName = businessName
-      .replace(/[^a-zA-Z0-9\s]/g, '') // Remove special characters, keep spaces
-      .replace(/\s+/g, '_') // Replace spaces with underscores
-      .toUpperCase(); // Convert to uppercase
-
-    // Count orders for THIS business name (not buyer contact)
-    const businessOrderCount = await WholesaleOrder.countDocuments({
-      businessName: businessName,  // ✅ CHANGED: Use businessName instead of buyerContact
+      .replace(/[^a-zA-Z0-9 ]/g, '') // Remove special characters, keep spaces
+      .replace(/ /g, '_')             // Replace spaces with underscores
+      .toUpperCase();                 // Convert to uppercase
+    
+    // Get all ACTIVE (non-deleted) orders for this business
+    const existingOrders = await WholesaleOrder.find({
+      businessName: businessName,
       organizationId,
-    }).session(session);
-
-    const orderNumber = businessOrderCount + 1;
-
-    // Format: BUSINESSNAME_ORDERNUMBER (e.g., SNELLY_20, RAM_001, etc.)
-    const challanNumber = `${cleanBusinessName}_${String(orderNumber).padStart(2, '0')}`;
-
+      deletedAt: null, // Only active orders
+    })
+      .select('challanNumber')
+      .session(session)
+      .lean();
+    
+    // Extract sequence numbers from active challans
+    const usedNumbers = existingOrders
+      .map(order => {
+        // Extract number from format: SNELLY23 → 23
+        const match = order.challanNumber.match(/(\d+)$/);
+        return match ? parseInt(match[1], 10) : null;
+      })
+      .filter(num => num !== null)
+      .sort((a, b) => a - b);
+    
+    // ✅ KEY LOGIC: Find HIGHEST number and add 1
+    // This automatically reuses the latest deleted number!
+    const maxSequence = usedNumbers.length > 0 
+      ? Math.max(...usedNumbers) 
+      : 0;
+    
+    const orderNumber = maxSequence + 1;
+    
+    // Format: BUSINESSNAME + NUMBER
+    const challanNumber = `${cleanBusinessName}${String(orderNumber).padStart(2, '0')}`;
+    
     logger.debug('Challan number generated', {
       businessName,
       cleanBusinessName,
-      businessOrderCount,
+      activeOrdersCount: existingOrders.length,
+      usedNumbers: usedNumbers,
+      maxSequence,
       orderNumber,
       challanNumber,
     });
-
+    
     return challanNumber;
+    
   } catch (error) {
     logger.error('Challan number generation failed', { error: error.message });
     // Fallback to timestamp-based if generation fails
-    return `CH_${Date.now().toString().slice(-8)}`;
+    return `CH${Date.now().toString().slice(-8)}`;
   }
 };
 
@@ -2423,6 +2446,96 @@ const getBuyerMonthlyHistory = async (req, res) => {
   }
 };
 
+// Delete a specific payment from order's payment history (Admin only)
+const deleteOrderPayment = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id, paymentIndex } = req.params; // Order ID and payment index
+    const { organizationId } = req.user;
+
+    // Find the order
+    const order = await WholesaleOrder.findOne({ _id: id, organizationId }).session(session);
+
+    if (!order) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        code: 'ORDER_NOT_FOUND', 
+        message: 'Order not found' 
+      });
+    }
+
+    // Validate payment index
+    const index = parseInt(paymentIndex);
+    if (index < 0 || index >= order.paymentHistory.length) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        code: 'INVALID_INDEX', 
+        message: 'Invalid payment index' 
+      });
+    }
+
+    // Get the payment to be deleted
+    const paymentToDelete = order.paymentHistory[index];
+    const paymentAmount = paymentToDelete.amount || 0;
+
+    // Remove payment from history
+    order.paymentHistory.splice(index, 1);
+
+    // Recalculate order financials
+    order.amountPaid = order.paymentHistory.reduce((sum, p) => sum + (p.amount || 0), 0);
+    order.amountDue = Math.max(0, order.totalAmount - order.amountPaid);
+
+    // Update payment status
+    if (order.amountDue === 0) {
+      order.paymentStatus = 'Paid';
+    } else if (order.amountPaid > 0) {
+      order.paymentStatus = 'Partial';
+    } else {
+      order.paymentStatus = 'Pending';
+    }
+
+    await order.save({ session });
+
+    // Update buyer's total due
+    if (order.buyerId) {
+      const buyer = await WholesaleBuyer.findById(order.buyerId).session(session);
+      if (buyer) {
+        buyer.totalDue = (buyer.totalDue || 0) + paymentAmount;
+        buyer.totalPaid = Math.max(0, (buyer.totalPaid || 0) - paymentAmount);
+        await buyer.save({ session });
+      }
+    }
+
+    await session.commitTransaction();
+
+    logger.info('Order payment deleted successfully', { 
+      orderId: id, 
+      paymentIndex: index, 
+      paymentAmount, 
+      deletedBy: req.user.email 
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Payment deleted successfully',
+      order 
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    logger.error('Payment deletion failed', { error: error.message, orderId: req.params.id });
+    res.status(500).json({ 
+      code: 'DELETE_FAILED', 
+      message: 'Failed to delete payment', 
+      error: error.message 
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
 module.exports = {
   getAllOrders,
   getOrderById,
@@ -2448,5 +2561,6 @@ module.exports = {
   getBuyerStats,
   sendChallanEmail,
   createOrderWithReservedBorrow,
-  getBuyerMonthlyHistory
+  getBuyerMonthlyHistory,
+  deleteOrderPayment
 };

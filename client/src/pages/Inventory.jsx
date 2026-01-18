@@ -31,6 +31,12 @@ import {useColorPalette} from '../hooks/useColorPalette';
 import { useNavigate } from 'react-router-dom';
 import ScrollToTop from '../components/common/ScrollToTop';
 
+// Helper: Sort sizes in correct order
+const sortSizesByOrder = (sizes) => {
+  const order = { 'S': 1, 'M': 2, 'L': 3, 'XL': 4, 'XXL': 5, '2XL': 5, '3XL': 6 };
+  return [...sizes].sort((a, b) => (order[a.size || a] || 999) - (order[b.size || b] || 999));
+};
+
 const Inventory = () => {
   const { enabledSizes, loading: sizesLoading } = useEnabledSizes();
   const { colors: activeColors, getColorCode } = useColorPalette();
@@ -252,38 +258,43 @@ const allVariants = useMemo(() => {
     return filtered;
   }, [allVariants, searchTerm, stockFilter, colorFilter, sortBy]);
 
-  // ✅ Group filtered variants by design and color
-  const groupedVariants = useMemo(() => {
-    const grouped = {};
-    
-    filteredVariants.forEach(variant => {
-      const key = `${variant.productId}-${variant.design}`;
-      if (!grouped[key]) {
-        grouped[key] = {
-          productId: variant.productId,
-          design: variant.design,
-          colors: {}
-        };
-      }
-      
-      if (!grouped[key].colors[variant.color]) {
-        grouped[key].colors[variant.color] = {
-          color: variant.color,
-          wholesalePrice: variant.wholesalePrice,
-          retailPrice: variant.retailPrice,
-          sizes: []
-        };
-      }
-      
-      grouped[key].colors[variant.color].sizes.push({
-        size: variant.size,
-        stock: variant.stock,
-        status: variant.status
-      });
+const groupedVariants = useMemo(() => {
+  const grouped = {};
+  filteredVariants.forEach(variant => {
+    const key = `${variant.productId}-${variant.design}`;
+    if (!grouped[key]) {
+      grouped[key] = {
+        productId: variant.productId,
+        design: variant.design,
+        colors: {}
+      };
+    }
+
+    if (!grouped[key].colors[variant.color]) {
+      grouped[key].colors[variant.color] = {
+        color: variant.color,
+        wholesalePrice: variant.wholesalePrice,
+        retailPrice: variant.retailPrice,
+        sizes: []
+      };
+    }
+
+    grouped[key].colors[variant.color].sizes.push({
+      size: variant.size,
+      stock: variant.stock,
+      status: variant.status
     });
-    
-    return Object.values(grouped);
-  }, [filteredVariants]);
+  });
+
+  // ✅ Sort sizes before returning
+  const result = Object.values(grouped);
+  result.forEach(group => {
+    Object.values(group.colors).forEach(colorData => {
+      colorData.sizes = sortSizesByOrder(colorData.sizes);
+    });
+  });
+  return result;
+}, [filteredVariants]);
 
   // Summary stats (from ALL variants, not filtered)
   const stats = useMemo(() => {
@@ -394,33 +405,43 @@ const allVariants = useMemo(() => {
   };
 
   // Stock history
-  const handleViewHistory = async (design) => {
-    setHistoryProduct({ design });
-    setShowHistoryModal(true);
-    setLoadingHistory(true);
+const handleViewHistory = async (design) => {
+  setHistoryProduct({ design });
+  setShowHistoryModal(true);
+  setLoadingHistory(true);
 
-    try {
-      const [receivings, marketplaceSales, wholesaleOrders, directSales] = await Promise.all([
-        factoryService.getAllReceivings(),
-        salesService.getAllSales('all'),
-        wholesaleService.getAllOrders(),
-        directSalesService.getAllDirectSales()
-      ]);
+  try {
+    const [receivings, marketplaceSalesResponse, wholesaleOrders, directSales] = await Promise.all([
+      factoryService.getAllReceivings().catch(() => []),
+      salesService.getAllSales().catch(() => ({ sales: [] })),  // ✅ Returns object
+      wholesaleService.getAllOrders().catch(() => []),
+      directSalesService.getAllDirectSales().catch(() => [])
+    ]);
 
-      const productReceivings = receivings
-        .filter(r => r.design === design)
-        .map(r => ({
-          type: 'receiving',
-          date: r.receivedDate,
-          design: r.design,
-          color: r.color,
-          quantity: r.totalQuantity,
-          source: r.sourceType,
-          notes: r.notes
-        }));
+    // ✅ Extract array from response object
+    const marketplaceSales = Array.isArray(marketplaceSalesResponse) 
+      ? marketplaceSalesResponse 
+      : (marketplaceSalesResponse?.sales || []);
 
-      const productSales = [
-        ...marketplaceSales.filter(s => s.design === design).map(s => ({
+    // Filter receivings for this design
+    const productReceivings = (receivings || [])
+      .filter(r => r.design === design)
+      .map(r => ({
+        type: 'receiving',
+        date: r.receivedDate,
+        design: r.design,
+        color: r.color,
+        quantity: r.totalQuantity,
+        source: r.sourceType,
+        notes: r.notes
+      }));
+
+    // Filter sales for this design
+    const productSales = [
+      // Marketplace sales
+      ...marketplaceSales
+        .filter(s => s.design === design)
+        .map(s => ({
           type: 'marketplace',
           date: s.saleDate,
           design: s.design,
@@ -429,8 +450,12 @@ const allVariants = useMemo(() => {
           quantity: s.quantity,
           account: s.accountName
         })),
-        ...wholesaleOrders.flatMap(o =>
-          o.items?.filter(i => i.design === design).map(i => ({
+      
+      // Wholesale orders
+      ...(wholesaleOrders || []).flatMap(o =>
+        (o.items || [])
+          .filter(i => i.design === design)
+          .map(i => ({
             type: 'wholesale',
             date: o.createdAt,
             design: i.design,
@@ -439,9 +464,13 @@ const allVariants = useMemo(() => {
             quantity: i.quantity,
             buyer: o.businessName || o.buyerName
           }))
-        ),
-        ...directSales.flatMap(s =>
-          s.items?.filter(i => i.design === design).map(i => ({
+      ),
+      
+      // Direct sales
+      ...(directSales || []).flatMap(s =>
+        (s.items || [])
+          .filter(i => i.design === design)
+          .map(i => ({
             type: 'direct',
             date: s.createdAt,
             design: i.design,
@@ -450,16 +479,19 @@ const allVariants = useMemo(() => {
             quantity: i.quantity,
             customer: s.customerName
           }))
-        )
-      ].sort((a, b) => new Date(b.date) - new Date(a.date));
+      )
+    ].sort((a, b) => new Date(b.date) - new Date(a.date));
 
-      setHistoryData({ receivings: productReceivings, sales: productSales });
-    } catch (error) {
-      toast.error('Failed to load history');
-    } finally {
-      setLoadingHistory(false);
-    }
-  };
+    setHistoryData({ receivings: productReceivings, sales: productSales });
+
+  } catch (error) {
+    console.error('History load error:', error);
+    toast.error('Failed to load history');
+    setHistoryData({ receivings: [], sales: [] });
+  } finally {
+    setLoadingHistory(false);
+  }
+};
 
   // Edit/Delete handlers
   const handleOpenModal = (productId) => {

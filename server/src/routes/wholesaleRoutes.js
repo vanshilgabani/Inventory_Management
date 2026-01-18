@@ -25,7 +25,8 @@ const {
   sendChallanEmail,
   createOrderWithReservedBorrow,
   recordSmartPayment,
-  getBuyerMonthlyHistory
+  getBuyerMonthlyHistory,
+  deleteOrderPayment
 } = require('../controllers/wholesaleController');
 
 const { protect } = require('../middleware/auth');
@@ -55,6 +56,7 @@ router.post('/buyers/:id/bulk-payment', protect, recordBulkPayment); // Sales + 
 router.post('/buyers/:id/smart-payment', protect, recordSmartPayment);
 router.get('/buyers/:id/payment-history', protect, getBulkPaymentHistory); // Everyone
 router.put('/buyers/:id/payments/:paymentId', protect, isAdmin, updateBulkPayment); // Admin only
+router.delete('/:id/payments/:paymentIndex', protect, isAdmin, deleteOrderPayment);
 router.delete('/buyers/:id/payments/:paymentId', protect, isAdmin, deleteBulkPayment); // Admin only
 router.post('/buyers/:id/preview-payment', protect, previewPaymentAllocation); // Everyone
 
