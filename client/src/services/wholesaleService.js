@@ -100,7 +100,7 @@ const previewChallanNumber = async (businessName, buyerContact) => {
 // Get buyer statistics
 const getBuyerStats = async () => {
   const response = await api.get('/wholesale/stats');
-  return response.data.data;
+  return response.data;
 };
 
 // Record bulk payment

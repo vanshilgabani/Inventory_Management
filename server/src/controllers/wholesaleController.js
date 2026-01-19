@@ -508,7 +508,7 @@ const generateChallanNumber = async (businessName, organizationId, session) => {
     const orderNumber = maxSequence + 1;
     
     // Format: BUSINESSNAME + NUMBER
-    const challanNumber = `${cleanBusinessName}${String(orderNumber).padStart(2, '0')}`;
+    const challanNumber = `${cleanBusinessName}_${String(orderNumber).padStart(2, '0')}`;
     
     logger.debug('Challan number generated', {
       businessName,
@@ -2050,56 +2050,45 @@ const previewPaymentAllocation = async (req, res) => {
   }
 };
 
-// ✅ UPDATED: Get buyer statistics with correct totals
+// ✅ Get buyer statistics with accurate totals
 const getBuyerStats = async (req, res) => {
   try {
     const { organizationId } = req.user;
 
-    // Get order-level stats (includes factory_direct)
-    const orderStats = await WholesaleOrder.aggregate([
-      { $match: { organizationId: new mongoose.Types.ObjectId(organizationId) } },
-      {
-        $group: {
-          _id: null,
-          totalRevenue: { $sum: '$totalAmount' },
-          totalOutstanding: { $sum: '$amountDue' },
-        },
-      },
-    ]);
+    // Get all buyers and sum their individual totals (source of truth)
+    const buyers = await WholesaleBuyer.find({ organizationId }).lean();
 
-    // Get buyer counts
-    const buyerStats = await WholesaleBuyer.aggregate([
-      { $match: { organizationId: new mongoose.Types.ObjectId(organizationId) } },
-      {
-        $group: {
-          _id: null,
-          totalBuyers: { $sum: 1 },
-          buyersWithDue: {
-            $sum: {
-              $cond: [{ $gt: ['$totalDue', 0] }, 1, 0],
-            },
-          },
-        },
-      },
-    ]);
+    const totalBuyers = buyers.length;
+    
+    // Count buyers with pending dues
+    const buyersWithDue = buyers.filter(b => (b.totalDue || 0) > 0).length;
+    
+    // Sum from individual buyer records (accurate)
+    const totalOutstanding = buyers.reduce((sum, b) => sum + (b.totalDue || 0), 0);
+    
+    // Calculate total revenue from totalSpent field
+    const totalRevenue = buyers.reduce((sum, b) => sum + (b.totalSpent || 0), 0);
 
-    const result = {
-      totalBuyers: buyerStats[0]?.totalBuyers || 0,
-      totalOutstanding: orderStats[0]?.totalOutstanding || 0,
-      totalRevenue: orderStats[0]?.totalRevenue || 0,
-      buyersWithDue: buyerStats[0]?.buyersWithDue || 0,
-    };
+    logger.info('Buyer stats calculated', {
+      organizationId,
+      totalBuyers,
+      buyersWithDue,
+      totalOutstanding,
+      totalRevenue
+    });
 
     res.json({
-      success: true,
-      data: result,
+      totalBuyers,
+      buyersWithDue,
+      totalOutstanding: Math.round(totalOutstanding * 100) / 100,
+      totalRevenue: Math.round(totalRevenue * 100) / 100
     });
   } catch (error) {
     logger.error('Failed to fetch buyer stats', { error: error.message });
-    res.status(500).json({
-      code: 'STATS_FAILED',
-      message: 'Failed to fetch statistics',
-      error: error.message,
+    res.status(500).json({ 
+      code: 'STATS_FAILED', 
+      message: 'Failed to fetch statistics', 
+      error: error.message 
     });
   }
 };
