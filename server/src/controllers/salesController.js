@@ -1279,10 +1279,27 @@ exports.deleteSale = async (req, res) => {
       if (colorVariant) {
         const sizeVariant = colorVariant.sizes.find(s => s.size === sale.size);
         if (sizeVariant) {
+          console.log(`🔄 Restoring ${sale.quantity} units to reserved stock for ${sale.design}-${sale.color}-${sale.size}`);
+          console.log(`📦 Before: Reserved = ${sizeVariant.reservedStock || 0}`);
+          
           sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+          
+          console.log(`📦 After: Reserved = ${sizeVariant.reservedStock}`);
+          
+          // ✅ CRITICAL: Mark nested array as modified for Mongoose to save it
+          product.markModified('colors');
+          
           await product.save({ session });
+          
+          console.log(`✅ Stock restored successfully`);
+        } else {
+          console.warn(`⚠️ Size ${sale.size} not found in product ${sale.design}-${sale.color}`);
         }
+      } else {
+        console.warn(`⚠️ Color ${sale.color} not found in product ${sale.design}`);
       }
+    } else {
+      console.warn(`⚠️ Product ${sale.design} not found`);
     }
 
     // ✅ STEP 2: Soft delete the sale
