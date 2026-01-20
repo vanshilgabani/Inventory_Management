@@ -72,8 +72,16 @@ const Sales = () => {
   const [importPreview, setImportPreview] = useState(null);
   const [importAccount, setImportAccount] = useState('');
   const [isImporting, setIsImporting] = useState(false);
-
   const [importFilterDate, setImportFilterDate] = useState(''); // DD/MM/YYYY format  
+
+  const [showFailedOrdersModal, setShowFailedOrdersModal] = useState(false);
+  const [failedOrdersData, setFailedOrdersData] = useState({
+    failed: [],
+    duplicates: [],
+    totalSuccess: 0,
+    totalFailed: 0,
+    totalDuplicates: 0
+  });
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -545,13 +553,13 @@ const handleImportSubmit = async () => {
     toast.error('Please select an account');
     return;
   }
-
+  
   if (!importFilterDate) {
     toast.error('Please enter dispatch date');
     return;
   }
-
-if (!parsedCsvData || parsedCsvData.length === 0) {  // ✅ FIXED CHECK
+  
+  if (!parsedCsvData || parsedCsvData.length === 0) {
     toast.error('No data to import');
     return;
   }
@@ -559,45 +567,116 @@ if (!parsedCsvData || parsedCsvData.length === 0) {  // ✅ FIXED CHECK
   try {
     setIsImporting(true);
 
-    // ✅ Send only successful orders (already filtered)
-    const ordersToImport = importPreview.success;
+    const BATCH_SIZE = 20; // Process 20 records per batch
+    const PARALLEL_LIMIT = 3; // Upload 3 batches simultaneously
 
-    const result = await salesService.importFromCSV(
-      ordersToImport,
-      importAccount,
-      importFilterDate
-    );
+    // Split data into batches
+    const batches = [];
+    for (let i = 0; i < parsedCsvData.length; i += BATCH_SIZE) {
+      batches.push(parsedCsvData.slice(i, i + BATCH_SIZE));
+    }
 
-    const { success, failed, duplicates } = result.data;
+    console.log(`📦 Split ${parsedCsvData.length} records into ${batches.length} batches`);
 
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    let totalDuplicates = 0;
+    const allFailed = [];
+    const allDuplicates = []; // ✅ Track duplicates too
+    const totalSkipped = importPreview?.skipped?.length || 0;
+
+    // Process batches in parallel groups
+    for (let i = 0; i < batches.length; i += PARALLEL_LIMIT) {
+      const parallelBatches = batches.slice(i, i + PARALLEL_LIMIT);
+      const batchNumbers = parallelBatches.map((_, idx) => i + idx + 1);
+
+      console.log(`⚡ Uploading batches ${batchNumbers.join(', ')} of ${batches.length}...`);
+
+      // Upload multiple batches in parallel
+      const results = await Promise.allSettled(
+        parallelBatches.map((batch, idx) =>
+          salesService.importFromCSV(batch, importAccount, importFilterDate)
+            .then(result => ({
+              batchNum: i + idx + 1,
+              ...result
+            }))
+        )
+      );
+
+      // Process results
+      results.forEach((result, idx) => {
+        const batchNum = i + idx + 1;
+        
+        if (result.status === 'fulfilled') {
+          const data = result.value.data;
+          totalSuccess += data.success?.length || 0;
+          totalFailed += data.failed?.length || 0;
+          totalDuplicates += data.duplicates?.length || 0;
+          
+          if (data.failed?.length > 0) {
+            allFailed.push(...data.failed);
+          }
+          
+          // ✅ Collect duplicates
+          if (data.duplicates?.length > 0) {
+            allDuplicates.push(...data.duplicates);
+          }
+
+          console.log(`✅ Batch ${batchNum}: ${data.success?.length || 0} imported`);
+        } else {
+          console.error(`❌ Batch ${batchNum} failed:`, result.reason);
+          toast.error(`Batch ${batchNum} failed: ${result.reason.message}`);
+        }
+      });
+
+      // Update progress
+      const progress = Math.min(((i + PARALLEL_LIMIT) / batches.length) * 100, 100);
+      toast.loading(`Progress: ${Math.round(progress)}%`, { id: 'import-progress' });
+    }
+
+    // Dismiss progress toast
+    toast.dismiss('import-progress');
+
+    // Show final summary
     let message = '';
-    if (success.length > 0) {
-      message = `✅ ${success.length} orders imported!`;
+    if (totalSuccess > 0) {
+      message = `✅ ${totalSuccess} orders imported successfully!`;
     } else {
-      message = 'No orders imported';
+      message = '❌ No orders imported';
     }
 
-    if (importPreview.skipped.length > 0) {
-      message += ` (${importPreview.skipped.length} returns skipped)`;
+    if (totalSkipped > 0) {
+      message += ` | ${totalSkipped} returns skipped`;
+    }
+    if (totalDuplicates > 0) {
+      message += ` | ${totalDuplicates} duplicates`;
+    }
+    if (totalFailed > 0) {
+      message += ` | ${totalFailed} failed`;
     }
 
-    if (duplicates.length > 0) {
-      message += ` (${duplicates.length} duplicates)`;
+    toast[totalSuccess > 0 ? 'success' : 'error'](message, { duration: 6000 });
+
+    // ✅ Show failed orders modal if there are failures or duplicates
+    if (totalFailed > 0 || totalDuplicates > 0) {
+      setFailedOrdersData({
+        failed: allFailed,
+        duplicates: allDuplicates,
+        totalSuccess,
+        totalFailed,
+        totalDuplicates
+      });
+      setShowFailedOrdersModal(true);
     }
 
-    if (failed.length > 0) {
-      message += ` (${failed.length} failed)`;
-      console.log('Failed orders:', failed);
-    }
-
-    toast[success.length > 0 ? 'success' : 'error'](message, { duration: 5000 });
-
+    // Close import modal and refresh
     setShowImportModal(false);
     setParsedCsvData([]);
     setImportPreview(null);
     setImportFilterDate('');
     setImportAccount('');
     fetchSales();
+
   } catch (error) {
     console.error('Import error:', error);
     toast.error(error.response?.data?.message || 'Import failed');
@@ -1309,7 +1388,17 @@ const handleDelete = async (id) => {
                 </button>
 
                 <button
-                  onClick={() => setShowImportModal(true)}
+                  onClick={() => {
+                    // Auto-fill today's date in YYYY-MM-DD format (for date input)
+                    const today = new Date();
+                    const year = today.getFullYear();
+                    const month = String(today.getMonth() + 1).padStart(2, '0');
+                    const day = String(today.getDate()).padStart(2, '0');
+                    const formattedDate = `${year}-${month}-${day}`;
+                    
+                    setImportFilterDate(formattedDate);
+                    setShowImportModal(true);
+                  }}
                   className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors shadow-sm"
                 >
                   <FiUpload className="w-4 h-4" />
@@ -2259,368 +2348,557 @@ const handleDelete = async (id) => {
               )}
             </Modal>
             {/* Lock Refill Modal */}
-      {showLockRefillModal && (
-        <Modal
-          isOpen={showLockRefillModal}
-          onClose={handleCancelLockRefill}
-          title="⚠️ Insufficient Locked Stock"
-        >
-          <div className="space-y-4">
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-              <p className="text-sm text-gray-700 mb-3">
-                Your marketplace order needs more stock than currently locked. Transfer stock from available inventory to locked reserve.
-              </p>
-              
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <span className="text-gray-600">Current Lock:</span>
-                  <span className="ml-2 font-semibold">{lockRefillData.currentLock}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Order Needs:</span>
-                  <span className="ml-2 font-semibold text-red-600">{lockRefillData.orderNeeds}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Available Stock:</span>
-                  <span className="ml-2 font-semibold text-green-600">{lockRefillData.availableStock}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Max Lock Threshold:</span>
-                  <span className="ml-2 font-semibold">{lockRefillData.maxLockThreshold}</span>
-                </div>
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Transfer Amount (Minimum: {lockRefillData.minToAdd}, Maximum: {lockRefillData.maxCanAdd})
-              </label>
-              <input
-                type="number"
-                min={lockRefillData.minToAdd}
-                max={lockRefillData.maxCanAdd}
-                value={lockRefillData.userInput}
-                onChange={(e) => setLockRefillData(prev => ({ ...prev, userInput: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                placeholder={`Enter amount (${lockRefillData.minToAdd} - ${lockRefillData.maxCanAdd})`}
-              />
-              <p className="mt-1 text-xs text-gray-500">
-                New lock will be: {lockRefillData.currentLock + Number(lockRefillData.userInput || 0)}
-              </p>
-            </div>
-            
-            <div className="flex gap-2 pt-2">
-              <button
-                onClick={handleCancelLockRefill}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50"
+            {showLockRefillModal && (
+              <Modal
+                isOpen={showLockRefillModal}
+                onClose={handleCancelLockRefill}
+                title="⚠️ Insufficient Locked Stock"
               >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmLockRefill}
-                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-              >
-                Transfer & Create Order
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* Refill Lock Stock Modal */}
-      {console.log('🎨 Rendering modal check:', { showRefillModal, hasRefillData: !!refillData })}
-      <RefillLockStockModal
-        isOpen={showRefillModal}
-        onClose={() => {
-          console.log('❌ Modal closed by user');
-          setShowRefillModal(false);
-          setRefillData(null);
-          setPendingSettlement(null);
-          setIsSubmitting(false); // ✅ ADD THIS
-          
-          if (window.pendingSaleReject) {
-            window.pendingSaleReject(new Error('User cancelled'));
-            delete window.pendingSaleResolve;
-            delete window.pendingSaleReject;
-          }
-        }}
-        onConfirm={handleConfirmRefill}
-        items={refillData?.items || []}
-        totalRefillAmount={refillData?.totalRefillAmount || 0}
-        currentTotalLock={refillData?.currentTotalLock || 0}
-        newTotalLock={refillData?.newTotalLock || 0}
-      />
-      {/* ✅ NEW: Insufficient Reserved Stock Modal */}
-      {showInsufficientReservedModal && insufficientReservedData && (
-        <InsufficientReservedStockModal
-          isOpen={showInsufficientReservedModal}
-          onClose={() => {
-            setShowInsufficientReservedModal(false);
-            setInsufficientReservedData(null);
-            setPendingSaleData(null);
-            setIsSubmitting(false);
-            if (window.pendingSaleReject) {
-              window.pendingSaleReject(new Error('User cancelled'));
-              delete window.pendingSaleResolve;
-              delete window.pendingSaleReject;
-            }
-          }}
-          onConfirm={handleConfirmUseMainStock}
-          variant={insufficientReservedData.variant}
-          reservedStock={insufficientReservedData.reservedStock}
-          mainStock={insufficientReservedData.mainStock}
-          required={insufficientReservedData.required}
-        />
-      )}
-      {/* IMPORT CSV MODAL - MANUAL DISPATCH DATE */}
-      {showImportModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-            {/* Modal Header */}
-            <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-gray-800">Import Orders from CSV</h2>
-              <button
-                onClick={() => {
-                  setShowImportModal(false);
-                  setParsedCsvData([]);
-                  setImportPreview(null);
-                  setImportAccount('');
-                  setImportFilterDate(''); // Dispatch date
-                }}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <FiX className="text-2xl" />
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-6">
-              {/* NO PREVIEW YET - Show Form */}
-              {!parsedCsvData.length && (
-                <div className="space-y-6">
-                  {/* STEP 1: Select Account */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Select Marketplace Account *
-                    </label>
-                    <select
-                      value={importAccount}
-                      onChange={(e) => setImportAccount(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    >
-                      <option value="">-- Select Account --</option>
-                      {marketplaceAccounts.map((acc) => (
-                        <option key={acc.id} value={acc.accountName}>
-                          {acc.accountName} ({acc.platform})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* ✅ STEP 2: Dispatch Date (MANUAL INPUT) */}
-                  {importAccount && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Dispatch Date *{' '}
-                        <span className="text-xs text-gray-500 font-normal">
-                          (When you dispatched these orders)
-                        </span>
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="date"
-                          value={importFilterDate}
-                          onChange={(e) => setImportFilterDate(e.target.value)}
-                          max={new Date().toISOString().split('T')[0]} // Can't be future date
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                        />
-                        <FiCalendar className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <div className="space-y-4">
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <p className="text-sm text-gray-700 mb-3">
+                      Your marketplace order needs more stock than currently locked. Transfer stock from available inventory to locked reserve.
+                    </p>
+                    
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <span className="text-gray-600">Current Lock:</span>
+                        <span className="ml-2 font-semibold">{lockRefillData.currentLock}</span>
                       </div>
-                      <p className="text-xs text-gray-500 mt-1">
-                        All orders in this CSV will be marked as dispatched on this date
-                      </p>
-                    </div>
-                  )}
-
-                  {/* ✅ STEP 3: Upload CSV */}
-                  {importAccount && importFilterDate && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Upload CSV File *
-                      </label>
-                      <input
-                        type="file"
-                        accept=".csv"
-                        onChange={handleCSVUpload}
-                        className="block w-full text-sm text-gray-500
-                          file:mr-4 file:py-3 file:px-6
-                          file:rounded-lg file:border-0
-                          file:text-sm file:font-semibold
-                          file:bg-indigo-50 file:text-indigo-700
-                          hover:file:bg-indigo-100
-                          file:cursor-pointer cursor-pointer
-                          border border-gray-300 rounded-lg"
-                      />
-                      <p className="text-xs text-gray-500 mt-2">
-                        Download CSV from Flipkart Seller Portal → Orders → Dispatched
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Instructions */}
-                  {!importAccount && (
-                    <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
-                      <div className="flex items-start space-x-3">
-                        <FiInfo className="text-indigo-600 mt-0.5 flex-shrink-0" />
-                        <div className="text-sm text-indigo-800">
-                          <p className="font-medium mb-1">Import Instructions</p>
-                          <ol className="list-decimal list-inside space-y-1">
-                            <li>Select your marketplace account</li>
-                            <li>Enter the date you dispatched these orders</li>
-                            <li>Upload the CSV file from Flipkart</li>
-                          </ol>
-                        </div>
+                      <div>
+                        <span className="text-gray-600">Order Needs:</span>
+                        <span className="ml-2 font-semibold text-red-600">{lockRefillData.orderNeeds}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Available Stock:</span>
+                        <span className="ml-2 font-semibold text-green-600">{lockRefillData.availableStock}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Max Lock Threshold:</span>
+                        <span className="ml-2 font-semibold">{lockRefillData.maxLockThreshold}</span>
                       </div>
                     </div>
-                  )}
-                </div>
-              )}
-
-              {/* ✅ PREVIEW - Show After Upload */}
-              {importPreview && (
-              <div className="space-y-4">
-                {/* Detection Summary */}
-                <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <FiInfo className="text-blue-600 text-xl" />
-                    <h3 className="font-semibold text-blue-900">
-                      🔍 Detected: {importPreview.detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS'}
-                    </h3>
                   </div>
                   
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Total Orders in CSV:</span>
-                      <span className="font-semibold">{parsedCsvData.length}</span>
-                    </div>
-                    
-                    <div className="flex justify-between text-green-700">
-                      <span>✅ Will Import:</span>
-                      <span className="font-semibold">{importPreview.success.length} orders</span>
-                    </div>
-                    
-                    {importPreview.skipped.length > 0 && (
-                      <div className="flex justify-between text-yellow-700">
-                        <span>⚠️ Will Skip (Returns):</span>
-                        <span className="font-semibold">{importPreview.skipped.length} orders</span>
-                      </div>
-                    )}
-                    
-                    {importPreview.failed.length > 0 && (
-                      <div className="flex justify-between text-red-700">
-                        <span>❌ Validation Errors:</span>
-                        <span className="font-semibold">{importPreview.failed.length} orders</span>
-                      </div>
-                    )}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Transfer Amount (Minimum: {lockRefillData.minToAdd}, Maximum: {lockRefillData.maxCanAdd})
+                    </label>
+                    <input
+                      type="number"
+                      min={lockRefillData.minToAdd}
+                      max={lockRefillData.maxCanAdd}
+                      value={lockRefillData.userInput}
+                      onChange={(e) => setLockRefillData(prev => ({ ...prev, userInput: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                      placeholder={`Enter amount (${lockRefillData.minToAdd} - ${lockRefillData.maxCanAdd})`}
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      New lock will be: {lockRefillData.currentLock + Number(lockRefillData.userInput || 0)}
+                    </p>
+                  </div>
+                  
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      onClick={handleCancelLockRefill}
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleConfirmLockRefill}
+                      className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                    >
+                      Transfer & Create Order
+                    </button>
                   </div>
                 </div>
+              </Modal>
+            )}
 
-                {/* Product Breakdown */}
-                {importPreview.success.length > 0 && (
-                  <div className="border rounded-lg overflow-hidden">
-                    <div className="bg-gray-50 px-4 py-2 border-b">
-                      <h4 className="font-semibold text-gray-700">📦 Products Breakdown ({importPreview.success.length} orders)</h4>
+            {/* ============ FAILED ORDERS REPORT MODAL ============ */}
+            {showFailedOrdersModal && (
+              <Modal
+                isOpen={showFailedOrdersModal}
+                onClose={() => setShowFailedOrdersModal(false)}
+                title="Import Report"
+                size="large"
+              >
+                <div className="space-y-6">
+                  {/* Summary Cards */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                      <div className="flex items-center gap-2 mb-1">
+                        <FiCheckCircle className="text-green-600" />
+                        <span className="text-sm font-medium text-green-800">Success</span>
+                      </div>
+                      <p className="text-2xl font-bold text-green-700">{failedOrdersData.totalSuccess}</p>
                     </div>
-                    
-                    <div className="max-h-64 overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-gray-100 sticky top-0">
-                          <tr>
-                            <th className="px-3 py-2 text-left">Design</th>
-                            <th className="px-3 py-2 text-left">Color</th>
-                            <th className="px-3 py-2 text-left">Size</th>
-                            <th className="px-3 py-2 text-right">Quantity</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {Array.from(importPreview.productBreakdown.values()).map((item, idx) => (
-                            <tr key={idx} className="border-b hover:bg-gray-50">
-                              <td className="px-3 py-2 font-medium">{item.design}</td>
-                              <td className="px-3 py-2">{item.color}</td>
-                              <td className="px-3 py-2">{item.size}</td>
-                              <td className="px-3 py-2 text-right font-semibold">{item.quantity}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+
+                    <div className="p-4 bg-red-50 rounded-lg border border-red-200">
+                      <div className="flex items-center gap-2 mb-1">
+                        <FiXCircle className="text-red-600" />
+                        <span className="text-sm font-medium text-red-800">Failed</span>
+                      </div>
+                      <p className="text-2xl font-bold text-red-700">{failedOrdersData.totalFailed}</p>
                     </div>
-                    
-                    <div className="bg-gray-50 px-4 py-2 border-t text-sm text-gray-600">
-                      Total: {importPreview.productBreakdown.size} unique variants
+
+                    <div className="p-4 bg-orange-50 rounded-lg border border-orange-200">
+                      <div className="flex items-center gap-2 mb-1">
+                        <FiAlertTriangle className="text-orange-600" />
+                        <span className="text-sm font-medium text-orange-800">Duplicates</span>
+                      </div>
+                      <p className="text-2xl font-bold text-orange-700">{failedOrdersData.totalDuplicates}</p>
                     </div>
                   </div>
-                )}
 
-                {/* Skipped Orders (Collapsible) */}
-                {importPreview.skipped.length > 0 && (
-                  <details className="border rounded-lg overflow-hidden">
-                    <summary className="bg-yellow-50 px-4 py-3 cursor-pointer hover:bg-yellow-100 flex items-center gap-2">
-                      <FiAlertTriangle className="text-yellow-600" />
-                      <span className="font-medium text-yellow-800">
-                        ⚠️ Skipped Orders ({importPreview.skipped.length} returns - not imported)
-                      </span>
-                    </summary>
-                    
-                    <div className="max-h-48 overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-gray-100">
-                          <tr>
-                            <th className="px-3 py-2 text-left">Order ID</th>
-                            <th className="px-3 py-2 text-left">SKU</th>
-                            <th className="px-3 py-2 text-left">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {importPreview.skipped.map((item, idx) => (
-                            <tr key={idx} className="border-b">
-                              <td className="px-3 py-2 text-xs">{item.orderId}</td>
-                              <td className="px-3 py-2">{item.sku}</td>
-                              <td className="px-3 py-2">
-                                <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
-                                  {item.status}
-                                </span>
-                              </td>
+                  {/* Failed Orders Table */}
+                  {failedOrdersData.failed.length > 0 && (
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                        <FiXCircle className="text-red-600" />
+                        Failed Orders ({failedOrdersData.failed.length})
+                      </h3>
+                      <div className="border border-gray-200 rounded-lg overflow-hidden max-h-96 overflow-y-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50 sticky top-0">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                #
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Order Item ID
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                SKU
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Product Details
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Reason
+                              </th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {failedOrdersData.failed.map((item, index) => (
+                              <tr key={index} className="hover:bg-gray-50">
+                                <td className="px-4 py-3 text-sm text-gray-500">
+                                  {index + 1}
+                                </td>
+                                <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                                  {item.orderItemId || '-'}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-gray-600 font-mono">
+                                  {item.sku || '-'}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-gray-700">
+                                  {item.design && (
+                                    <span className="font-medium">{item.design}</span>
+                                  )}
+                                  {item.color && (
+                                    <span className="text-gray-500"> • {item.color}</span>
+                                  )}
+                                  {item.size && (
+                                    <span className="text-gray-500"> • {item.size}</span>
+                                  )}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-red-600">
+                                  {item.reason}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                  </details>
-                )}
+                  )}
 
-                {/* Failed Validation */}
-                {importPreview.failed.length > 0 && (
-                  <details className="border border-red-200 rounded-lg overflow-hidden">
-                    <summary className="bg-red-50 px-4 py-3 cursor-pointer hover:bg-red-100 flex items-center gap-2">
-                      <FiAlertCircle className="text-red-600" />
-                      <span className="font-medium text-red-800">
-                        ❌ Validation Issues ({importPreview.failed.length})
-                      </span>
-                    </summary>
-                    
-                    <div className="max-h-48 overflow-y-auto p-3 space-y-2">
-                      {importPreview.failed.map((item, idx) => (
-                        <div key={idx} className="text-sm bg-red-50 p-2 rounded border border-red-200">
-                          <div className="font-medium text-red-900">Row {item.row}</div>
-                          <div className="text-red-700">{item.reason}</div>
-                          {item.sku && <div className="text-xs text-red-600">SKU: {item.sku}</div>}
-                        </div>
-                      ))}
+                  {/* Duplicate Orders Table */}
+                  {failedOrdersData.duplicates.length > 0 && (
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                        <FiAlertTriangle className="text-orange-600" />
+                        Duplicate Orders ({failedOrdersData.duplicates.length})
+                      </h3>
+                      <div className="border border-gray-200 rounded-lg overflow-hidden max-h-64 overflow-y-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50 sticky top-0">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                #
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Order Item ID
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                SKU
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Reason
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {failedOrdersData.duplicates.map((item, index) => (
+                              <tr key={index} className="hover:bg-gray-50">
+                                <td className="px-4 py-3 text-sm text-gray-500">
+                                  {index + 1}
+                                </td>
+                                <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                                  {item.orderItemId || '-'}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-gray-600 font-mono">
+                                  {item.sku || '-'}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-orange-600">
+                                  {item.reason}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                  </details>
-                )}
-              </div>
+                  )}
+
+                  {/* Export & Close Buttons */}
+                  {(failedOrdersData.failed.length > 0 || failedOrdersData.duplicates.length > 0) && (
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => {
+                          const csvContent = [
+                            ['Type', 'Order Item ID', 'SKU', 'Design', 'Color', 'Size', 'Reason'].join(','),
+                            ...failedOrdersData.failed.map(item => 
+                              ['Failed', item.orderItemId || '', item.sku || '', item.design || '', item.color || '', item.size || '', `"${item.reason}"`].join(',')
+                            ),
+                            ...failedOrdersData.duplicates.map(item => 
+                              ['Duplicate', item.orderItemId || '', item.sku || '', '', '', '', `"${item.reason}"`].join(',')
+                            )
+                          ].join('\n');
+
+                          const blob = new Blob([csvContent], { type: 'text/csv' });
+                          const url = window.URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `failed-orders-${new Date().getTime()}.csv`;
+                          a.click();
+                          window.URL.revokeObjectURL(url);
+                          toast.success('Failed orders exported to CSV');
+                        }}
+
+                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                      >
+                        <FiFileText />
+                        Export Failed Orders
+                      </button>
+
+                      <button
+                        onClick={() => setShowFailedOrdersModal(false)}
+                        className="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </Modal>
             )}
+
+            {/* Refill Lock Stock Modal */}
+            {console.log('🎨 Rendering modal check:', { showRefillModal, hasRefillData: !!refillData })}
+            <RefillLockStockModal
+              isOpen={showRefillModal}
+              onClose={() => {
+                console.log('❌ Modal closed by user');
+                setShowRefillModal(false);
+                setRefillData(null);
+                setPendingSettlement(null);
+                setIsSubmitting(false); // ✅ ADD THIS
+                
+                if (window.pendingSaleReject) {
+                  window.pendingSaleReject(new Error('User cancelled'));
+                  delete window.pendingSaleResolve;
+                  delete window.pendingSaleReject;
+                }
+              }}
+              onConfirm={handleConfirmRefill}
+              items={refillData?.items || []}
+              totalRefillAmount={refillData?.totalRefillAmount || 0}
+              currentTotalLock={refillData?.currentTotalLock || 0}
+              newTotalLock={refillData?.newTotalLock || 0}
+            />
+            {/* ✅ NEW: Insufficient Reserved Stock Modal */}
+            {showInsufficientReservedModal && insufficientReservedData && (
+              <InsufficientReservedStockModal
+                isOpen={showInsufficientReservedModal}
+                onClose={() => {
+                  setShowInsufficientReservedModal(false);
+                  setInsufficientReservedData(null);
+                  setPendingSaleData(null);
+                  setIsSubmitting(false);
+                  if (window.pendingSaleReject) {
+                    window.pendingSaleReject(new Error('User cancelled'));
+                    delete window.pendingSaleResolve;
+                    delete window.pendingSaleReject;
+                  }
+                }}
+                onConfirm={handleConfirmUseMainStock}
+                variant={insufficientReservedData.variant}
+                reservedStock={insufficientReservedData.reservedStock}
+                mainStock={insufficientReservedData.mainStock}
+                required={insufficientReservedData.required}
+              />
+            )}
+            {/* IMPORT CSV MODAL - MANUAL DISPATCH DATE */}
+            {showImportModal && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+                  {/* Modal Header */}
+                  <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between">
+                    <h2 className="text-2xl font-bold text-gray-800">Import Orders from CSV</h2>
+                    <button
+                      onClick={() => {
+                        setShowImportModal(false);
+                        setParsedCsvData([]);
+                        setImportPreview(null);
+                        setImportAccount('');
+                        setImportFilterDate(''); // Dispatch date
+                      }}
+                      className="text-gray-400 hover:text-gray-600 transition-colors"
+                    >
+                      <FiX className="text-2xl" />
+                    </button>
+                  </div>
+
+                  {/* Modal Body */}
+                  <div className="p-6">
+                    {/* NO PREVIEW YET - Show Form */}
+                    {!parsedCsvData.length && (
+                      <div className="space-y-6">
+                        {/* STEP 1: Select Account */}
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Select Marketplace Account *
+                          </label>
+                          <select
+                            value={importAccount}
+                            onChange={(e) => setImportAccount(e.target.value)}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                          >
+                            <option value="">-- Select Account --</option>
+                            {marketplaceAccounts.map((acc) => (
+                              <option key={acc.id} value={acc.accountName}>
+                                {acc.accountName} ({acc.platform})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* ✅ STEP 2: Dispatch Date (MANUAL INPUT) */}
+                        {importAccount && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Dispatch Date *{' '}
+                              <span className="text-xs text-gray-500 font-normal">
+                                (When you dispatched these orders)
+                              </span>
+                            </label>
+                            <div className="relative">
+                              <input
+                                type="date"
+                                value={importFilterDate}
+                                onChange={(e) => setImportFilterDate(e.target.value)}
+                                max={new Date().toISOString().split('T')[0]} // Can't be future date
+                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                              />
+                              <FiCalendar className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" />
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1">
+                              All orders in this CSV will be marked as dispatched on this date
+                            </p>
+                          </div>
+                        )}
+
+                        {/* ✅ STEP 3: Upload CSV */}
+                        {importAccount && importFilterDate && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Upload CSV File *
+                            </label>
+                            <input
+                              type="file"
+                              accept=".csv"
+                              onChange={handleCSVUpload}
+                              className="block w-full text-sm text-gray-500
+                                file:mr-4 file:py-3 file:px-6
+                                file:rounded-lg file:border-0
+                                file:text-sm file:font-semibold
+                                file:bg-indigo-50 file:text-indigo-700
+                                hover:file:bg-indigo-100
+                                file:cursor-pointer cursor-pointer
+                                border border-gray-300 rounded-lg"
+                            />
+                            <p className="text-xs text-gray-500 mt-2">
+                              Download CSV from Flipkart Seller Portal → Orders → Dispatched
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Instructions */}
+                        {!importAccount && (
+                          <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+                            <div className="flex items-start space-x-3">
+                              <FiInfo className="text-indigo-600 mt-0.5 flex-shrink-0" />
+                              <div className="text-sm text-indigo-800">
+                                <p className="font-medium mb-1">Import Instructions</p>
+                                <ol className="list-decimal list-inside space-y-1">
+                                  <li>Select your marketplace account</li>
+                                  <li>Enter the date you dispatched these orders</li>
+                                  <li>Upload the CSV file from Flipkart</li>
+                                </ol>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* ✅ PREVIEW - Show After Upload */}
+                    {importPreview && (
+                    <div className="space-y-4">
+                      {/* Detection Summary */}
+                      <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <FiInfo className="text-blue-600 text-xl" />
+                          <h3 className="font-semibold text-blue-900">
+                            🔍 Detected: {importPreview.detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS'}
+                          </h3>
+                        </div>
+                        
+                        <div className="space-y-2 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Total Orders in CSV:</span>
+                            <span className="font-semibold">{parsedCsvData.length}</span>
+                          </div>
+                          
+                          <div className="flex justify-between text-green-700">
+                            <span>✅ Will Import:</span>
+                            <span className="font-semibold">{importPreview.success.length} orders</span>
+                          </div>
+                          
+                          {importPreview.skipped.length > 0 && (
+                            <div className="flex justify-between text-yellow-700">
+                              <span>⚠️ Will Skip (Returns):</span>
+                              <span className="font-semibold">{importPreview.skipped.length} orders</span>
+                            </div>
+                          )}
+                          
+                          {importPreview.failed.length > 0 && (
+                            <div className="flex justify-between text-red-700">
+                              <span>❌ Validation Errors:</span>
+                              <span className="font-semibold">{importPreview.failed.length} orders</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Product Breakdown */}
+                      {importPreview.success.length > 0 && (
+                        <div className="border rounded-lg overflow-hidden">
+                          <div className="bg-gray-50 px-4 py-2 border-b">
+                            <h4 className="font-semibold text-gray-700">📦 Products Breakdown ({importPreview.success.length} orders)</h4>
+                          </div>
+                          
+                          <div className="max-h-64 overflow-y-auto">
+                            <table className="w-full text-sm">
+                              <thead className="bg-gray-100 sticky top-0">
+                                <tr>
+                                  <th className="px-3 py-2 text-left">Design</th>
+                                  <th className="px-3 py-2 text-left">Color</th>
+                                  <th className="px-3 py-2 text-left">Size</th>
+                                  <th className="px-3 py-2 text-right">Quantity</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {Array.from(importPreview.productBreakdown.values()).map((item, idx) => (
+                                  <tr key={idx} className="border-b hover:bg-gray-50">
+                                    <td className="px-3 py-2 font-medium">{item.design}</td>
+                                    <td className="px-3 py-2">{item.color}</td>
+                                    <td className="px-3 py-2">{item.size}</td>
+                                    <td className="px-3 py-2 text-right font-semibold">{item.quantity}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          
+                          <div className="bg-gray-50 px-4 py-2 border-t text-sm text-gray-600">
+                            Total: {importPreview.productBreakdown.size} unique variants
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Skipped Orders (Collapsible) */}
+                      {importPreview.skipped.length > 0 && (
+                        <details className="border rounded-lg overflow-hidden">
+                          <summary className="bg-yellow-50 px-4 py-3 cursor-pointer hover:bg-yellow-100 flex items-center gap-2">
+                            <FiAlertTriangle className="text-yellow-600" />
+                            <span className="font-medium text-yellow-800">
+                              ⚠️ Skipped Orders ({importPreview.skipped.length} returns - not imported)
+                            </span>
+                          </summary>
+                          
+                          <div className="max-h-48 overflow-y-auto">
+                            <table className="w-full text-sm">
+                              <thead className="bg-gray-100">
+                                <tr>
+                                  <th className="px-3 py-2 text-left">Order ID</th>
+                                  <th className="px-3 py-2 text-left">SKU</th>
+                                  <th className="px-3 py-2 text-left">Status</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {importPreview.skipped.map((item, idx) => (
+                                  <tr key={idx} className="border-b">
+                                    <td className="px-3 py-2 text-xs">{item.orderId}</td>
+                                    <td className="px-3 py-2">{item.sku}</td>
+                                    <td className="px-3 py-2">
+                                      <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+                                        {item.status}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </details>
+                      )}
+
+                      {/* Failed Validation */}
+                      {importPreview.failed.length > 0 && (
+                        <details className="border border-red-200 rounded-lg overflow-hidden">
+                          <summary className="bg-red-50 px-4 py-3 cursor-pointer hover:bg-red-100 flex items-center gap-2">
+                            <FiAlertCircle className="text-red-600" />
+                            <span className="font-medium text-red-800">
+                              ❌ Validation Issues ({importPreview.failed.length})
+                            </span>
+                          </summary>
+                          
+                          <div className="max-h-48 overflow-y-auto p-3 space-y-2">
+                            {importPreview.failed.map((item, idx) => (
+                              <div key={idx} className="text-sm bg-red-50 p-2 rounded border border-red-200">
+                                <div className="font-medium text-red-900">Row {item.row}</div>
+                                <div className="text-red-700">{item.reason}</div>
+                                {item.sku && <div className="text-xs text-red-600">SKU: {item.sku}</div>}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  )}
             {/* Modal Footer - Action Buttons */}
 <div className="flex justify-end gap-3 pt-4 border-t">
   <button
@@ -2661,6 +2939,7 @@ const handleDelete = async (id) => {
           </div>
         </div>
       )}
+      
       <ScrollToTop />
     </div>
   );
