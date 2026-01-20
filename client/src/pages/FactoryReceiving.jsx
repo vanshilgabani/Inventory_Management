@@ -31,6 +31,7 @@ const FactoryReceiving = () => {
   const [receivings, setReceivings] = useState([]);
   const [selectedItemsToReturn, setSelectedItemsToReturn] = useState([]);
   const [products, setProducts] = useState([]);
+  const [permissions, setPermissions] = useState({ allowSalesEdit: false });
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [returnType, setReturnType] = useState('same'); // 'same' or 'exchange'
@@ -527,8 +528,12 @@ const handleReturnSubmit = async (e) => {
     }
 
     const individualReceivings = designGroup.receivingIds
-      .map((id) => receivings.find((r) => r._id === id))
+      .map(id => receivings.find(r => r._id === id || r.id === id))  // ✅ Check both _id and id
       .filter(Boolean);
+
+    // ✅ Log to debug
+    console.log('📝 Individual receivings for edit:', individualReceivings);
+    console.log('📝 IDs:', individualReceivings.map(r => r._id || r.id));
 
     const hasCorruptedData = individualReceivings.some((r) => {
       const quantities = r.quantities instanceof Map
@@ -817,13 +822,25 @@ const handleSubmit = async (e) => {
       const color = Object.keys(getFinalQuantities(entry))[0];
       const newQuantities = getFinalQuantities(entry)[color];
 
-      const updatePromises = editingReceivings.map((receiving) =>
-        factoryService.updateReceiving(receiving.id, {
+      console.log('🔄 Editing receivings:', editingReceivings);
+
+      const updatePromises = editingReceivings.map(receiving => {
+        // ✅ Use _id (from MongoDB) or id, whichever exists
+        const receivingId = receiving._id || receiving.id;
+        
+        if (!receivingId) {
+          console.error('❌ No ID found for receiving:', receiving);
+          throw new Error('Receiving ID is missing');
+        }
+
+        console.log(`📤 Updating receiving ${receivingId}`);
+        
+        return factoryService.updateReceiving(receivingId, {
           quantities: newQuantities,
           batchId: entry.batchId,
           notes: entry.notes,
-        })
-      );
+        });
+      });
 
       if (updatePromises.length === 0) {
         toast.error('No receivings to update');
