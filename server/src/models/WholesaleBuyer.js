@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+// Credit limit history schema
 const creditLimitHistorySchema = new mongoose.Schema({
   previousLimit: Number,
   newLimit: Number,
@@ -11,7 +12,7 @@ const creditLimitHistorySchema = new mongoose.Schema({
   reason: String
 });
 
-// ✅ Monthly bill tracking (synced from MonthlyBill)
+// Monthly bill tracking synced from MonthlyBill
 const monthlyBillTrackingSchema = new mongoose.Schema({
   billId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -53,7 +54,7 @@ const monthlyBillTrackingSchema = new mongoose.Schema({
   }
 });
 
-// Old bulk payment schema (keep for backward compatibility)
+// Old bulk payment schema - keep for backward compatibility
 const bulkPaymentSchema = new mongoose.Schema({
   amount: {
     type: Number,
@@ -99,31 +100,97 @@ const bulkPaymentSchema = new mongoose.Schema({
   }
 });
 
+// NEW: GST Profile Schema
+const gstProfileSchema = new mongoose.Schema({
+  profileId: {
+    type: String,
+    required: true
+  },
+  gstNumber: {
+    type: String,
+    required: true,
+    uppercase: true,
+    trim: true
+  },
+  // Auto-fetched from GST API (read-only fields)
+  businessName: {
+    type: String,
+    required: true
+  },
+  legalName: String,
+  tradeName: String,
+  pan: String,
+  address: {
+    building: String,
+    street: String,
+    location: String,
+    district: String,
+    state: String,
+    pincode: String,
+    fullAddress: String
+  },
+  stateCode: String,
+  registrationDate: Date,
+  gstStatus: {
+    type: String,
+    enum: ['Active', 'Cancelled', 'Suspended'],
+    default: 'Active'
+  },
+  // User-controllable fields
+  isDefault: {
+    type: Boolean,
+    default: false
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  notes: String,
+  // Metadata
+  addedAt: {
+    type: Date,
+    default: Date.now
+  },
+  lastUsedAt: Date,
+  usageCount: {
+    type: Number,
+    default: 0
+  }
+});
+
+// Main WholesaleBuyer Schema
 const wholesaleBuyerSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: true,
+    required: true
   },
   mobile: {
     type: String,
-    required: true,
+    required: true
   },
   email: {
     type: String,
-    lowercase: true,
+    lowercase: true
   },
   emailVerified: {
     type: Boolean,
     default: false
   },
   address: String,
+  
+  // OLD fields - Keep for backward compatibility
   businessName: String,
   gstNumber: String,
   pan: String,
   stateCode: String,
+  
+  // NEW: Multiple GST profiles
+  gstProfiles: [gstProfileSchema],
+  
+  // Credit management
   creditLimit: {
     type: Number,
-    default: 0,
+    default: 0
   },
   creditLimitHistory: [creditLimitHistorySchema],
   isTrusted: {
@@ -133,45 +200,46 @@ const wholesaleBuyerSchema = new mongoose.Schema({
   trustUpdatedBy: String,
   trustUpdatedAt: Date,
   
-  // ✅ NEW: Monthly bill system
+  // Monthly bill system
   monthlyBills: [monthlyBillTrackingSchema],
   
   // Legacy fields
   totalOrders: {
     type: Number,
-    default: 0,
+    default: 0
   },
   totalSpent: {
     type: Number,
-    default: 0,
+    default: 0
   },
   totalDue: {
     type: Number,
-    default: 0,
+    default: 0
   },
   totalPaid: {
     type: Number,
-    default: 0,
+    default: 0
   },
   lastOrderDate: {
     type: Date,
     default: null
   },
   
-  // Old bulk payments (keep for backward compatibility)
+  // Old bulk payments - keep for backward compatibility
   bulkPayments: [bulkPaymentSchema],
   
   challanCounter: {
     type: Number,
     default: 0
   },
+  
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-  },
+    required: true
+  }
 }, {
-  timestamps: true,
+  timestamps: true
 });
 
 // Indexes
@@ -179,5 +247,6 @@ wholesaleBuyerSchema.index({ mobile: 1, organizationId: 1 }, { unique: true });
 wholesaleBuyerSchema.index({ organizationId: 1, totalDue: -1 });
 wholesaleBuyerSchema.index({ organizationId: 1, lastOrderDate: -1 });
 wholesaleBuyerSchema.index({ organizationId: 1, 'monthlyBills.year': -1, 'monthlyBills.month': -1 });
+wholesaleBuyerSchema.index({ organizationId: 1, 'gstProfiles.gstNumber': 1 });
 
 module.exports = mongoose.model('WholesaleBuyer', wholesaleBuyerSchema);

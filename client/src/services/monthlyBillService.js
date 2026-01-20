@@ -120,4 +120,10 @@ export const monthlyBillService = {
     });
     return response.data;
   },
+  
+  // Split bill into multiple bills
+  splitBill: async (billId, splitData) => {
+    const response = await api.post(`/monthly-bills/${billId}/split`, splitData);
+    return response.data;
+  },
 };

@@ -295,7 +295,8 @@ const generateBill = async (req, res) => {
       createdAt: {
         $gte: startDate,
         $lte: endDate
-      }
+      },
+      deletedAt: null
     })
       .sort({ createdAt: 1 })
       .session(session);
@@ -445,7 +446,7 @@ const generateBill = async (req, res) => {
         email: buyer.email,
         businessName: buyer.businessName,
         gstin: buyer.gstNumber,
-        pan: buyer.pan,
+        pan: buyer.pan || (buyer.gstNumber && buyer.gstNumber.length >= 12 ? buyer.gstNumber.substring(2, 12) : ''),
         address: buyer.address,
         stateCode: buyerState
       },
@@ -1343,7 +1344,8 @@ const deleteBill = async (req, res) => {
         // Get all orders for this buyer
         const orders = await WholesaleOrder.find({
           buyerId: buyer._id,
-          organizationId: buyer.organizationId
+          organizationId: buyer.organizationId,
+          deletedAt: null
         }).session(session);
         
         // Recalculate from orders
@@ -1875,6 +1877,538 @@ const deletePaymentFromBill = async (req, res) => {
   }
 };
 
+// Split bill into multiple bills with different GST profiles - SMART HYBRID ALGORITHM
+// POST /api/monthly-bills/:id/split
+const splitBill = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { id } = req.params; // Parent bill ID
+    const { splits } = req.body; // Array of split configurations
+    const organizationId = req.user.organizationId;
+
+    // Validation
+    if (!splits || !Array.isArray(splits) || splits.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Split configurations are required'
+      });
+    }
+
+    // Find parent bill
+    const parentBill = await MonthlyBill.findOne({
+      _id: id,
+      organizationId
+    }).session(session);
+
+    if (!parentBill) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Bill not found'
+      });
+    }
+
+    // Only allow splitting draft bills
+    if (parentBill.status !== 'draft') {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Only draft bills can be split'
+      });
+    }
+
+    // Validate total amounts
+    const totalRequestedAmount = splits.reduce((sum, s) => sum + parseFloat(s.targetAmount || 0), 0);
+    const billTotal = parentBill.financials.grandTotal;
+
+    if (Math.abs(totalRequestedAmount - billTotal) > 1) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Total split amount (₹${totalRequestedAmount}) must equal bill total (₹${billTotal})`
+      });
+    }
+
+    // Get buyer with GST profiles
+    const buyer = await WholesaleBuyer.findOne({
+      _id: parentBill.buyer.id,
+      organizationId
+    }).session(session);
+
+    if (!buyer) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Buyer not found'
+      });
+    }
+
+    // Get settings for bill number generation
+    const settings = await Settings.findOne({ organizationId }).session(session);
+
+    // Generate split group ID for tracking
+    const splitGroupId = `split_${Date.now()}`;
+
+    // ============================================================================
+    // STEP 1: FLATTEN ALL ITEMS FROM ALL CHALLANS INTO ITEM POOL
+    // ============================================================================
+    const itemPool = [];
+    
+    parentBill.challans.forEach(challan => {
+      challan.items.forEach(item => {
+        itemPool.push({
+          // Original challan reference
+          challanId: challan.challanId,
+          challanNumber: challan.challanNumber,
+          challanDate: challan.challanDate,
+          
+          // Item details
+          color: item.color,
+          size: item.size,
+          quantity: item.quantity,
+          price: item.price, // Price per unit (includes GST)
+          
+          // Amounts
+          amount: item.amount, // Total amount for this item (qty × price)
+          
+          // Keep original challan reference for grouping later
+          sourceChallan: {
+            id: challan.challanId,
+            number: challan.challanNumber,
+            date: challan.challanDate
+          }
+        });
+      });
+    });
+
+    logger.info('Item pool created for splitting', {
+      parentBillId: parentBill._id,
+      totalItems: itemPool.length,
+      totalAmount: itemPool.reduce((sum, item) => sum + item.amount, 0)
+    });
+
+    // ============================================================================
+    // STEP 2: SORT ITEMS BY UNIT PRICE (ASCENDING) FOR BETTER PACKING
+    // ============================================================================
+    itemPool.sort((a, b) => a.price - b.price);
+
+    const createdBills = [];
+    const gstRate = parentBill.financials.gstRate || 5;
+
+    // ============================================================================
+    // STEP 3: ALLOCATE ITEMS TO EACH SPLIT
+    // ============================================================================
+    for (let i = 0; i < splits.length; i++) {
+      const split = splits[i];
+      const targetAmount = parseFloat(split.targetAmount);
+      const isLastSplit = (i === splits.length - 1);
+
+      // Get GST profile for this split
+      let gstProfile = null;
+
+      if (split.gstProfileId === 'original_gst') {
+        // Use original GST from buyer
+        gstProfile = {
+          profileId: 'original_gst',
+          gstNumber: parentBill.buyer.gstin,
+          businessName: parentBill.buyer.businessName || buyer.name,
+          pan: parentBill.buyer.pan || '',
+          address: parentBill.buyer.address || '',
+          stateCode: parentBill.buyer.stateCode || '24',
+          isOriginal: true
+        };
+
+        logger.info('Using original GST for split', {
+          splitIndex: i + 1,
+          gstNumber: gstProfile.gstNumber
+        });
+      } else if (split.gstProfileId) {
+        // Use saved GST profile
+        gstProfile = buyer.gstProfiles.find(p => p.profileId === split.gstProfileId);
+
+        if (!gstProfile) {
+          await session.abortTransaction();
+          return res.status(404).json({
+            success: false,
+            message: `GST profile ${split.gstProfileId} not found for buyer`
+          });
+        }
+
+        logger.info('Using saved GST profile for split', {
+          splitIndex: i + 1,
+          profileId: gstProfile.profileId,
+          gstNumber: gstProfile.gstNumber
+        });
+      }
+
+      // Allocate items for this split
+      const allocatedItems = [];
+      let allocatedAmount = 0;
+
+      if (isLastSplit) {
+        // ========================================================================
+        // LAST SPLIT: TAKE ALL REMAINING ITEMS (GUARANTEES EXACT TOTAL)
+        // ========================================================================
+        allocatedItems.push(...itemPool.splice(0));
+        allocatedAmount = allocatedItems.reduce((sum, item) => sum + item.amount, 0);
+
+        logger.info('Last split - allocated all remaining items', {
+          splitIndex: i + 1,
+          targetAmount,
+          actualAmount: allocatedAmount,
+          itemsAllocated: allocatedItems.length
+        });
+      } else {
+        // ========================================================================
+        // REGULAR SPLIT: SMART GREEDY ALLOCATION
+        // ========================================================================
+        let remainingTarget = targetAmount;
+
+        while (remainingTarget > 0 && itemPool.length > 0) {
+          const item = itemPool[0]; // Smallest price item (sorted)
+          const itemUnitPrice = item.price;
+          const itemTotalAmount = item.amount;
+          const itemQuantity = item.quantity;
+
+          // Calculate how many units we can take to fit the target
+          const maxUnitsToFit = Math.floor(remainingTarget / itemUnitPrice);
+
+          if (maxUnitsToFit >= itemQuantity) {
+            // ================================================================
+            // TAKE ENTIRE ITEM (all quantities)
+            // ================================================================
+            allocatedItems.push(item);
+            allocatedAmount += itemTotalAmount;
+            remainingTarget -= itemTotalAmount;
+            itemPool.shift(); // Remove from pool
+
+            logger.info('Allocated full item', {
+              item: `${item.color} ${item.size}`,
+              quantity: itemQuantity,
+              amount: itemTotalAmount,
+              remainingTarget
+            });
+          } else if (maxUnitsToFit > 0) {
+            // ================================================================
+            // TAKE PARTIAL QUANTITY FROM THIS ITEM
+            // ================================================================
+            const partialAmount = maxUnitsToFit * itemUnitPrice;
+            
+            // Create partial item for this split
+            const partialItem = {
+              ...item,
+              quantity: maxUnitsToFit,
+              amount: parseFloat(partialAmount.toFixed(2))
+            };
+
+            allocatedItems.push(partialItem);
+            allocatedAmount += partialAmount;
+            remainingTarget -= partialAmount;
+
+            // Update remaining quantity in pool
+            item.quantity -= maxUnitsToFit;
+            item.amount = parseFloat((item.quantity * itemUnitPrice).toFixed(2));
+
+            logger.info('Allocated partial item', {
+              item: `${item.color} ${item.size}`,
+              quantityTaken: maxUnitsToFit,
+              quantityRemaining: item.quantity,
+              amountTaken: partialAmount,
+              remainingTarget
+            });
+
+            // If item is fully consumed, remove from pool
+            if (item.quantity === 0) {
+              itemPool.shift();
+            }
+          } else {
+            // ================================================================
+            // ITEM DOESN'T FIT - STOP ALLOCATION FOR THIS SPLIT
+            // ================================================================
+            logger.info('Item does not fit, stopping allocation', {
+              item: `${item.color} ${item.size}`,
+              itemUnitPrice,
+              remainingTarget
+            });
+            break;
+          }
+        }
+
+        logger.info('Regular split allocation completed', {
+          splitIndex: i + 1,
+          targetAmount,
+          actualAmount: allocatedAmount,
+          difference: targetAmount - allocatedAmount,
+          itemsAllocated: allocatedItems.length
+        });
+      }
+
+      // ========================================================================
+      // STEP 4: GROUP ALLOCATED ITEMS BACK INTO CHALLANS BY SOURCE
+      // ========================================================================
+      const challanMap = new Map();
+
+      allocatedItems.forEach(item => {
+        const challanKey = item.sourceChallan.number;
+
+        if (!challanMap.has(challanKey)) {
+          challanMap.set(challanKey, {
+            challanId: item.sourceChallan.id,
+            challanNumber: item.sourceChallan.number,
+            challanDate: item.sourceChallan.date,
+            items: [],
+            itemsQty: 0,
+            taxableAmount: 0,
+            gstAmount: 0,
+            totalAmount: 0
+          });
+        }
+
+        const challan = challanMap.get(challanKey);
+        
+        // Calculate taxable and GST amounts
+        const itemTotalWithGST = item.amount;
+        const itemTaxable = itemTotalWithGST / (1 + gstRate / 100);
+        const itemGST = itemTotalWithGST - itemTaxable;
+
+        challan.items.push({
+          color: item.color,
+          size: item.size,
+          quantity: item.quantity,
+          price: parseFloat(item.price.toFixed(2)),
+          amount: parseFloat(item.amount.toFixed(2))
+        });
+
+        challan.itemsQty += item.quantity;
+        challan.taxableAmount += itemTaxable;
+        challan.gstAmount += itemGST;
+        challan.totalAmount += itemTotalWithGST;
+      });
+
+      // Convert map to array and round amounts
+      const reconstructedChallans = Array.from(challanMap.values()).map(challan => ({
+        ...challan,
+        taxableAmount: parseFloat(challan.taxableAmount.toFixed(2)),
+        gstAmount: parseFloat(challan.gstAmount.toFixed(2)),
+        totalAmount: parseFloat(challan.totalAmount.toFixed(2))
+      }));
+
+      logger.info('Challans reconstructed for split', {
+        splitIndex: i + 1,
+        originalChallans: parentBill.challans.length,
+        reconstructedChallans: reconstructedChallans.length
+      });
+
+      // ========================================================================
+      // STEP 5: CALCULATE FINANCIALS FOR THIS CHILD BILL
+      // ========================================================================
+      const invoiceTotal = reconstructedChallans.reduce((sum, c) => sum + c.totalAmount, 0);
+      const totalTaxableAmount = reconstructedChallans.reduce((sum, c) => sum + c.taxableAmount, 0);
+      const totalGstAmount = reconstructedChallans.reduce((sum, c) => sum + c.gstAmount, 0);
+
+      // Check state for CGST/SGST or IGST
+      const buyerState = gstProfile ? gstProfile.stateCode : buyer.stateCode || parentBill.buyer.stateCode || '24';
+      const companyState = parentBill.company.address?.stateCode || '24';
+      const isSameState = buyerState === companyState;
+
+      const cgst = isSameState ? totalGstAmount / 2 : 0;
+      const sgst = isSameState ? totalGstAmount / 2 : 0;
+      const igst = !isSameState ? totalGstAmount : 0;
+
+      // ============================================================================
+      // GENERATE BILL NUMBER: First child inherits parent's number
+      // ============================================================================
+      let billNumber;
+
+      if (i === 0) {
+        // ✅ FIRST CHILD: Use parent's bill number (no gap created)
+        billNumber = parentBill.billNumber;
+        
+        logger.info('First child bill inherits parent bill number', {
+          parentBillNumber: parentBill.billNumber,
+          childIndex: i + 1
+        });
+      } else {
+        // ✅ OTHER CHILDREN: Generate new sequential bill numbers
+        billNumber = await generateBillNumber(organizationId, null, session);
+        
+        logger.info('New bill number generated for child', {
+          childIndex: i + 1,
+          newBillNumber: billNumber
+        });
+      }
+
+      // Calculate financial year
+      const startDate = parentBill.billingPeriod.startDate;
+      const billMonth = startDate.getMonth();
+      const billYear = startDate.getFullYear();
+      const financialYear = billMonth < 3 ? billYear - 1 : billYear;
+      const financialYearString = `${financialYear}-${(financialYear + 1).toString().slice(-2)}`;
+
+      // Create buyer object with GST profile data
+      const billBuyerData = gstProfile ? {
+        id: buyer._id,
+        name: buyer.name,
+        mobile: buyer.mobile,
+        email: buyer.email,
+        businessName: gstProfile.businessName,
+        gstin: gstProfile.gstNumber,
+        pan: gstProfile.pan || (gstProfile.gstNumber ? gstProfile.gstNumber.substring(2, 12) : buyer.pan || ''),
+        address: gstProfile.address?.fullAddress || gstProfile.address,
+        stateCode: gstProfile.stateCode,
+        gstProfileId: gstProfile.profileId
+      } : {
+        id: buyer._id,
+        name: buyer.name,
+        mobile: buyer.mobile,
+        email: buyer.email,
+        businessName: buyer.businessName || buyer.name,
+        gstin: buyer.gstNumber,
+        pan: buyer.pan || (buyer.gstNumber && buyer.gstNumber.length >= 12 ? buyer.gstNumber.substring(2, 12) : ''),
+        address: buyer.address,
+        stateCode: buyer.stateCode || '24',
+        gstProfileId: null
+      };
+
+      // ========================================================================
+      // STEP 6: CREATE CHILD BILL
+      // ========================================================================
+      const childBill = await MonthlyBill.create([{
+        billNumber,
+        financialYear: financialYearString,
+        company: parentBill.company,
+        buyer: billBuyerData,
+        billingPeriod: parentBill.billingPeriod,
+        challans: reconstructedChallans,
+        financials: {
+          totalTaxableAmount: parseFloat(totalTaxableAmount.toFixed(2)),
+          cgst: parseFloat(cgst.toFixed(2)),
+          sgst: parseFloat(sgst.toFixed(2)),
+          igst: parseFloat(igst.toFixed(2)),
+          gstRate: gstRate,
+          invoiceTotal: parseFloat(invoiceTotal.toFixed(2)),
+          previousOutstanding: 0,
+          grandTotal: parseFloat(invoiceTotal.toFixed(2)),
+          amountPaid: 0,
+          balanceDue: parseFloat(invoiceTotal.toFixed(2))
+        },
+        status: 'draft',
+        paymentDueDate: parentBill.paymentDueDate,
+        paymentHistory: [],
+        hsnCode: parentBill.hsnCode,
+        generatedAt: new Date(),
+        splitBillInfo: {
+          isParent: false,
+          isChild: true,
+          parentBillId: parentBill._id,
+          parentBillNumber: parentBill.billNumber,
+          childBillIds: [],
+          splitGroupId,
+          splitIndex: i + 1,
+          totalSplits: splits.length,
+          targetAmount: targetAmount,
+          actualAmount: parseFloat(invoiceTotal.toFixed(2)),
+          variance: parseFloat((invoiceTotal - targetAmount).toFixed(2))
+        },
+        organizationId
+      }], { session });
+
+      createdBills.push(childBill[0]);
+
+      // Update GST profile usage count (only for saved profiles)
+      if (gstProfile && gstProfile.profileId !== 'original_gst') {
+        gstProfile.usageCount = (gstProfile.usageCount || 0) + 1;
+        gstProfile.lastUsedAt = new Date();
+      }
+
+      logger.info('Child bill created', {
+        splitIndex: i + 1,
+        billNumber: childBill[0].billNumber,
+        targetAmount,
+        actualAmount: invoiceTotal,
+        variance: invoiceTotal - targetAmount,
+        challans: reconstructedChallans.length,
+        totalItems: reconstructedChallans.reduce((sum, c) => sum + c.itemsQty, 0)
+      });
+    }
+
+    // ============================================================================
+    // STEP 7: SAVE BUYER WITH UPDATED GST PROFILE USAGE
+    // ============================================================================
+    await buyer.save({ session });
+
+    // ============================================================================
+    // STEP 8: DELETE PARENT BILL AFTER SUCCESSFUL SPLIT
+    // ============================================================================
+    await MonthlyBill.findByIdAndDelete(parentBill._id).session(session);
+
+    logger.info('Parent bill deleted after split', {
+      parentBillId: parentBill._id,
+      parentBillNumber: parentBill.billNumber,
+      childBillsCreated: createdBills.length
+    });
+
+    await session.commitTransaction();
+
+    // ============================================================================
+    // FINAL VERIFICATION LOG
+    // ============================================================================
+    const totalChildAmount = createdBills.reduce((sum, b) => sum + b.financials.grandTotal, 0);
+    const parentAmount = parentBill.financials.grandTotal;
+
+    logger.info('Bill split completed successfully', {
+      parentBillNumber: parentBill.billNumber,
+      parentAmount,
+      childCount: createdBills.length,
+      totalChildAmount,
+      difference: Math.abs(totalChildAmount - parentAmount),
+      splitGroupId
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Bill split into ${createdBills.length} bills successfully. Original bill deleted.`,
+      data: {
+        childBills: createdBills.map(b => ({
+          id: b._id,
+          billNumber: b.billNumber,
+          targetAmount: b.splitBillInfo.targetAmount,
+          actualAmount: b.financials.grandTotal,
+          variance: b.splitBillInfo.variance,
+          businessName: b.buyer.businessName,
+          gstNumber: b.buyer.gstin,
+          gstProfileId: b.buyer.gstProfileId,
+          challansCount: b.challans.length,
+          totalItems: b.challans.reduce((sum, c) => sum + c.itemsQty, 0)
+        })),
+        splitGroupId,
+        summary: {
+          parentAmount,
+          totalChildAmount,
+          difference: parseFloat((totalChildAmount - parentAmount).toFixed(2))
+        }
+      }
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    logger.error('Bill split failed', { 
+      error: error.message,
+      stack: error.stack 
+    });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to split bill',
+      error: error.message
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
 module.exports = {
   getAllBills,
   getBillById,
@@ -1892,5 +2426,6 @@ module.exports = {
   getBillsStats,
   customizeBill,
   deletePaymentFromBill,
-  updateBillNumber
+  updateBillNumber,
+  splitBill
 };

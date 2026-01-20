@@ -17,7 +17,8 @@ const {
   recordPaymentForBill,
   getBillPaymentHistory,
   deletePaymentFromBill,
-  updateBillNumber
+  updateBillNumber,
+  splitBill
 } = require('../controllers/monthlyBillController');
 const { protect } = require('../middleware/auth');
 const { isAdmin } = require('../middleware/roleCheck');
@@ -73,5 +74,6 @@ router.post('/:id/payment', recordPaymentForBill);
 // @desc    Delete draft bill
 // @access  Private
 router.delete('/:id', deleteBill);
+router.post('/:id/split', protect, splitBill);
 
 module.exports = router;

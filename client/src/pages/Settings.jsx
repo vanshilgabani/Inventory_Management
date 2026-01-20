@@ -18,6 +18,7 @@ import ScrollToTop from '../components/common/ScrollToTop';
 import NotificationsSettings from '../components/settings/NotificationsSettings';
 import ColorPaletteManager from '../components/settings/ColorPaletteManager';
 import CompanyManagement from '../components/settings/CompanyManagement';
+import BuyerGSTManagement from '../components/settings/BuyerGSTManagement';
 
 const Settings = () => {
   const [searchParams] = useSearchParams();
@@ -316,6 +317,7 @@ const Settings = () => {
   const tabs = [
     { id: 'company', label: 'General', icon: '🏢' },
     { id: 'companies', label: 'Companies', icon: '🏭' },
+    { id: 'buyer-gst', label: 'Buyer GST Profiles', icon: '📋' },
     { id: 'sizes-permissions', label: 'Sizes & Permissions', icon: '📏' },
     { id: 'colors', label: 'Color Palette', icon: '🎨' },
     { id: 'thresholds', label: 'Stock Alerts', icon: '🔔' },
@@ -377,6 +379,8 @@ const Settings = () => {
           <CompanyManagement />
         )}
 
+        {activeTab === 'buyer-gst' && <BuyerGSTManagement />}
+        
         {activeTab === 'sizes-permissions' && (
           <div className="space-y-8">
             <SizeConfiguration

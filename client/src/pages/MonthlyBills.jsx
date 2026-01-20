@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import buyerGSTService from '../services/buyerGSTService';
 import {monthlyBillService} from '../services/monthlyBillService';
 import {wholesaleService} from '../services/wholesaleService';
 import {settingsService} from '../services/settingsService';
@@ -34,10 +35,19 @@ import {
   FiCreditCard,
   FiArrowRight,
   FiZap,
-  FiEdit2
+  FiEdit2,
+  FiCopy
 } from 'react-icons/fi';
-import { format } from 'date-fns';
+import { format, isValid } from 'date-fns';
 import ScrollToTop from '../components/common/ScrollToTop';
+
+// Safe date formatter helper
+const formatSafeDate = (date, formatString = 'MMM dd, yyyy') => {
+  if (!date) return 'N/A';
+  const dateObj = new Date(date);
+  if (!isValid(dateObj)) return 'Invalid Date';
+  return format(dateObj, formatString);
+};
 
 const MonthlyBills = () => {
   const { user } = useAuth();
@@ -81,6 +91,14 @@ const MonthlyBills = () => {
     removeChallans: []
   });
   const [customSequence, setCustomSequence] = useState('');
+
+  const [showSplitModal, setShowSplitModal] = useState(false);
+  const [splittingBill, setSplittingBill] = useState(null);
+  const [gstProfiles, setGstProfiles] = useState([]);
+  const [loadingProfiles, setLoadingProfiles] = useState(false);
+  const [splitConfig, setSplitConfig] = useState([
+    { gstProfileId: '', targetAmount: 0 }
+  ]);
 
   // NEW: Preview modal states
   const [showPreviewModal, setShowPreviewModal] = useState(false);
@@ -274,6 +292,146 @@ const MonthlyBills = () => {
     };
     return configs[status] || configs.draft;
   };
+
+const openSplitModal = async (bill) => {
+  setSplittingBill(bill);
+  setShowSplitModal(true);
+  setLoadingProfiles(true);
+  
+  try {
+    // Fetch saved GST profiles
+    const response = await buyerGSTService.getGSTProfiles(bill.buyer.id);
+    let profiles = response.data.profiles || [];
+    
+    // ✅ NEW: Extract original GST from bill
+    const originalGST = bill.buyer.gstin; // GST used in this bill
+    
+    if (originalGST) {
+      // Check if original GST already exists in profiles
+      const existsInProfiles = profiles.some(p => p.gstNumber === originalGST);
+      
+      if (!existsInProfiles) {
+        // Add original GST as first option
+        profiles = [{
+          profileId: 'original_gst',
+          gstNumber: originalGST,
+          businessName: bill.buyer.businessName || bill.buyer.name,
+          address: bill.buyer.address || {},
+          pan: bill.buyer.pan || '',
+          stateCode: bill.buyer.stateCode || '',
+          isOriginal: true, // Flag to identify
+          isDefault: false,
+          isActive: true,
+          notes: 'Original GST used in orders',
+          usageCount: bill.challans.length
+        }, ...profiles];
+      } else {
+        // Mark existing profile as original
+        profiles = profiles.map(p => 
+          p.gstNumber === originalGST 
+            ? { ...p, isOriginal: true, usageCount: (p.usageCount || 0) + bill.challans.length }
+            : p
+        );
+      }
+    }
+    
+    setGstProfiles(profiles);
+    
+    // Initialize splits
+    setSplitConfig([
+      { gstProfileId: '', targetAmount: Math.floor(bill.financials.grandTotal / 2) },
+      { gstProfileId: '', targetAmount: Math.ceil(bill.financials.grandTotal / 2) }
+    ]);
+    
+  } catch (error) {
+    toast.error('Failed to load GST profiles');
+    setGstProfiles([]);
+  } finally {
+    setLoadingProfiles(false);
+  }
+};
+
+/**
+ * Add new split
+ */
+const addSplit = () => {
+  setSplitConfig([...splitConfig, { gstProfileId: '', targetAmount: 0 }]);
+};
+
+/**
+ * Remove split
+ */
+const removeSplit = (index) => {
+  if (splitConfig.length <= 2) {
+    toast.error('Minimum 2 splits required');
+    return;
+  }
+  const newConfig = splitConfig.filter((_, i) => i !== index);
+  setSplitConfig(newConfig);
+};
+
+/**
+ * Update split configuration
+ */
+const updateSplitConfig = (index, field, value) => {
+  const newConfig = [...splitConfig];
+  newConfig[index][field] = value;
+  setSplitConfig(newConfig);
+};
+
+/**
+ * Calculate total split amount
+ */
+const getTotalSplitAmount = () => {
+  return splitConfig.reduce((sum, split) => sum + (parseFloat(split.targetAmount) || 0), 0);
+};
+
+/**
+ * Handle bill split submission
+ */
+const handleSplitBill = async () => {
+  if (!splittingBill) return;
+  
+  // Validation
+  const totalSplit = getTotalSplitAmount();
+  const billTotal = splittingBill.financials.grandTotal;
+  
+  if (Math.abs(totalSplit - billTotal) > 1) {
+    toast.error(`Total split amount (₹${totalSplit}) must equal bill total (₹${billTotal})`);
+    return;
+  }
+  
+  // Check if GST profiles are selected
+  const hasEmptyProfile = splitConfig.some(s => !s.gstProfileId);
+  if (hasEmptyProfile) {
+    toast.error('Please select GST profile for all splits');
+    return;
+  }
+  
+  setIsSubmitting(true);
+  try {
+    const result = await monthlyBillService.splitBill(splittingBill._id, {
+      splits: splitConfig.map(s => ({
+        gstProfileId: s.gstProfileId,
+        targetAmount: parseFloat(s.targetAmount)
+      }))
+    });
+    
+    toast.success(result.message, { duration: 5000 });
+    setShowSplitModal(false);
+    setSplittingBill(null);
+    setSplitConfig([{ gstProfileId: '', targetAmount: 0 }]);
+    await fetchInitialData();
+    
+    // Switch to draft filter to see created bills
+    setStatusFilter('draft');
+    
+  } catch (error) {
+    toast.error(error.response?.data?.message || 'Failed to split bill');
+  } finally {
+    setIsSubmitting(false);
+  }
+};
 
   // Open generate modal
   const openGenerateModal = () => {
@@ -853,7 +1011,7 @@ const handleUpdateBillNumber = async () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-slate-50">
       {/* Modern Header */}
-      <div className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
+      <div className="bg-white border-b border-slate-200 top-0 z-40 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="py-6">
             {/* Title Section */}
@@ -1160,19 +1318,22 @@ const handleUpdateBillNumber = async () => {
 
                     {/* Card Body */}
                     <div className="p-5 space-y-4">
-                      {/* Company Info */}
+                      {/* ✅ Buyer GST Info (instead of Company) */}
                       <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
                         <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center flex-shrink-0">
                           <span className="text-white font-bold text-sm">
-                            {bill.company.name.charAt(0)}
+                            {(bill.buyer.businessName || bill.buyer.name).charAt(0)}
                           </span>
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-semibold text-slate-900 truncate">
-                            {bill.company.name}
+                            {bill.buyer.businessName || bill.buyer.name}
                           </p>
-                          {bill.company.gstin && (
-                            <p className="text-xs text-slate-600 font-mono">{bill.company.gstin}</p>
+                          {bill.buyer.gstin && (
+                            <p className="text-xs text-slate-600 font-mono">{bill.buyer.gstin}</p>
+                          )}
+                          {!bill.buyer.gstin && (
+                            <p className="text-xs text-amber-600 italic">No GST recorded</p>
                           )}
                         </div>
                       </div>
@@ -1226,27 +1387,36 @@ const handleUpdateBillNumber = async () => {
 
                     {/* Card Footer - Actions */}
                     <div className="p-4 bg-slate-50 border-t border-slate-200">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {/* View Details */}
-                        <button
-                          onClick={() => openDetailsModal(bill)}
-                          className="flex-1 px-3 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-100 transition-all duration-200 flex items-center justify-center gap-2 font-medium"
-                        >
-                          <FiEye className="w-4 h-4" />
-                          <span className="text-sm">View</span>
-                        </button>
-
+                      <div className="flex items-center gap-2 flex-wrap">                      
                         {/* Draft Bills - Show Customize & Finalize */}
                         {bill.status === 'draft' && (
                           <>
+                          {/* View Details */}
+                          <button
+                            onClick={() => openDetailsModal(bill)}
+                            className="flex-1 px-3 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-100 transition-all duration-200 flex items-center justify-center gap-2 font-medium"
+                          >
+                            <FiEye className="w-4 h-4" />
+                            <span className="text-sm">View</span>
+                          </button>
                             <button
                               onClick={() => openCustomizeModal(bill)}
                               className="flex-1 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-all duration-200 flex items-center justify-center gap-2 font-medium"
                               title="Customize Bill"
                             >
                               <FiEdit2 className="w-4 h-4" />
-                              <span className="text-sm">Customize</span>
                             </button>
+
+                            {bill.status === 'draft' && !bill.splitBillInfo?.isParent && !bill.splitBillInfo?.isChild && (
+                              <button
+                                onClick={() => openSplitModal(bill)}
+                                className="flex-1 px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all duration-200 flex items-center justify-center gap-2 font-medium"
+                                title="Split Bill"
+                              >
+                                <FiCopy className="w-4 h-4" />
+                                <span className="text-sm">Split</span>
+                              </button>
+                            )}
 
                             {isAdmin && (
                               <button
@@ -1319,6 +1489,7 @@ const handleUpdateBillNumber = async () => {
                                 title="Record Payment"
                               >
                                 <FiCreditCard className="w-4 h-4" />
+                                <span className='px-1 py-0.4 text-xs'>Payment</span>
                               </button>
                             )}
 
@@ -1328,6 +1499,7 @@ const handleUpdateBillNumber = async () => {
                               title="Payment History"
                             >
                               <FiClock className="w-4 h-4" />
+                              <span className='px-1 py-0.4 text-xs'>History</span>
                             </button>
                           </>
                         )}
@@ -2030,7 +2202,7 @@ const handleUpdateBillNumber = async () => {
                         <div>
                           <p className="font-semibold text-slate-900">{challan.challanNumber}</p>
                           <p className="text-xs text-slate-600">
-                            {format(new Date(challan.challanDate), 'dd MMM yyyy')} • {challan.itemsQty}{' '}
+                            {formatSafeDate(new Date(challan.challanDate), 'dd MMM yyyy')} • {challan.itemsQty}{' '}
                             pcs
                           </p>
                         </div>
@@ -2254,13 +2426,13 @@ const handleUpdateBillNumber = async () => {
                 <div>
                   <p className="text-xs text-slate-600 mb-1">Bill Date</p>
                   <p className="text-sm font-semibold text-slate-900">
-                    {format(new Date(previewingBill.generatedAt), 'dd MMM yyyy')}
+                    {formatSafeDate(previewingBill.generatedAt, 'dd MMM yyyy')}
                   </p>
                 </div>
                 <div>
                   <p className="text-xs text-slate-600 mb-1">Due Date</p>
                   <p className="text-sm font-semibold text-slate-900">
-                    {format(new Date(previewingBill.paymentDueDate), 'dd MMM yyyy')}
+                    {formatSafeDate(new Date(previewingBill.paymentDueDate), 'dd MMM yyyy')}
                   </p>
                 </div>
                 <div>
@@ -2307,7 +2479,7 @@ const handleUpdateBillNumber = async () => {
                             {challan.challanNumber}
                           </td>
                           <td className="px-4 py-3 text-sm text-slate-600">
-                            {format(new Date(challan.challanDate), 'dd MMM yyyy')}
+                            {formatSafeDate(new Date(challan.challanDate), 'dd MMM yyyy')}
                           </td>
                           <td className="px-4 py-3 text-sm text-right font-semibold text-slate-900">
                             {challan.itemsQty}
@@ -2689,7 +2861,7 @@ const handleUpdateBillNumber = async () => {
                             {payment.paymentMethod}
                           </span>
                           <span className="text-sm text-slate-600">
-                            {format(new Date(payment.paymentDate), 'dd MMM yyyy')}
+                            {formatSafeDate(new Date(payment.paymentDate), 'dd MMM yyyy')}
                           </span>
                         </div>
                         <p className="text-2xl font-bold text-emerald-600 mb-1">
@@ -2762,7 +2934,7 @@ const handleUpdateBillNumber = async () => {
                 <div>
                   <p className="text-sm font-medium text-blue-700 mb-1">Generated On</p>
                   <p className="text-lg font-semibold text-blue-900">
-                    {format(new Date(selectedBill.generatedAt), 'dd MMM yyyy')}
+                    {formatSafeDate(selectedBill.generatedAt, 'dd MMM yyyy')}
                   </p>
                 </div>
               </div>
@@ -2817,7 +2989,7 @@ const handleUpdateBillNumber = async () => {
                           {challan.challanNumber}
                         </td>
                         <td className="px-4 py-3 text-sm text-slate-600">
-                          {format(new Date(challan.challanDate), 'dd MMM yyyy')}
+                          {formatSafeDate(challan.challanDate, 'dd MMM yyyy')}
                         </td>
                         <td className="px-4 py-3 text-sm text-right font-semibold text-slate-900">
                           {challan.itemsQty}
@@ -2874,6 +3046,276 @@ const handleUpdateBillNumber = async () => {
                 )}
               </div>
             </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Split Bill Modal */}
+      {showSplitModal && splittingBill && (
+        <Modal
+          isOpen={showSplitModal}
+          onClose={() => {
+            setShowSplitModal(false);
+            setSplittingBill(null);
+            setSplitConfig([{ gstProfileId: '', targetAmount: 0 }]);
+          }}
+          title="Split Bill"
+          maxWidth="3xl"
+        >
+          <div className="p-6 space-y-6">
+            {/* Bill Info Header */}
+            <div className="p-4 bg-blue-50 rounded-xl border border-blue-200">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <p className="text-sm font-medium text-blue-700">Bill Number</p>
+                  <p className="text-lg font-bold text-blue-900">{splittingBill.billNumber}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-medium text-blue-700">Total Amount</p>
+                  <p className="text-2xl font-bold text-blue-900">
+                    ₹{splittingBill.financials.grandTotal.toLocaleString('en-IN')}
+                  </p>
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-blue-700">Buyer</p>
+                <p className="text-lg font-semibold text-blue-900">{splittingBill.buyer.name}</p>
+              </div>
+            </div>
+
+            {/* GST Profiles Loading */}
+            {loadingProfiles ? (
+              <div className="text-center py-8">
+                <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+                <p className="text-gray-600">Loading GST profiles...</p>
+              </div>
+            ) : gstProfiles.length === 0 ? (
+              <div className="p-6 bg-amber-50 border border-amber-200 rounded-lg text-center">
+                <FiAlertCircle className="w-12 h-12 text-amber-600 mx-auto mb-3" />
+                <p className="text-amber-900 font-medium mb-2">No GST profiles found</p>
+                <p className="text-sm text-amber-700 mb-4">
+                  This buyer doesn't have any GST profiles configured. Add GST profiles in Settings first.
+                </p>
+                <button
+                  onClick={() => {
+                    setShowSplitModal(false);
+                    // Navigate to settings if needed
+                  }}
+                  className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors"
+                >
+                  Go to Settings
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* Split Configuration */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-lg font-bold text-gray-900">Split Configuration</h4>
+                    <button
+                      onClick={addSplit}
+                      className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 text-sm"
+                    >
+                      <FiPlus className="w-4 h-4" />
+                      Add Split
+                    </button>
+                  </div>
+
+                  {splitConfig.map((split, index) => {
+                    const selectedProfile = gstProfiles.find(p => p.profileId === split.gstProfileId);
+                    
+                    return (
+                      <div key={index} className="p-4 bg-gray-50 rounded-lg border-2 border-gray-200">
+                        <div className="flex items-start gap-4">
+                          <div className="flex-1 space-y-3">
+                            {/* Split Header */}
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-bold text-gray-900">
+                                Bill {index + 1}
+                              </span>
+                              {splitConfig.length > 2 && (
+                                <button
+                                  onClick={() => removeSplit(index)}
+                                  className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                  title="Remove split"
+                                >
+                                  <FiX className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+
+                            {/* GST Profile Selection */}
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Select GST Profile *
+                              </label>
+                              <select
+                                value={split.gstProfileId}
+                                onChange={(e) => updateSplitConfig(index, 'gstProfileId', e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              >
+                                <option value="">-- Select GST Profile --</option>
+                                {gstProfiles
+                                  .filter(p => p.isActive !== false)  // ✅ FIX: Accept undefined or true
+                                  .map(profile => (
+                                    <option 
+                                      key={profile.profileId} 
+                                      value={profile.profileId}
+                                    >
+                                      {/* ⭐ Show star for original GST */}
+                                      {profile.isOriginal && '⭐ '}
+                                      {profile.businessName} - {profile.gstNumber}
+                                      {profile.isOriginal && ' (Used in Orders)'}
+                                    </option>
+                                  ))}
+                              </select>
+                              
+                              {/* Optional: Show helper text for original GST */}
+                              {split.gstProfileId === 'original_gst' && (
+                                <p className="mt-1 text-xs text-blue-600 flex items-center gap-1">
+                                  <FiAlertCircle className="w-3 h-3" />
+                                  This is the original GST number used in the orders
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Selected Profile Details */}
+                            {selectedProfile && (
+                              <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <span className="font-medium text-green-900">GST:</span>
+                                    <span className="ml-2 text-green-700 font-mono">{selectedProfile.gstNumber}</span>
+                                  </div>
+                                  <div>
+                                    <span className="font-medium text-green-900">PAN:</span>
+                                    <span className="ml-2 text-green-700 font-mono">{selectedProfile.pan}</span>
+                                  </div>
+                                  <div className="col-span-2">
+                                    <span className="font-medium text-green-900">State:</span>
+                                    <span className="ml-2 text-green-700">
+                                      {selectedProfile.address?.state} ({selectedProfile.stateCode})
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Target Amount */}
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Target Amount (₹) *
+                              </label>
+                              <input
+                                type="number"
+                                value={split.targetAmount}
+                                onChange={(e) => updateSplitConfig(index, 'targetAmount', e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                placeholder="0.00"
+                                step="0.01"
+                                min="0"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Total Summary */}
+                <div className="p-4 bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl border-2 border-slate-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-slate-700">Original Bill Total:</span>
+                    <span className="text-lg font-bold text-slate-900">
+                      ₹{splittingBill.financials.grandTotal.toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-slate-700">Total Split Amount:</span>
+                    <span className={`text-lg font-bold ${
+                      Math.abs(getTotalSplitAmount() - splittingBill.financials.grandTotal) <= 1
+                        ? 'text-green-600'
+                        : 'text-red-600'
+                    }`}>
+                      ₹{getTotalSplitAmount().toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-300">
+                    <span className="text-sm font-medium text-slate-700">Difference:</span>
+                    <span className={`text-lg font-bold ${
+                      Math.abs(getTotalSplitAmount() - splittingBill.financials.grandTotal) <= 1
+                        ? 'text-green-600'
+                        : 'text-red-600'
+                    }`}>
+                      ₹{(getTotalSplitAmount() - splittingBill.financials.grandTotal).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Warning */}
+                {Math.abs(getTotalSplitAmount() - splittingBill.financials.grandTotal) > 1 && (
+                  <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
+                    <FiAlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium text-red-900">Amount Mismatch!</p>
+                      <p className="text-sm text-red-700 mt-1">
+                        Total split amount must equal the original bill total. Please adjust the amounts.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Info */}
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-3">
+                  <FiAlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-blue-800">
+                    <p className="font-medium mb-1">How it works:</p>
+                    <ul className="list-disc list-inside space-y-1">
+                      <li>System will distribute challans based on target amounts</li>
+                      <li>Each split will create a separate draft bill</li>
+                      <li>Each bill will have different buyer GST details</li>
+                      <li>You can customize each bill after splitting</li>
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex items-center gap-3 pt-4 border-t border-gray-200">
+                  <button
+                    onClick={() => {
+                      setShowSplitModal(false);
+                      setSplittingBill(null);
+                      setSplitConfig([{ gstProfileId: '', targetAmount: 0 }]);
+                    }}
+                    className="flex-1 px-4 py-3 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-all duration-200 font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSplitBill}
+                    disabled={
+                      isSubmitting ||
+                      Math.abs(getTotalSplitAmount() - splittingBill.financials.grandTotal) > 1 ||
+                      splitConfig.some(s => !s.gstProfileId)
+                    }
+                    className="flex-1 px-4 py-3 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white rounded-lg hover:from-indigo-700 hover:to-indigo-800 transition-all duration-200 font-semibold flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                        <span>Splitting...</span>
+                      </>
+                    ) : (
+                      <>
+                        <FiCopy className="w-5 h-5" />
+                        <span>Split into {splitConfig.length} Bills</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </Modal>
       )}

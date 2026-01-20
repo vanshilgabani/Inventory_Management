@@ -177,7 +177,8 @@ export const generateMonthlyBillPDF = async (bill, options = {}) => {
       doc.setFont('helvetica', 'bold');
       doc.text('DATE:', LabelX, invoiceY);
       doc.setFont('helvetica', 'normal');
-      doc.text(formatDate(bill.generatedAt), valueX, invoiceY, { align: 'right' });
+      const billDate = bill.generatedAt || bill.createdAt || new Date();
+      doc.text(formatDate(billDate), valueX, invoiceY, { align: 'right' });
 
       if (bill.company.pan) {
         invoiceY += 5;

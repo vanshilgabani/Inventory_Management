@@ -1,52 +1,15 @@
 const mongoose = require('mongoose');
 
-const challanItemSchema = new mongoose.Schema({
-  challanId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'WholesaleOrder',
-    required: true
-  },
-  challanNumber: {
-    type: String,
-    required: true
-  },
-  challanDate: {
-    type: Date,
-    required: true
-  },
-  items: [{
-    color: String,
-    size: String,
-    quantity: Number,
-    price: Number,      // Per-unit taxable price
-    amount: Number      // Total taxable amount for this item
-  }],
-  itemsQty: {
-    type: Number,
-    required: true
-  },
-  taxableAmount: {
-    type: Number,
-    required: true
-  },
-  gstAmount: {
-    type: Number,
-    required: true
-  },
-  totalAmount: {
-    type: Number,
-    required: true
-  }
-});
-
-const paymentRecordSchema = new mongoose.Schema({
+// Payment history schema
+const paymentHistorySchema = new mongoose.Schema({
   amount: {
     type: Number,
     required: true
   },
   paymentDate: {
     type: Date,
-    required: true
+    required: true,
+    default: Date.now
   },
   paymentMethod: {
     type: String,
@@ -54,35 +17,43 @@ const paymentRecordSchema = new mongoose.Schema({
     default: 'Cash'
   },
   notes: String,
-  recordedBy: {
-    type: String,
-    required: true
-  },
-  recordedByRole: {
-    type: String,
-    enum: ['admin', 'sales'],
-    required: true
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  }
+  recordedBy: String,
+  recordedByRole: String
 });
 
+// Challan item schema
+const challanItemSchema = new mongoose.Schema({
+  color: String,
+  size: String,
+  quantity: Number,
+  price: Number,
+  amount: Number
+});
+
+// Challan schema
+const challanSchema = new mongoose.Schema({
+  challanId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'WholesaleOrder'
+  },
+  challanNumber: String,
+  challanDate: Date,
+  items: [challanItemSchema],
+  itemsQty: Number,
+  taxableAmount: Number,
+  gstAmount: Number,
+  totalAmount: Number
+});
+
+// Monthly Bill Schema
 const monthlyBillSchema = new mongoose.Schema({
   billNumber: {
     type: String,
     required: true,
-    unique: true
   },
+  financialYear: String,
   
-  // Financial Year
-  financialYear: {
-    type: String,
-    required: true
-  },
-  
-  // Company Details (snapshot at time of bill generation)
+  // Company details (seller)
   company: {
     id: String,
     name: String,
@@ -110,30 +81,27 @@ const monthlyBillSchema = new mongoose.Schema({
     logo: String
   },
   
-  // Buyer Details (snapshot)
+  // Buyer details (UPDATED to support GST profiles)
   buyer: {
     id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'WholesaleBuyer',
       required: true
     },
-    name: {
-      type: String,
-      required: true
-    },
-    mobile: {
-      type: String,
-      required: true
-    },
+    name: String,
+    mobile: String,
     email: String,
-    businessName: String,
-    gstin: String,
-    pan: String,
-    address: String,
-    stateCode: String
+    businessName: String,  // Can be different per bill (from GST profile)
+    gstin: String,         // Can be different per bill (from GST profile)
+    pan: String,           // Can be different per bill (from GST profile)
+    address: String,       // Can be different per bill (from GST profile)
+    stateCode: String,     // Can be different per bill (from GST profile)
+    
+    // NEW: Track which GST profile was used
+    gstProfileId: String   // Links to buyer.gstProfiles[].profileId
   },
   
-  // Billing Period
+  // Billing period
   billingPeriod: {
     month: {
       type: String,
@@ -143,20 +111,14 @@ const monthlyBillSchema = new mongoose.Schema({
       type: Number,
       required: true
     },
-    startDate: {
-      type: Date,
-      required: true
-    },
-    endDate: {
-      type: Date,
-      required: true
-    }
+    startDate: Date,
+    endDate: Date
   },
   
   // Challans included in this bill
-  challans: [challanItemSchema],
+  challans: [challanSchema],
   
-  // Financial Details
+  // Financial details
   financials: {
     totalTaxableAmount: {
       type: Number,
@@ -201,7 +163,7 @@ const monthlyBillSchema = new mongoose.Schema({
     }
   },
   
-  // Status
+  // Bill status
   status: {
     type: String,
     enum: ['draft', 'generated', 'sent', 'partial', 'paid', 'overdue'],
@@ -209,31 +171,41 @@ const monthlyBillSchema = new mongoose.Schema({
   },
   
   // Payment tracking
-  paymentDueDate: {
-    type: Date,
-    required: true
-  },
-  
-  paymentHistory: [paymentRecordSchema],
-  
-  // Timestamps
-  generatedAt: {
-    type: Date,
-    default: Date.now
-  },
-  
-  finalizedAt: Date,
-  
-  sentAt: Date,
-  
+  paymentHistory: [paymentHistorySchema],
+  paymentDueDate: Date,
   paidAt: Date,
   
-  // Additional info
-  notes: String,
-  
+  // HSN code for products
   hsnCode: {
     type: String,
     default: '6203'
+  },
+  
+  // Dates
+  generatedAt: Date,
+  finalizedAt: Date,
+  
+  // NEW: Split bill tracking
+  splitBillInfo: {
+    isParent: {
+      type: Boolean,
+      default: false
+    },
+    isChild: {
+      type: Boolean,
+      default: false
+    },
+    parentBillId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'MonthlyBill'
+    },
+    childBillIds: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'MonthlyBill'
+    }],
+    splitGroupId: String,       // Same for all bills in a split group
+    targetAmount: Number,        // User-requested amount for this bill
+    actualAmount: Number         // Actual bill amount after product assignment
   },
   
   // Organization
@@ -242,15 +214,16 @@ const monthlyBillSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   }
-  
 }, {
   timestamps: true
 });
 
 // Indexes
-monthlyBillSchema.index({ billNumber: 1 }, { unique: true });
+monthlyBillSchema.index({ billNumber: 1, organizationId: 1 }, { unique: true });
 monthlyBillSchema.index({ organizationId: 1, 'buyer.id': 1 });
 monthlyBillSchema.index({ organizationId: 1, status: 1 });
-monthlyBillSchema.index({ organizationId: 1, 'billingPeriod.year': 1, 'billingPeriod.month': 1 });
+monthlyBillSchema.index({ organizationId: 1, 'billingPeriod.year': -1, 'billingPeriod.month': -1 });
+monthlyBillSchema.index({ 'splitBillInfo.parentBillId': 1 });
+monthlyBillSchema.index({ 'splitBillInfo.splitGroupId': 1 });
 
 module.exports = mongoose.model('MonthlyBill', monthlyBillSchema);
