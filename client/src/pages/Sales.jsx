@@ -2157,7 +2157,7 @@ const handleDelete = async (id) => {
         </div>
       )}
 
-            {/* ============ TIMELINE VIEW - ORDERS GROUPED BY DATE ============ */}
+      {/* ============ TIMELINE VIEW - ORDERS GROUPED BY DATE ============ */}
       <div className="space-y-3">
         
         {/* SETTLEMENTS VIEW */}
@@ -2169,62 +2169,13 @@ const handleDelete = async (id) => {
             isAdmin={isAdmin}
           />
         ) : (
-
           // ORDERS VIEW - GROUP BY DATE
           (() => {
-            const groupedByDate = allOrders.reduce((acc, sale) => {
-              const dateKey = new Date(sale.saleDate).toDateString();
-              if (!acc[dateKey]) {
-                acc[dateKey] = {
-                  dateString: dateKey,
-                  dateObj: new Date(sale.saleDate),
-                  orders: []
-                };
-              }
-              acc[dateKey].orders.push(sale);
-              return acc;
-            }, {});
-
-            const sortedDates = Object.values(groupedByDate).sort((a, b) => b.dateObj - a.dateObj);
-
-            if (sortedDates.length === 0) {
-              return (
-                <Card>
-                  <div className="text-center py-12 text-gray-400">
-                    <FiShoppingBag className="mx-auto text-4xl mb-3 opacity-30" />
-                    <p>No orders found matching criteria</p>
-                  </div>
-                </Card>
-              );
-            }
-
-            // Filter date search results by active tab
-            let displayOrders = sortedDates;
-
-            {/* ✅ ADD THIS: Date filter indicator BEFORE the map */}
-            {searchQuery && searchType === 'date' && filteredOrders && (
-              <div className="mx-6 mt-4 mb-6 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg flex items-center justify-between shadow-sm">
-                <div className="flex items-center gap-3">
-                  <FiSearch className="text-blue-600 text-xl" />
-                  <div>
-                    <p className="font-semibold text-blue-900">Date Filter Active</p>
-                    <p className="text-sm text-blue-700">
-                      Showing {filteredOrders.reduce((sum, dg) => sum + dg.orderCount, 0)} orders for {searchQuery}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={clearSearchFilter}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
-                >
-                  <FiX className="text-lg" />
-                  Clear Filter
-                </button>
-              </div>
-            )}
-
-            if (searchQuery && searchType === 'date' && filteredOrders) {
-              // Apply tab filter to date search results
+            // ✅ Calculate which orders to display
+            let displayOrders = searchType === 'date' && filteredOrders ? filteredOrders : dateGroups;
+            
+            // ✅ If it's a date search, filter by active tab
+            if (searchType === 'date' && filteredOrders) {
               displayOrders = filteredOrders.map(dateGroup => {
                 let filteredGroupOrders = dateGroup.orders;
                 
@@ -2252,367 +2203,361 @@ const handleDelete = async (id) => {
               }).filter(Boolean); // Remove null groups
             }
 
-            return (searchType === 'date' && filteredOrders ? filteredOrders : dateGroups).map((dateGroup, idx) => {
-              const isExpanded = expandedDate === dateGroup.dateString;
-              const sortedOrders = [...dateGroup.orders].sort((a, b) => new Date(b.saleDate) - new Date(a.saleDate));
-
-              // Account breakdown
-              const accountBreakdown = dateGroup.orders.reduce((acc, order) => {
-                if (!acc[order.accountName]) acc[order.accountName] = 0;
-                acc[order.accountName]++;
-                return acc;
-              }, {});
-
-              // Selection state
-              const allOrdersSelected = sortedOrders.every(order => selectedSales.includes(order._id));
-              const someOrdersSelected = sortedOrders.some(order => selectedSales.includes(order._id)) && !allOrdersSelected;
-
+            // ✅ Check if no orders
+            if (displayOrders.length === 0) {
               return (
-                <div key={dateGroup.dateString} className="space-y-0">
-
-                  {/* 🔥 NEW: Date Search Filter Indicator - ADD THIS ENTIRE BLOCK */}
-                  {searchQuery && searchType === 'date' && idx === 0 && (
-                    <div className="mx-6 mt-4 mb-6 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <FiSearch className="text-blue-600 text-xl" />
-                        <div>
-                          <p className="font-semibold text-blue-900">Filtered by Date: {searchQuery}</p>
-                          <p className="text-sm text-blue-700">
-                            Showing {filteredOrders?.reduce((sum, dg) => sum + dg.orderCount, 0) || 0} orders
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={clearSearchFilter}
-                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                      >
-                        <FiX /> Clear Filter
-                      </button>
-                    </div>
-                  )}
-                  
-                  {/* DATE HEADER CARD */}
-                  <div
-                    className={`rounded-xl shadow-md cursor-pointer transition-all duration-300 hover:shadow-xl border-2 ${
-                      isExpanded
-                        ? 'bg-gradient-to-r from-indigo-50 via-purple-50 to-pink-50 border-indigo-400 shadow-indigo-200'
-                        : 'bg-white border-gray-200 hover:border-indigo-300'
-                    }`}
-                    onClick={() => setExpandedDate(isExpanded ? null : dateGroup.dateString)}
-                  >
-                    <div className="p-5">
-                      <div className="flex items-center justify-between">
-                        
-                        {/* Left: Date and Order Count */}
-                        <div className="flex items-center gap-4">
-                          <div className={`p-3 rounded-xl ${isExpanded ? 'bg-indigo-600' : 'bg-gray-100'}`}>
-                            {/* ✅ CHANGE THIS: Dynamic icon based on tab */}
-                            {activeTab === 'returned' ? (
-                              <FiRotateCcw className={`text-2xl ${isExpanded ? 'text-white' : 'text-red-600'}`} />
-                            ) : (
-                              <FiCalendar className={`text-2xl ${isExpanded ? 'text-white' : 'text-gray-600'}`} />
-                            )}
-                          </div>
-                          <div>
-                            <h3 className={`font-bold text-lg ${isExpanded ? 'text-indigo-900' : 'text-gray-800'}`}>
-                              {/* ✅ ADD THIS: Label before date */}
-                              <span className="text-sm font-medium text-gray-500 mr-2">
-                                {activeTab === 'returned' ? 'Returned:' : 'Dispatched:'}
-                              </span>
-                              {dateGroup.dateLabel}
-                            </h3>
-                            <p className={`text-sm font-medium ${isExpanded ? 'text-indigo-600' : 'text-gray-500'}`}>
-                              {dateGroup.orders.length} {dateGroup.orders.length === 1 ? 'Order' : 'Orders'}
-                              {someOrdersSelected && (
-                                <span className="ml-2 text-blue-600">
-                                  ({sortedOrders.filter(o => selectedSales.includes(o._id)).length} selected)
-                                </span>
-                              )}
-                            </p>
-                          </div>
-                        </div>
-
-                        {/* Right: Account Breakdown */}
-                        <div className="flex items-center gap-4">
-                          <div className="flex items-center gap-3">
-                            {Object.entries(accountBreakdown).map(([account, count]) => (
-                              <div
-                                key={account}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setHighlightedAccount(highlightedAccount === account ? null : account);
-                                }}
-                                className={`px-3 py-2 rounded-lg font-medium text-sm transition-all cursor-pointer ${
-                                  highlightedAccount === account
-                                    ? 'bg-indigo-600 text-white ring-2 ring-indigo-300 shadow-md'
-                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                }`}
-                              >
-                                {account.includes('Flipkart') ? '🛒' : account.includes('Amazon') ? '📦' : account.includes('Meesho') ? '🛍️' : '🏪'} {account} <span className="font-bold">({count})</span>
-                              </div>
-                            ))}
-                          </div>
-                          <div className={`transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}>
-                            <FiChevronDown className="text-2xl text-gray-600" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                <Card>
+                  <div className="text-center py-12 text-gray-400">
+                    <FiShoppingBag className="mx-auto text-4xl mb-3 opacity-30" />
+                    <p>No orders found matching criteria</p>
                   </div>
+                </Card>
+              );
+            }
 
-                                    {/* EXPANDED ORDERS */}
-                  {isExpanded && (
-                    <div className="animate-slideDown origin-top">
-                      <div className="rounded-b-xl shadow-lg border-t-0 rounded-t-none border-2 border-indigo-200 bg-gradient-to-b from-indigo-50/30 to-white">
-                        
-                        {/* Sticky Header with Select All / Close */}
-                        <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm border-b-2 border-indigo-200 px-6 py-3 flex items-center justify-between rounded-t-xl">
-                          <div className="flex items-center gap-4">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const orderIds = sortedOrders.map(o => o._id);
-                                if (allOrdersSelected) {
-                                  setSelectedSales(prev => prev.filter(id => !orderIds.includes(id)));
-                                } else {
-                                  setSelectedSales(prev => [...new Set([...prev, ...orderIds])]);
-                                }
-                              }}
-                              className={`px-4 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
-                                allOrdersSelected
-                                  ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                                  : someOrdersSelected
-                                  ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={allOrdersSelected}
-                                readOnly
-                                className="pointer-events-none"
-                              />
-                              {allOrdersSelected ? 'Deselect All' : someOrdersSelected ? 'Select All' : 'Select All'}
-                            </button>
-                            {(someOrdersSelected || allOrdersSelected) && (
-                              <span className="text-sm font-medium text-gray-600">
-                                {sortedOrders.filter(o => selectedSales.includes(o._id)).length}/{sortedOrders.length} selected
-                              </span>
-                            )}
-                          </div>
-                          
-                          {/* Close Button */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setExpandedDate(null);
-                            }}
-                            className="px-4 py-2 bg-red-100 text-red-700 rounded-lg font-medium text-sm hover:bg-red-200 transition-all flex items-center gap-2"
-                          >
-                            <FiXCircle />
-                            Close
-                          </button>
-                        </div>
+            // ✅ RENDER DATE GROUPS
+            return (
+              <>
+                {/* Date Filter Indicator */}
+                {searchQuery && searchType === 'date' && filteredOrders && (
+                  <div className="mx-6 mt-4 mb-6 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg flex items-center justify-between shadow-sm">
+                    <div className="flex items-center gap-3">
+                      <FiSearch className="text-blue-600 text-xl" />
+                      <div>
+                        <p className="font-semibold text-blue-900">Date Filter Active</p>
+                        <p className="text-sm text-blue-700">
+                          Showing {filteredOrders.reduce((sum, dg) => sum + dg.orderCount, 0)} orders for {searchQuery}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={clearSearchFilter}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                    >
+                      <FiX className="text-lg" />
+                      Clear Filter
+                    </button>
+                  </div>
+                )}
 
-                        {searchQuery && searchType === 'date' && (
-                        <div className="mx-6 mt-4 mb-2 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <FiSearch className="text-blue-600 text-xl" />
-                            <div>
-                              <p className="font-semibold text-blue-900">
-                                Filtered by Date: {searchQuery}
-                              </p>
-                              <p className="text-sm text-blue-700">
-                                Showing {filteredOrders?.reduce((sum, dg) => sum + dg.orderCount, 0) || 0} orders
-                              </p>
+                {/* Map through date groups */}
+                {displayOrders.map((dateGroup, idx) => {
+                  // ✅ FIX: Use dateGroup.date for consistent comparison
+                  const isExpanded = expandedDate === dateGroup.date;
+                  
+                  const sortedOrders = [...dateGroup.orders].sort((a, b) => 
+                    new Date(b.saleDate) - new Date(a.saleDate)
+                  );
+
+                  // Account breakdown
+                  const accountBreakdown = dateGroup.orders.reduce((acc, order) => {
+                    if (!acc[order.accountName]) acc[order.accountName] = 0;
+                    acc[order.accountName]++;
+                    return acc;
+                  }, {});
+
+                  // Selection state
+                  const allOrdersSelected = sortedOrders.every(order => selectedSales.includes(order._id));
+                  const someOrdersSelected = sortedOrders.some(order => selectedSales.includes(order._id)) && !allOrdersSelected;
+
+                  return (
+                    <div key={dateGroup.date} className="space-y-0">
+                      {/* DATE HEADER CARD */}
+                      <div
+                        className={`rounded-xl shadow-md cursor-pointer transition-all duration-300 hover:shadow-xl border-2 ${
+                          isExpanded
+                            ? 'bg-gradient-to-r from-indigo-50 via-purple-50 to-pink-50 border-indigo-400 shadow-indigo-200'
+                            : 'bg-white border-gray-200 hover:border-indigo-300'
+                        }`}
+                        onClick={() => setExpandedDate(isExpanded ? null : dateGroup.date)}
+                      >
+                        <div className="p-5">
+                          <div className="flex items-center justify-between">
+                            {/* Left: Date and Order Count */}
+                            <div className="flex items-center gap-4">
+                              <div className={`p-3 rounded-xl ${isExpanded ? 'bg-indigo-600' : 'bg-gray-100'}`}>
+                                {activeTab === 'returned' ? (
+                                  <FiRotateCcw className={`text-2xl ${isExpanded ? 'text-white' : 'text-red-600'}`} />
+                                ) : (
+                                  <FiCalendar className={`text-2xl ${isExpanded ? 'text-white' : 'text-gray-600'}`} />
+                                )}
+                              </div>
+                              <div>
+                                <h3 className={`font-bold text-lg ${isExpanded ? 'text-indigo-900' : 'text-gray-800'}`}>
+                                  <span className="text-sm font-medium text-gray-500 mr-2">
+                                    {activeTab === 'returned' ? 'Returned:' : 'Dispatched:'}
+                                  </span>
+                                  {dateGroup.dateLabel}
+                                </h3>
+                                <p className={`text-sm font-medium ${isExpanded ? 'text-indigo-600' : 'text-gray-500'}`}>
+                                  {dateGroup.orders.length} {dateGroup.orders.length === 1 ? 'Order' : 'Orders'}
+                                  {someOrdersSelected && (
+                                    <span className="ml-2 text-blue-600">
+                                      ({sortedOrders.filter(o => selectedSales.includes(o._id)).length} selected)
+                                    </span>
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Right: Account Breakdown */}
+                            <div className="flex items-center gap-4">
+                              <div className="flex items-center gap-3">
+                                {Object.entries(accountBreakdown).map(([account, count]) => (
+                                  <div
+                                    key={account}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setHighlightedAccount(highlightedAccount === account ? null : account);
+                                    }}
+                                    className={`px-3 py-2 rounded-lg font-medium text-sm transition-all cursor-pointer ${
+                                      highlightedAccount === account
+                                        ? 'bg-indigo-600 text-white ring-2 ring-indigo-300 shadow-md'
+                                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                    }`}
+                                  >
+                                    {account.includes('Flipkart') ? '🛒' : account.includes('Amazon') ? '📦' : account.includes('Meesho') ? '🛍️' : '🏪'}{' '}
+                                    {account} <span className="font-bold">({count})</span>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="transition-transform duration-300" style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>
+                                <FiChevronDown className="text-2xl text-gray-600" />
+                              </div>
                             </div>
                           </div>
-                          <button
-                            onClick={clearSearchFilter}
-                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                          >
-                            <FiX />
-                            Clear Filter
-                          </button>
-                        </div>
-                      )}
-
-                        {/* ORDERS LIST */}
-                        <div className="p-6 space-y-3">
-                          {sortedOrders.map((sale, idx) => {
-                            const isHighlighted = highlightedAccount === sale.accountName || highlightedAccount;
-                            const isSelected = selectedSales.includes(sale._id);
-
-                            return (
-                              <div
-                                key={sale._id}
-                                onClick={(e) => {
-                                  if (e.target.closest('button')) return;
-                                  handleSelectSale(sale._id);
-                                }}
-                                className={`border-2 rounded-xl p-4 transition-all duration-300 cursor-pointer ${
-                                  isHighlighted
-                                    ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-300 scale-1.01'
-                                    : isSelected
-                                    ? 'bg-blue-50 border-blue-400 shadow-md'
-                                    : 'bg-white border-gray-200 hover:border-indigo-300 hover:shadow-md'
-                                }`}
-                              >
-                                <div className="flex items-start justify-between gap-4">
-                                  
-                                  {/* Left: Checkbox + Order Details */}
-                                  <div className="flex items-start gap-4 flex-1">
-                                    <div className="mt-1" onClick={(e) => e.stopPropagation()}>
-                                      <input
-                                        type="checkbox"
-                                        checked={isSelected}
-                                        onChange={() => handleSelectSale(sale._id)}
-                                        className="w-5 h-5 rounded border-gray-300 cursor-pointer"
-                                      />
-                                    </div>
-
-                                    <div className="flex-1">
-                                      {/* Account & Order ID */}
-                                      <div className="flex items-center gap-3 mb-2">
-                                        <span className="text-3xl">
-                                          {sale.accountName.includes('Flipkart') ? '🛒' : sale.accountName.includes('Amazon') ? '📦' : sale.accountName.includes('Meesho') ? '🛍️' : '🏪'}
-                                        </span>
-                                        <div>
-                                          <h4 className="font-bold text-gray-900 text-lg">{sale.accountName}</h4>
-                                          
-                                          {sale.marketplaceOrderId && (
-                                            <div className="flex items-center gap-2 mt-1">
-                                              <span
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  handleCopyOrderId(sale.marketplaceOrderId);
-                                                }}
-                                                className="text-xs text-purple-700 font-mono bg-purple-100 px-2 py-1 rounded cursor-pointer hover:bg-purple-200 transition-colors"
-                                                title="Click to copy"
-                                              >
-                                                🔖 {sale.marketplaceOrderId}
-                                              </span>
-                                            </div>
-                                          )}
-                                          {/* Order Item ID Display */}
-                                          {sale.orderItemId && (
-                                            <div className="flex items-center gap-2 mt-1">
-                                              <span
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  handleCopyOrderId(sale.orderItemId);
-                                                }}
-                                                className="text-xs text-blue-700 font-mono bg-blue-100 px-2 py-1 rounded cursor-pointer hover:bg-blue-200 transition-colors"
-                                                title="Click to copy Order Item ID"
-                                              >
-                                                {sale.orderItemId}
-                                              </span>
-                                            </div>
-                                          )}
-                                          
-                                          <p className="text-xs text-gray-500">
-                                            Order #{idx + 1} • {format(new Date(sale.createdAt), 'hh:mm a')}
-                                          </p>
-                                        </div>
-                                      </div>
-
-                                      {/* Product Details */}
-                                      <div className="bg-gray-50 rounded-lg p-3 mb-2">
-                                        <div className="grid grid-cols-3 gap-4 text-sm">
-                                          <div>
-                                            <p className="text-xs text-gray-500 mb-1">Product</p>
-                                            <p className="font-semibold text-gray-900">{sale.design}</p>
-                                          </div>
-                                          <div>
-                                            <p className="text-xs text-gray-500 mb-1">Variant</p>
-                                            <p className="font-medium text-gray-700">{sale.color} {sale.size}</p>
-                                          </div>
-                                          <div>
-                                            <p className="text-xs text-gray-500 mb-1">Quantity</p>
-                                            <p className="font-bold text-gray-900">{sale.quantity}</p>
-                                          </div>
-                                        </div>
-
-                                        {/* ✅ NEW: Show dispatch date for returned/cancelled/wrongreturn orders */}
-                                        {['returned', 'cancelled', 'wrongreturn'].includes(sale.status) && (
-                                          <div className="mt-3 pt-3 border-t border-gray-200">
-                                            <div className="flex items-center justify-between text-xs">
-                                              <div className="flex items-center gap-2 text-gray-600">
-                                                <FiPackage className="text-blue-600" />
-                                                <span>Dispatched:</span>
-                                                <span className="font-semibold text-gray-800">
-                                                  {formatDateCustom(sale.saleDate)}
-                                                </span>
-                                              </div>
-                                              <div className="flex items-center gap-2 text-red-600">
-                                                <FiRotateCcw />
-                                                <span>
-                                                  {sale.status === 'returned' ? 'Returned' : sale.status === 'cancelled' ? 'Cancelled' : 'Wrong Return'}:
-                                                </span>
-                                                <span className="font-semibold">
-                                                  {formatDateCustom(sale.displayDate || sale.saleDate)}
-                                                </span>
-                                              </div>
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Notes */}
-                                      {sale.notes && (
-                                        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-2 text-sm text-gray-700 italic rounded">
-                                          {sale.notes}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  {/* Right: Status & Actions */}
-                                  <div className="flex flex-col items-end gap-3">
-                                    {getStatusBadge(sale.status)}
-                                    
-                                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                      <button
-                                        onClick={() => setViewingHistory(sale)}
-                                        className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                                        title="View History"
-                                      >
-                                        <FiClock className="text-gray-600" />
-                                      </button>
-                                      <button
-                                        onClick={() => handleEdit(sale)}
-                                        className="p-2 hover:bg-indigo-100 rounded-lg transition-colors"
-                                        title="Edit Status"
-                                      >
-                                        <FiEdit2 className="text-indigo-600" />
-                                      </button>
-                                      {isAdmin && (
-                                        <button
-                                          onClick={() => handleDelete(sale._id)}
-                                          className="p-2 hover:bg-red-100 rounded-lg transition-colors"
-                                          title="Delete"
-                                        >
-                                          <FiTrash2 className="text-red-600" />
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
                         </div>
                       </div>
+
+                      {/* EXPANDED ORDERS */}
+                      {isExpanded && (
+                        <div className="animate-slideDown origin-top">
+                          <div className="rounded-b-xl shadow-lg border-t-0 rounded-t-none border-2 border-indigo-200 bg-gradient-to-b from-indigo-50/30 to-white">
+                            
+                            {/* Sticky Header with Select All / Close */}
+                            <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm border-b-2 border-indigo-200 px-6 py-3 flex items-center justify-between rounded-t-xl">
+                              <div className="flex items-center gap-4">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const orderIds = sortedOrders.map(o => o._id);
+                                    if (allOrdersSelected) {
+                                      setSelectedSales(prev => prev.filter(id => !orderIds.includes(id)));
+                                    } else {
+                                      setSelectedSales(prev => [...new Set([...prev, ...orderIds])]);
+                                    }
+                                  }}
+                                  className={`px-4 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+                                    allOrdersSelected
+                                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                      : someOrdersSelected
+                                      ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={allOrdersSelected}
+                                    readOnly
+                                    className="pointer-events-none"
+                                  />
+                                  {allOrdersSelected ? 'Deselect All' : someOrdersSelected ? 'Select All' : 'Select All'}
+                                </button>
+                                {(someOrdersSelected || allOrdersSelected) && (
+                                  <span className="text-sm font-medium text-gray-600">
+                                    {sortedOrders.filter(o => selectedSales.includes(o._id)).length}/{sortedOrders.length} selected
+                                  </span>
+                                )}
+                              </div>
+                              
+                              {/* Close Button */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedDate(null);
+                                }}
+                                className="px-4 py-2 bg-red-100 text-red-700 rounded-lg font-medium text-sm hover:bg-red-200 transition-all flex items-center gap-2"
+                              >
+                                <FiXCircle />
+                                Close
+                              </button>
+                            </div>
+
+                            {/* ORDERS LIST */}
+                            <div className="p-6 space-y-3">
+                              {sortedOrders.map((sale, saleIdx) => {
+                                const isHighlighted = highlightedAccount === sale.accountName;
+                                const isSelected = selectedSales.includes(sale._id);
+
+                                return (
+                                  <div
+                                    key={sale._id}
+                                    onClick={(e) => {
+                                      if (e.target.closest('button')) return;
+                                      handleSelectSale(sale._id);
+                                    }}
+                                    className={`border-2 rounded-xl p-4 transition-all duration-300 cursor-pointer ${
+                                      isHighlighted
+                                        ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-300 scale-1.01'
+                                        : isSelected
+                                        ? 'bg-blue-50 border-blue-400 shadow-md'
+                                        : 'bg-white border-gray-200 hover:border-indigo-300 hover:shadow-md'
+                                    }`}
+                                  >
+                                    {/* Your existing order card content here - keep everything the same */}
+                                    <div className="flex items-start justify-between gap-4">
+                                      {/* ... rest of your order card JSX ... */}
+                                      <div className="flex items-start gap-4 flex-1">
+                                        <div className="mt-1" onClick={(e) => e.stopPropagation()}>
+                                          <input
+                                            type="checkbox"
+                                            checked={isSelected}
+                                            onChange={() => handleSelectSale(sale._id)}
+                                            className="w-5 h-5 rounded border-gray-300 cursor-pointer"
+                                          />
+                                        </div>
+
+                                        <div className="flex-1">
+                                          {/* Account & Order ID */}
+                                          <div className="flex items-center gap-3 mb-2">
+                                            <span className="text-3xl">
+                                              {sale.accountName.includes('Flipkart') ? '🛒' : sale.accountName.includes('Amazon') ? '📦' : sale.accountName.includes('Meesho') ? '🛍️' : '🏪'}
+                                            </span>
+                                            <div>
+                                              <h4 className="font-bold text-gray-900 text-lg">{sale.accountName}</h4>
+                                              
+                                              {sale.marketplaceOrderId && (
+                                                <div className="flex items-center gap-2 mt-1">
+                                                  <span
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleCopyOrderId(sale.marketplaceOrderId);
+                                                    }}
+                                                    className="text-xs text-purple-700 font-mono bg-purple-100 px-2 py-1 rounded cursor-pointer hover:bg-purple-200 transition-colors"
+                                                    title="Click to copy"
+                                                  >
+                                                    🔖 {sale.marketplaceOrderId}
+                                                  </span>
+                                                </div>
+                                              )}
+                                              {sale.orderItemId && (
+                                                <div className="flex items-center gap-2 mt-1">
+                                                  <span
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleCopyOrderId(sale.orderItemId);
+                                                    }}
+                                                    className="text-xs text-blue-700 font-mono bg-blue-100 px-2 py-1 rounded cursor-pointer hover:bg-blue-200 transition-colors"
+                                                    title="Click to copy Order Item ID"
+                                                  >
+                                                    {sale.orderItemId}
+                                                  </span>
+                                                </div>
+                                              )}
+                                              
+                                              <p className="text-xs text-gray-500">
+                                                Order #{saleIdx + 1} • {format(new Date(sale.createdAt), 'hh:mm a')}
+                                              </p>
+                                            </div>
+                                          </div>
+
+                                          {/* Product Details */}
+                                          <div className="bg-gray-50 rounded-lg p-3 mb-2">
+                                            <div className="grid grid-cols-3 gap-4 text-sm">
+                                              <div>
+                                                <p className="text-xs text-gray-500 mb-1">Product</p>
+                                                <p className="font-semibold text-gray-900">{sale.design}</p>
+                                              </div>
+                                              <div>
+                                                <p className="text-xs text-gray-500 mb-1">Variant</p>
+                                                <p className="font-medium text-gray-700">{sale.color} {sale.size}</p>
+                                              </div>
+                                              <div>
+                                                <p className="text-xs text-gray-500 mb-1">Quantity</p>
+                                                <p className="font-bold text-gray-900">{sale.quantity}</p>
+                                              </div>
+                                            </div>
+
+                                            {['returned', 'cancelled', 'wrongreturn'].includes(sale.status) && (
+                                              <div className="mt-3 pt-3 border-t border-gray-200">
+                                                <div className="flex items-center justify-between text-xs">
+                                                  <div className="flex items-center gap-2 text-gray-600">
+                                                    <FiPackage className="text-blue-600" />
+                                                    <span>Dispatched:</span>
+                                                    <span className="font-semibold text-gray-800">
+                                                      {formatDateCustom(sale.saleDate)}
+                                                    </span>
+                                                  </div>
+                                                  <div className="flex items-center gap-2 text-red-600">
+                                                    <FiRotateCcw />
+                                                    <span>
+                                                      {sale.status === 'returned' ? 'Returned' : sale.status === 'cancelled' ? 'Cancelled' : 'Wrong Return'}:
+                                                    </span>
+                                                    <span className="font-semibold">
+                                                      {formatDateCustom(sale.displayDate || sale.saleDate)}
+                                                    </span>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {sale.notes && (
+                                            <div className="bg-yellow-50 border-l-4 border-yellow-400 p-2 text-sm text-gray-700 italic rounded">
+                                              {sale.notes}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+
+                                      {/* Right: Status & Actions */}
+                                      <div className="flex flex-col items-end gap-3">
+                                        {getStatusBadge(sale.status)}
+                                        
+                                        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                          <button
+                                            onClick={() => setViewingHistory(sale)}
+                                            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                                            title="View History"
+                                          >
+                                            <FiClock className="text-gray-600" />
+                                          </button>
+                                          <button
+                                            onClick={() => handleEdit(sale)}
+                                            className="p-2 hover:bg-indigo-100 rounded-lg transition-colors"
+                                            title="Edit Status"
+                                          >
+                                            <FiEdit2 className="text-indigo-600" />
+                                          </button>
+                                          {isAdmin && (
+                                            <button
+                                              onClick={() => handleDelete(sale._id)}
+                                              className="p-2 hover:bg-red-100 rounded-lg transition-colors"
+                                              title="Delete"
+                                            >
+                                              <FiTrash2 className="text-red-600" />
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              );
-            });
+                  );
+                })}
+              </>
+            );
           })()
         )}
       </div>
 
-              {/* ============ FLOATING BULK ACTION BAR ============ */}
+      {/* ============ FLOATING BULK ACTION BAR ============ */}
       {selectedSales.length > 0 && activeTab !== 'settlements' && (
         <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-6 z-50 animate-bounce-in">
           <span className="font-semibold">{selectedSales.length} selected</span>
