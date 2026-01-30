@@ -2237,22 +2237,22 @@ const handleUpdateBillNumber = async () => {
                   <div
                     key={challan.challanId}
                     className={`p-3 rounded-lg border-2 transition-all cursor-pointer ${
-                      customizeForm.removeChallans.includes(challan.challanId.toString())
+                      customizeForm.removeChallans.includes(challan.challanId?.toString())
                         ? 'bg-red-50 border-red-300'
                         : 'bg-white border-slate-200 hover:border-slate-300'
                     }`}
-                    onClick={() => toggleChallanRemoval(challan.challanId.toString())}
+                    onClick={() => toggleChallanRemoval(challan.challanId?.toString())}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <div
                           className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
-                            customizeForm.removeChallans.includes(challan.challanId.toString())
+                            customizeForm.removeChallans.includes(challan.challanId?.toString())
                               ? 'bg-red-600 border-red-600'
                               : 'bg-white border-slate-300'
                           }`}
                         >
-                          {customizeForm.removeChallans.includes(challan.challanId.toString()) && (
+                          {customizeForm.removeChallans.includes(challan.challanId?.toString()) && (
                             <FiX className="w-3 h-3 text-white" />
                           )}
                         </div>
