@@ -1202,6 +1202,11 @@ exports.updateSale = async (req, res) => {
       });
     }
 
+    // ✅ ADD THIS - Ensure tenantId is always present
+    if (!sale.tenantId) {
+      sale.tenantId = organizationId;
+    }
+
     const oldStatus = sale.status;
     const oldQuantity = sale.quantity;
     const oldDesign = sale.design;
@@ -1666,6 +1671,9 @@ exports.updateSale = async (req, res) => {
         sale.status = status;
       }
 
+      if (!sale.tenantId) {
+        sale.tenantId = organizationId;
+      }
     await sale.save({ session });
     await session.commitTransaction();
     await decrementEditSession(req, 'edit', 'sales', req.params.id);
@@ -1758,6 +1766,11 @@ exports.deleteSale = async (req, res) => {
     sale.deletedAt = new Date();
     sale.deletedBy = userId;
     sale.deletionReason = 'User initiated deletion';
+
+    if (!sale.tenantId) {
+      sale.tenantId = organizationId;
+    }
+    
     await sale.save({ session });
 
     // ✅ Decrement edit session
