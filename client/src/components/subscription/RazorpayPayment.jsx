@@ -2,26 +2,23 @@
 import { useState } from 'react';
 import { paymentService } from '../../services/paymentService';
 import toast from 'react-hot-toast';
+import ManualPaymentModal from './ManualPaymentModal'; // NEW IMPORT
 
-const RazorpayPayment = ({ 
-  planType, 
-  planName, 
-  onSuccess, 
-  onError,
-  user,
-  children 
-}) => {
+const RazorpayPayment = ({ planType, planName, onSuccess, onError, user, children }) => {
   const [loading, setLoading] = useState(false);
   const [showProration, setShowProration] = useState(false);
   const [prorationDetails, setProrationDetails] = useState(null);
+  
+  // NEW STATE
+  const [showManualPayment, setShowManualPayment] = useState(false);
+  const [manualPaymentData, setManualPaymentData] = useState(null);
 
   const handlePayment = async () => {
     setLoading(true);
-
     try {
       // Create order
       const orderData = await paymentService.createPaymentOrder(planType);
-
+      
       if (!orderData.success) {
         throw new Error(orderData.message);
       }
@@ -93,12 +90,56 @@ const RazorpayPayment = ({
 
       // Open Razorpay checkout
       const razorpay = new window.Razorpay(options);
+      
+      // NEW: Handle Razorpay payment failure
+      razorpay.on('payment.failed', function (response) {
+        console.error('Razorpay payment failed:', response.error);
+        setLoading(false);
+        
+        // Show manual payment modal as fallback
+        toast.error('Payment failed. Opening manual payment option...');
+        setManualPaymentData({
+          planType,
+          planName,
+          amount: amount / 100, // Convert from paise to rupees
+          razorpayOrderId: orderId
+        });
+        setShowManualPayment(true);
+      });
+
       razorpay.open();
 
     } catch (error) {
       console.error('Payment initiation error:', error);
-      toast.error(error.response?.data?.message || 'Failed to initiate payment');
-      if (onError) onError(error);
+      
+      // NEW: Show manual payment modal as fallback on error
+      const errorMessage = error.response?.data?.message || error.message || '';
+      
+      // Check if it's a Razorpay API error (test keys in production)
+      if (
+        errorMessage.includes('API') || 
+        errorMessage.includes('key') ||
+        errorMessage.includes('test') ||
+        error.response?.status === 400 ||
+        error.response?.status === 401
+      ) {
+        toast.error('Payment gateway unavailable. Opening manual payment option...');
+        
+        // Try to get amount from order data or use default
+        const amountInRupees = orderData?.data?.amount ? orderData.data.amount / 100 : 0;
+        
+        setManualPaymentData({
+          planType,
+          planName,
+          amount: amountInRupees,
+          razorpayOrderId: orderData?.data?.orderId || null
+        });
+        setShowManualPayment(true);
+      } else {
+        toast.error(errorMessage || 'Failed to initiate payment');
+        if (onError) onError(error);
+      }
+      
       setLoading(false);
     }
   };
@@ -107,83 +148,46 @@ const RazorpayPayment = ({
     <>
       {/* Proration Details Modal */}
       {showProration && prorationDetails && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full">
-            <h3 className="text-lg font-semibold mb-4">💰 Upgrade Credit Applied!</h3>
-            
-            <div className="space-y-2 mb-4 text-sm">
-              <div className="flex justify-between">
-                <span>Plan Price:</span>
-                <span>₹{prorationDetails.baseAmountRupees.toFixed(2)}</span>
-              </div>
-              
-              {prorationDetails.creditedRupees > 0 && (
-                <div className="flex justify-between text-green-600 font-medium">
-                  <span>Credit Applied:</span>
-                  <span>-₹{prorationDetails.creditedRupees.toFixed(2)}</span>
-                </div>
-              )}
-              
-              <div className="flex justify-between">
-                <span>GST (18%):</span>
-                <span>₹{prorationDetails.gstAmountRupees.toFixed(2)}</span>
-              </div>
-              
-              <div className="border-t pt-2 flex justify-between font-bold text-lg">
-                <span>Total:</span>
-                <span>₹{prorationDetails.totalAmountRupees.toFixed(2)}</span>
-              </div>
-            </div>
-
-            {prorationDetails.daysRemaining > 0 && (
-              <p className="text-sm text-gray-600 mb-4">
-                🎁 You had {prorationDetails.daysRemaining} days remaining, credit adjusted!
-              </p>
-            )}
-
-            <div className="flex gap-3">
-              <button
-                onClick={() => setShowProration(false)}
-                className="flex-1 px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShowProration(false);
-                  // Razorpay will open automatically
-                }}
-                className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-              >
-                Proceed to Pay
-              </button>
-            </div>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md mx-4">
+            <h3 className="text-lg font-bold mb-4">🎁 Credit Applied!</h3>
+            <p className="text-gray-700 mb-4">
+              You had {prorationDetails.daysRemaining} days remaining on your previous plan.
+              We've credited ₹{prorationDetails.creditedRupees} to your new subscription!
+            </p>
+            <button
+              onClick={() => setShowProration(false)}
+              className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700"
+            >
+              Continue
+            </button>
           </div>
         </div>
       )}
 
-      {/* Render children with handlePayment function */}
-      {typeof children === 'function' ? (
-        children({ handlePayment, loading })
-      ) : (
-        <button
-          onClick={handlePayment}
-          disabled={loading}
-          className="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition"
-        >
-          {loading ? (
-            <span className="flex items-center justify-center gap-2">
-              <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-              Processing...
-            </span>
-          ) : (
-            `Subscribe to ${planName}`
-          )}
-        </button>
+      {/* NEW: Manual Payment Modal */}
+      {showManualPayment && manualPaymentData && (
+        <ManualPaymentModal
+          planType={manualPaymentData.planType}
+          planName={manualPaymentData.planName}
+          amount={manualPaymentData.amount}
+          razorpayOrderId={manualPaymentData.razorpayOrderId}
+          onClose={() => {
+            setShowManualPayment(false);
+            setManualPaymentData(null);
+          }}
+          onSuccess={() => {
+            setShowManualPayment(false);
+            setManualPaymentData(null);
+            if (onSuccess) onSuccess();
+          }}
+        />
       )}
+
+      {/* Payment trigger button */}
+      <button onClick={handlePayment} disabled={loading}>
+        {loading ? 'Processing...' : children}
+      </button>
     </>
   );
 };
