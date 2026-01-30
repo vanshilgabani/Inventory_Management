@@ -169,6 +169,27 @@ exports.approvePaymentRequest = async (req, res) => {
 
     const user = await User.findById(userId).session(session);
 
+    // ✅ Generate invoice number
+    const generateInvoiceNumber = async () => {
+      const date = new Date();
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      
+      // Count invoices this month for user
+      const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
+      const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+      
+      const Invoice = require('../models/Invoice');
+      const count = await Invoice.countDocuments({
+        userId,
+        createdAt: { $gte: startOfMonth, $lte: endOfMonth }
+      }).session(session);
+
+      return `INV-${year}${month}-${String(count + 1).padStart(4, '0')}`;
+    };
+
+    const invoiceNumber = await generateInvoiceNumber();
+
     if (planType === 'yearly') {
       const startDate = new Date();
       const endDate = new Date();
@@ -186,9 +207,11 @@ exports.approvePaymentRequest = async (req, res) => {
       await subscription.save({ session });
 
       // Create invoice
+      const Invoice = require('../models/Invoice');
       const invoice = await Invoice.create([{
         userId,
         organizationId: paymentRequest.organizationId,
+        invoiceNumber, // ✅ Added
         customerName: user.name,
         customerEmail: user.email,
         customerPhone: user.phone,
@@ -208,6 +231,7 @@ exports.approvePaymentRequest = async (req, res) => {
         status: 'paid',
         paidAt: new Date(),
         paymentMethod: paymentMethod === 'upi' ? 'UPI (Manual)' : 'Cash',
+        paymentTransactionId: `MANUAL-${requestId}`, // ✅ Added reference
         paymentDueDate: new Date(),
         generatedAt: new Date(),
         sentAt: new Date()
@@ -230,9 +254,11 @@ exports.approvePaymentRequest = async (req, res) => {
       await subscription.save({ session });
 
       // Create invoice
+      const Invoice = require('../models/Invoice');
       await Invoice.create([{
         userId,
         organizationId: paymentRequest.organizationId,
+        invoiceNumber, // ✅ Added
         customerName: user.name,
         customerEmail: user.email,
         customerPhone: user.phone,
@@ -252,6 +278,7 @@ exports.approvePaymentRequest = async (req, res) => {
         status: 'paid',
         paidAt: new Date(),
         paymentMethod: paymentMethod === 'upi' ? 'UPI (Manual)' : 'Cash',
+        paymentTransactionId: `MANUAL-${requestId}`, // ✅ Added reference
         paymentDueDate: new Date(),
         generatedAt: new Date(),
         sentAt: new Date()
@@ -277,6 +304,8 @@ exports.approvePaymentRequest = async (req, res) => {
       subscription.notificationsSent = {};
 
       await subscription.save({ session });
+      
+      // ✅ No invoice needed for order-based as it's postpaid
     }
 
     // Update payment request status
@@ -291,7 +320,8 @@ exports.approvePaymentRequest = async (req, res) => {
       requestId,
       userId,
       planType,
-      adminId
+      adminId,
+      invoiceNumber
     });
 
     res.json({
