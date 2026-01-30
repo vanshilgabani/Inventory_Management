@@ -54,6 +54,7 @@ const MonthlyBills = () => {
   const isAdmin = user?.role === 'admin';
 
   // Data states
+  const [adjustPreviousUnbilled, setAdjustPreviousUnbilled] = useState(0);
   const [bills, setBills] = useState([]);
   const [buyers, setBuyers] = useState([]);
   const [stats, setStats] = useState(null);
@@ -471,7 +472,8 @@ const handleSplitBill = async () => {
 
       const result = await monthlyBillService.generateBill({
         ...generateForm,
-        companyId: companyIdToUse
+        companyId: companyIdToUse,
+        adjustPreviousUnbilled: adjustPreviousUnbilled
       });
 
       // Close generate modal
@@ -486,12 +488,6 @@ const handleSplitBill = async () => {
 
         // Refresh data
         await fetchInitialData();
-
-        // Auto-open customize modal
-        setTimeout(() => {
-          const createdBill = bills.find(b => b._id === result.data._id) || result.data;
-          openCustomizeModal(createdBill);
-        }, 500);
 
       } else {
         toast.success('Bill generated successfully!');
@@ -1937,6 +1933,67 @@ const handleUpdateBillNumber = async () => {
                     </div>
                   </div>
                 </div>
+
+                    {/* 🔥 NEW: Adjustment Input - ADD THIS ENTIRE SECTION */}
+                    <div className="p-5 bg-white rounded-xl border-2 border-orange-200">
+                      <label className="block text-sm font-semibold text-slate-700 mb-3">
+                        <div className="flex items-center gap-2">
+                          <FiAlertCircle className="w-4 h-4 text-orange-600" />
+                          <span>Adjust Previous Unbilled Amount (Optional)</span>
+                        </div>
+                      </label>
+                      
+                      <div className="relative mb-2">
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-600 font-semibold">₹</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={adjustPreviousUnbilled}
+                          onChange={(e) => setAdjustPreviousUnbilled(parseFloat(e.target.value) || 0)}
+                          className="w-full pl-8 pr-4 py-3 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent font-semibold text-slate-900"
+                          placeholder="0.00"
+                        />
+                      </div>
+                      
+                      <p className="text-xs text-slate-600 mb-3">
+                        Enter amount if products were supplied but not billed previously. System will add matching products automatically.
+                      </p>
+                      
+                      {adjustPreviousUnbilled > 0 && (
+                        <div className="p-3 bg-orange-50 border border-orange-300 rounded-lg">
+                          <div className="flex items-start gap-2">
+                            <FiAlertCircle className="w-4 h-4 text-orange-600 flex-shrink-0 mt-0.5" />
+                            <div className="text-xs text-orange-800">
+                              <p className="font-semibold mb-1">What will happen:</p>
+                              <ul className="space-y-1 list-disc list-inside">
+                                <li>Products worth <strong>₹{adjustPreviousUnbilled.toFixed(2)}</strong> will be added</li>
+                                <li>No separate mention - just increased quantities</li>
+                                <li>Bill total will increase accordingly</li>
+                                <li>GST will be calculated on adjusted total</li>
+                              </ul>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Quick Amount Buttons */}
+                      {adjustPreviousUnbilled === 0 && (
+                        <div className="flex gap-2 mt-3">
+                          <span className="text-xs text-slate-600 mt-1">Quick:</span>
+                          {[1000, 2000, 3000, 5000].map(amount => (
+                            <button
+                              key={amount}
+                              type="button"
+                              onClick={() => setAdjustPreviousUnbilled(amount)}
+                              className="px-3 py-1 text-xs bg-slate-100 hover:bg-orange-100 hover:text-orange-700 text-slate-700 rounded border border-slate-300 hover:border-orange-400 transition-all font-medium"
+                            >
+                              ₹{amount}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
 
                 {/* Warning Box */}
                 <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-3">

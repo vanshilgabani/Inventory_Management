@@ -12,8 +12,8 @@ const app = express();
 // Middleware
 app.use(cors());
 // Increase payload limit for CSV imports
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '500mb' }));
+app.use(express.urlencoded({ limit: '500mb', extended: true }));
 app.use(express.urlencoded({ extended: true }));
 
 // Health check endpoint for Render
@@ -51,6 +51,13 @@ const initCronJobs = require('./src/utils/cronJobs');
 const actionLogRoutes = require('./src/routes/actionLogRoutes');
 const pendingRequestRoutes = require('./src/routes/pendingRequestRoutes');
 const deletedOrdersRoutes = require('./src/routes/deletedOrdersRoutes');
+const subscriptionRoutes = require('./src/routes/subscriptionRoutes');
+const tenantSettingsRoutes = require('./src/routes/tenantSettingsRoutes');
+const syncRoutes = require('./src/routes/syncRoutes');
+const supplierSyncRoutes = require('./src/routes/supplierSyncRoutes');
+const adminRoutes = require('./src/routes/adminRoutes');
+const paymentRoutes = require('./src/routes/paymentRoutes');
+const skuMappingRoutes = require('./src/routes/skuMappingRoutes');
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -71,6 +78,14 @@ app.use('/api/monthly-bills', monthlyBillRoutes);
 app.use('/api/action-logs', actionLogRoutes);
 app.use('/api/pending-requests', pendingRequestRoutes);
 app.use('/api/deleted-orders', deletedOrdersRoutes);
+app.use('/api/subscription', subscriptionRoutes);
+app.use('/api/tenant-settings', tenantSettingsRoutes);
+app.use('/api/sync', syncRoutes);
+app.use('/api/supplier-sync', supplierSyncRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/payment', paymentRoutes);
+app.use('/api/sku-mappings', skuMappingRoutes);
+
 
 // Test route
 app.get('/', (req, res) => {

@@ -225,6 +225,19 @@ const wholesaleBuyerSchema = new mongoose.Schema({
     default: null
   },
   
+  customerTenantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  
+  // 🆕 NEW: Sync preference
+  syncPreference: {
+    type: String,
+    enum: ['direct', 'manual'],
+    default: 'direct'
+  },
+
   // Old bulk payments - keep for backward compatibility
   bulkPayments: [bulkPaymentSchema],
   
@@ -233,6 +246,46 @@ const wholesaleBuyerSchema = new mongoose.Schema({
     default: 0
   },
   
+  syncEnabled: {
+    type: Boolean,
+    default: false
+  },
+  lastSyncedAt: {
+    type: Date,
+    default: null
+  },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+
+  customerUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+    // Reference to their User account
+  },
+
+  isCustomer: {
+    type: Boolean,
+    default: false
+    // True when they've signed up for the system
+  },
+
+  invitedAt: {
+    type: Date,
+    default: null
+  },
+
+  joinedAt: {
+    type: Date,
+    default: null
+  },
+
+  inviteStatus: {
+    type: String,
+    enum: ['not_invited', 'invited', 'accepted'],
+    default: 'not_invited'
+  },
+
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

@@ -13,14 +13,23 @@ const {
   importFromCSV,
   searchSales,
   getOrdersByDate,
-  getDateSummary
+  getDateSummary,
+  searchOrderGlobally,
+  getStatsForCards,
+  getOrdersByDateGroups,
+  searchByDate
 } = require('../controllers/salesController');
 const { protect } = require('../middleware/auth');
 const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
 
+router.get('/stats-cards', protect, getStatsForCards);
+router.get('/by-date-groups', protect, getOrdersByDateGroups);
+router.get('/search-by-date', protect, searchByDate);
+
 router.get('/dates-summary', protect, getDateSummary);
 router.get('/by-date', protect, getOrdersByDate);
 router.get('/search', protect, searchSales);
+router.get('/search-global', protect, searchOrderGlobally);
 
 // Create routes (no middleware needed)
 router.post('/', protect, createSale);

@@ -521,72 +521,82 @@ const handleReturnSubmit = async (e) => {
 };
 
 
-    const handleEdit = async (colorData, designGroup) => {
-    if (!isAdmin) {
-      toast.error('Only admins can edit receivings');
-      return;
-    }
+const handleEdit = async (colorData, designGroup) => {
+  if (!isAdmin) {
+    toast.error('Only admins can edit receivings');
+    return;
+  }
 
-    const individualReceivings = designGroup.receivingIds
-      .map(id => receivings.find(r => r._id === id || r.id === id))  // ✅ Check both _id and id
-      .filter(Boolean);
+  // ✅ FIXED: Get ONLY the receivings for THIS specific color
+  const individualReceivings = colorData.receivingIds
+    .map(id => receivings.find(r => (r._id === id || r.id === id)))
+    .filter(Boolean);
 
-    // ✅ Log to debug
-    console.log('📝 Individual receivings for edit:', individualReceivings);
-    console.log('📝 IDs:', individualReceivings.map(r => r._id || r.id));
+  // Log to debug
+  console.log('📝 Individual receivings for edit (SINGLE COLOR):', individualReceivings);
+  console.log('🎨 Editing color:', colorData.color);
+  console.log('📦 IDs:', individualReceivings.map(r => r._id || r.id));
 
-    const hasCorruptedData = individualReceivings.some((r) => {
-      const quantities = r.quantities instanceof Map
-        ? Object.fromEntries(r.quantities)
-        : r.quantities;
-      const hasValidQuantities = Object.keys(quantities).some((key) =>
-        key !== 'undefined' && enabledSizes.includes(key) && quantities[key] > 0
-      );
-      return !r.size && (!hasValidQuantities || quantities.hasOwnProperty('undefined'));
+  // Check for corrupted data
+  const hasCorruptedData = individualReceivings.some((r) => {
+    const quantities = r.quantities instanceof Map 
+      ? Object.fromEntries(r.quantities) 
+      : r.quantities;
+    
+    const hasValidQuantities = Object.keys(quantities).some(
+      (key) => key !== 'undefined' && enabledSizes.includes(key) && quantities[key] > 0
+    );
+    
+    return !r.size && (!hasValidQuantities || quantities.hasOwnProperty('undefined'));
+  });
+
+  if (hasCorruptedData) {
+    toast.error('This receiving has corrupted data. Please delete and recreate it.', {
+      duration: 5000,
     });
+    return;
+  }
 
-    if (hasCorruptedData) {
-      toast.error('This receiving has corrupted data. Please delete and recreate it.', {
-        duration: 5000
-      });
-      return;
-    }
+  setEditMode(true);
+  setEditingReceivings(individualReceivings);
 
-    setEditMode(true);
-    setEditingReceivings(individualReceivings);
-
-    // Create single entry for edit mode
-    const entry = {
-      id: Date.now(),
-      selectedDesign: designGroup.design,
-      isNewProduct: false,
-      batchId: designGroup.batchIds?.join(', ') || '',
-      notes: designGroup.notes || '',
-      stockData: {},
-      description: '',
-      wholesalePrice: '',
-      retailPrice: '',
-      sourceType: designGroup.sourceType || 'factory',
-      sourceName: designGroup.sourceName || '',
-      returnDueDate: designGroup.returnDueDate || ''
-    };
-
-    // Build edit stock data
-    const editStockData = {};
-    const pieces = {};
-    enabledSizes.forEach((size) => {
-      pieces[size] = colorData.quantities[size] || 0;
-    });
-    editStockData[colorData.color] = {
-      mode: 'pieces',
-      sets: 0,
-      pieces: pieces
-    };
-
-    entry.stockData = editStockData;
-    setDesignEntries([entry]);
-    setShowModal(true);
+  // Create single entry for edit mode
+  const entry = {
+    id: Date.now(),
+    selectedDesign: designGroup.design,
+    isNewProduct: false,
+    batchId: designGroup.batchIds?.join(', ') || '',
+    notes: designGroup.notes || '',
+    stockData: {},
+    description: '',
+    wholesalePrice: '',
+    retailPrice: '',
+    sourceType: designGroup.sourceType || 'factory',
+    sourceName: designGroup.sourceName || '',
+    returnDueDate: designGroup.returnDueDate,
   };
+
+  // ✅ FIXED: Build edit stock data for ONLY this color
+  const editStockData = {};
+  const pieces = {};
+  
+  enabledSizes.forEach((size) => {
+    pieces[size] = colorData.quantities[size] || 0;
+  });
+
+  editStockData[colorData.color] = {
+    mode: 'pieces',
+    sets: 0,
+    pieces: pieces,
+  };
+
+  entry.stockData = editStockData;
+  
+  console.log('✅ Edit entry created for single color:', entry);
+  
+  setDesignEntries([entry]);
+  setShowModal(true);
+};
 
 const handleDelete = async (groupedReceiving) => {
   if (!isAdmin) {
@@ -657,39 +667,40 @@ const handleDelete = async (groupedReceiving) => {
     setDesignEntries(prev => prev.filter(entry => entry.id !== entryId));
   };
 
-// UPDATED Handle design change for specific entry
+// UPDATED: Handle design change for specific entry
 const handleDesignChange = (entryId, value) => {
   setDesignEntries(prev => prev.map(entry => {
     if (entry.id === entryId) {
       const existingProduct = products.find(p => p.design === value);
-      const isNew = value === 'new' || !existingProduct || value === '';
+      const isNew = value === 'new' || (!existingProduct && !!value);
       
       const initialStockData = {};
       
-      // For existing products, initialize with their actual colors from products
       if (!isNew) {
-        const existingColors = existingProduct?.colors;
-        existingColors.forEach(colorObj => {
+        // ✅ FIXED: Use colors from palette hook
+        const availableColors = getColorsForDesign(value);
+        
+        availableColors.forEach(colorObj => {
           const pieces = {};
           enabledSizes.forEach(size => {
             pieces[size] = 0;
           });
-          initialStockData[colorObj.color] = {
+          
+          initialStockData[colorObj.colorName] = {
             mode: 'sets',
             sets: 0,
             pieces: pieces
           };
         });
       }
-      // For new products: leave stockData empty - user will select colors from palette
       
       return {
         ...entry,
         selectedDesign: value === 'new' ? 'new' : value,
         isNewProduct: isNew,
         stockData: initialStockData,
-        wholesalePrice: isNew ? '' : entry.wholesalePrice,
-        retailPrice: isNew ? '' : entry.retailPrice
+        wholesalePrice: isNew ? entry.wholesalePrice : '',
+        retailPrice: isNew ? entry.retailPrice : ''
       };
     }
     return entry;
@@ -1496,399 +1507,352 @@ const handleSubmit = async (e) => {
         </div>
       )}
 
-      {/* Add/Edit Receiving Modal */}
-      <Modal
-        isOpen={showModal}
-        onClose={() => {
+{/* Add/Edit Receiving Modal */}
+<Modal
+  isOpen={showModal}
+  onClose={() => {
+    setShowModal(false);
+    resetForm();
+  }}
+  title={editMode ? 'Edit Receiving' : 'Receive Stock'}
+>
+  <form onSubmit={handleSubmit} className="space-y-6">
+    {designEntries.map((entry, entryIndex) => (
+      <div key={entry.id} className="border border-gray-200 rounded-lg p-4 space-y-4">
+        {/* Entry Header */}
+        <div className="flex justify-between items-center pb-2 border-b">
+          <h3 className="font-semibold text-gray-900">
+            {editMode ? 'Edit Receiving' : `Design Entry ${entryIndex + 1}`}
+          </h3>
+          {!editMode && designEntries.length > 1 && (
+            <button
+              type="button"
+              onClick={() => handleRemoveDesignEntry(entry.id)}
+              className="text-red-600 hover:text-red-800 text-sm font-medium"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+
+        {/* Design Selection */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Design {!editMode && '*'}
+            </label>
+            {editMode ? (
+              <input
+                type="text"
+                value={entry.selectedDesign}
+                disabled
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100"
+              />
+            ) : (
+              <select
+                value={entry.selectedDesign}
+                onChange={(e) => handleDesignChange(entry.id, e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                required
+              >
+                <option value="">Select existing or create new</option>
+                <option value="new">+ Create New Design</option>
+                <optgroup label="Existing Designs">
+                  {products.map(product => (
+                    <option key={product._id} value={product.design}>
+                      {product.design}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            )}
+          </div>
+
+          {/* Source Type Selection */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Source Type *
+            </label>
+            <select
+              value={entry.sourceType}
+              onChange={(e) => handleEntryFieldChange(entry.id, 'sourceType', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              disabled={editMode}
+            >
+              <option value="factory">Factory</option>
+              <option value="borrowedbuyer">Borrowed from Buyer</option>
+              <option value="borrowedvendor">Borrowed from Vendor</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Conditional Fields for Borrowed/Other Types */}
+        {['borrowedbuyer', 'borrowedvendor', 'other'].includes(entry.sourceType) && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-orange-50 p-4 rounded-lg">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Party Name *
+              </label>
+              <input
+                type="text"
+                value={entry.sourceName}
+                onChange={(e) => handleEntryFieldChange(entry.id, 'sourceName', e.target.value)}
+                placeholder="Enter party name (e.g., amit shah)"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
+                disabled={editMode}
+                required
+              />
+              <p className="text-xs text-gray-600 mt-1">
+                Name of the buyer/vendor you're borrowing from
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Return Due Date
+              </label>
+              <input
+                type="date"
+                value={entry.returnDueDate}
+                onChange={(e) => handleEntryFieldChange(entry.id, 'returnDueDate', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
+                disabled={editMode}
+                min={format(new Date(), 'yyyy-MM-dd')}
+              />
+              <p className="text-xs text-gray-600 mt-1">
+                When should this stock be returned?
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* New Product Fields */}
+        {(entry.isNewProduct || entry.selectedDesign === 'new') && (
+          <div className="space-y-4 bg-green-50 p-4 rounded-lg">
+            <h4 className="font-medium text-green-900">New Product Details</h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="md:col-span-3">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Design Name *
+                </label>
+                <input
+                  type="text"
+                  value={entry.selectedDesign === 'new' ? '' : entry.selectedDesign}
+                  onChange={(e) => handleEntryFieldChange(entry.id, 'selectedDesign', e.target.value)}
+                  placeholder="Enter design name (e.g., CP-101)"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Wholesale Price *
+                </label>
+                <input
+                  type="number"
+                  value={entry.wholesalePrice}
+                  onChange={(e) => handleEntryFieldChange(entry.id, 'wholesalePrice', e.target.value)}
+                  placeholder="0"
+                  min="0"
+                  step="0.01"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Retail Price *
+                </label>
+                <input
+                  type="number"
+                  value={entry.retailPrice}
+                  onChange={(e) => handleEntryFieldChange(entry.id, 'retailPrice', e.target.value)}
+                  placeholder="0"
+                  min="0"
+                  step="0.01"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Description
+                </label>
+                <input
+                  type="text"
+                  value={entry.description}
+                  onChange={(e) => handleEntryFieldChange(entry.id, 'description', e.target.value)}
+                  placeholder="Optional description"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Batch ID and Notes */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Batch ID
+            </label>
+            <input
+              type="text"
+              value={entry.batchId}
+              onChange={(e) => handleEntryFieldChange(entry.id, 'batchId', e.target.value)}
+              placeholder="Optional batch identifier"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Notes
+            </label>
+            <input
+              type="text"
+              value={entry.notes}
+              onChange={(e) => handleEntryFieldChange(entry.id, 'notes', e.target.value)}
+              placeholder="Optional notes"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+        </div>
+
+{/* Stock Entry Section - FIXED */}
+{entry.selectedDesign && entry.selectedDesign !== 'new' && Object.keys(entry.stockData).length > 0 && (
+  <div className="space-y-4">
+    <h4 className="font-medium text-gray-900">Stock Quantities</h4>
+    {Object.keys(entry.stockData).map(colorName => (
+      <div key={colorName} className="border border-gray-200 rounded-lg p-4 space-y-3">
+        {/* Color Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div 
+              className="w-6 h-6 rounded border border-gray-300" 
+              style={{ backgroundColor: getColorCode(colorName) }}
+            />
+            <span className="font-medium text-gray-900">{colorName}</span>
+          </div>
+        </div>
+
+        {/* Mode Selection */}
+        <div className="flex gap-4">
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={entry.stockData[colorName].mode === 'sets'}
+              onChange={() => handleModeChange(entry.id, colorName, 'sets')}
+              className="text-blue-600 focus:ring-blue-500"
+            />
+            <span className="text-sm font-medium text-gray-700">Full Sets</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={entry.stockData[colorName].mode === 'pieces'}
+              onChange={() => handleModeChange(entry.id, colorName, 'pieces')}
+              className="text-blue-600 focus:ring-blue-500"
+            />
+            <span className="text-sm font-medium text-gray-700">Individual Pieces</span>
+          </label>
+        </div>
+
+        {/* Sets Input */}
+        {entry.stockData[colorName].mode === 'sets' && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Number of Sets
+            </label>
+            <input
+              type="number"
+              value={entry.stockData[colorName].sets}
+              onChange={(e) => handleSetsChange(entry.id, colorName, e.target.value)}
+              placeholder="0"
+              min="0"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            />
+            <p className="text-xs text-gray-600 mt-1">
+              Each set contains one piece of each size ({enabledSizes.join(', ')})
+            </p>
+          </div>
+        )}
+
+        {/* Pieces Input */}
+        {entry.stockData[colorName].mode === 'pieces' && (
+          <div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {enabledSizes.map(size => (
+                <div key={size}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {size}
+                  </label>
+                  <input
+                    type="number"
+                    value={entry.stockData[colorName].pieces[size]}
+                    onChange={(e) => handlePiecesChange(entry.id, colorName, size, e.target.value)}
+                    placeholder="0"
+                    min="0"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Quantity Preview */}
+        <div className="bg-gray-50 p-3 rounded">
+          <p className="text-sm font-medium text-gray-700">
+            Total for {colorName}:{' '}
+            <span className="text-blue-600">
+              {entry.stockData[colorName].mode === 'sets'
+                ? entry.stockData[colorName].sets * enabledSizes.length
+                : Object.values(entry.stockData[colorName].pieces).reduce((sum, qty) => sum + Number(qty || 0), 0)
+              }
+            </span>{' '}
+            units
+          </p>
+        </div>
+      </div>
+    ))}
+  </div>
+)}
+      </div>
+    ))}
+
+    {/* Add Another Design Button (only in create mode) */}
+    {!editMode && (
+      <button
+        type="button"
+        onClick={handleAddDesignEntry}
+        className="w-full py-2 border-2 border-dashed border-gray-300 rounded-lg text-gray-600 hover:border-blue-500 hover:text-blue-600 transition-colors font-medium"
+      >
+        + Add Another Design
+      </button>
+    )}
+
+    {/* Submit Button */}
+    <div className="flex justify-end gap-3 pt-4 border-t">
+      <button
+        type="button"
+        onClick={() => {
           setShowModal(false);
           resetForm();
         }}
-        title={editMode ? 'Edit Receiving' : 'Receive Stock'}
+        className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
       >
-        <form onSubmit={handleSubmit} className="space-y-6">
-          {designEntries.map((entry, entryIndex) => (
-            <div key={entry.id} className="border border-gray-200 rounded-lg p-4 space-y-4">
-              {/* Entry Header */}
-              <div className="flex justify-between items-center pb-2 border-b">
-                <h3 className="font-semibold text-gray-900">
-                  {editMode ? 'Edit Receiving' : `Design Entry ${entryIndex + 1}`}
-                </h3>
-                {!editMode && designEntries.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveDesignEntry(entry.id)}
-                    className="text-red-600 hover:text-red-800 text-sm font-medium"
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-
-              {/* Design Selection */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Design {!editMode && '*'}
-                  </label>
-                  {editMode ? (
-                    <input
-                      type="text"
-                      value={entry.selectedDesign}
-                      disabled
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100"
-                    />
-                  ) : (
-                    <select
-                      value={entry.selectedDesign}
-                      onChange={(e) => handleDesignChange(entry.id, e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                      required
-                    >
-                      <option value="">Select existing or create new</option>
-                      <option value="new">➕ Create New Design</option>
-                      <optgroup label="Existing Designs">
-                        {products.map((product) => (
-                          <option key={product._id} value={product.design}>
-                            {product.design}
-                          </option>
-                        ))}
-                      </optgroup>
-                    </select>
-                  )}
-                </div>
-
-                {/* Source Type Selection - ✅ NEW */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Source Type *
-                  </label>
-                  <select
-                    value={entry.sourceType}
-                    onChange={(e) => handleEntryFieldChange(entry.id, 'sourceType', e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                    disabled={editMode}
-                  >
-                    <option value="factory">🏭 Factory</option>
-                    <option value="borrowed_buyer">📦 Borrowed from Buyer</option>
-                    <option value="borrowed_vendor">🔄 Borrowed from Vendor</option>
-                    <option value="other">📋 Other</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Conditional Fields for Borrowed/Other Types - ✅ NEW */}
-              {['borrowed_buyer', 'borrowed_vendor', 'other'].includes(entry.sourceType) && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-orange-50 p-4 rounded-lg">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Party Name *
-                    </label>
-                    <input
-                      type="text"
-                      value={entry.sourceName}
-                      onChange={(e) => handleEntryFieldChange(entry.id, 'sourceName', e.target.value)}
-                      placeholder="Enter party name (e.g., amit shah)"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
-                      disabled={editMode}
-                      required
-                    />
-                    <p className="text-xs text-gray-600 mt-1">
-                      Name of the buyer/vendor you're borrowing from
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Return Due Date
-                    </label>
-                    <input
-                      type="date"
-                      value={entry.returnDueDate}
-                      onChange={(e) => handleEntryFieldChange(entry.id, 'returnDueDate', e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
-                      disabled={editMode}
-                      min={format(new Date(), 'yyyy-MM-dd')}
-                    />
-                    <p className="text-xs text-gray-600 mt-1">
-                      When should this stock be returned?
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* New Product Fields */}
-              {entry.isNewProduct && entry.selectedDesign === 'new' && (
-                <div className="space-y-4 bg-green-50 p-4 rounded-lg">
-                  <h4 className="font-medium text-green-900">New Product Details</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="md:col-span-3">
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Design Name *
-                      </label>
-                      <input
-                        type="text"
-                        value={entry.selectedDesign === 'new' ? '' : entry.selectedDesign}
-                        onChange={(e) => handleEntryFieldChange(entry.id, 'selectedDesign', e.target.value)}
-                        placeholder="Enter design name (e.g., CP-101)"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Wholesale Price (₹) *
-                      </label>
-                      <input
-                        type="number"
-                        value={entry.wholesalePrice}
-                        onChange={(e) => handleEntryFieldChange(entry.id, 'wholesalePrice', e.target.value)}
-                        placeholder="0"
-                        min="0"
-                        step="0.01"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Retail Price (₹) *
-                      </label>
-                      <input
-                        type="number"
-                        value={entry.retailPrice}
-                        onChange={(e) => handleEntryFieldChange(entry.id, 'retailPrice', e.target.value)}
-                        placeholder="0"
-                        min="0"
-                        step="0.01"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Description
-                      </label>
-                      <input
-                        type="text"
-                        value={entry.description}
-                        onChange={(e) => handleEntryFieldChange(entry.id, 'description', e.target.value)}
-                        placeholder="Optional description"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Batch ID and Notes */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Batch ID
-                  </label>
-                  <input
-                    type="text"
-                    value={entry.batchId}
-                    onChange={(e) => handleEntryFieldChange(entry.id, 'batchId', e.target.value)}
-                    placeholder="Optional batch identifier"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Notes
-                  </label>
-                  <input
-                    type="text"
-                    value={entry.notes}
-                    onChange={(e) => handleEntryFieldChange(entry.id, 'notes', e.target.value)}
-                    placeholder="Optional notes"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              {/* Color Selection for New Products */}
-              {entry.isNewProduct && entry.selectedDesign !== 'new' && (
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-700">
-                    Select Colors *
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    {colors.map((colorOption) => {
-                      const isSelected = entry.stockData.hasOwnProperty(colorOption);
-                      return (
-                        <button
-                          key={colorOption}
-                          type="button"
-                          onClick={() => {
-                            if (isSelected) {
-                              handleRemoveColorFromEntry(entry.id, colorOption);
-                            } else {
-                              handleAddColorToEntry(entry.id, colorOption);
-                            }
-                          }}
-                          className={`flex items-center gap-2 px-3 py-2 rounded-lg border-2 transition-all ${
-                            isSelected
-                              ? 'border-blue-500 bg-blue-50 text-blue-900'
-                              : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400'
-                          }`}
-                        >
-                          <div
-                            className="w-4 h-4 rounded border border-gray-300"
-                            style={{ backgroundColor: getColorCode(colorOption) }}
-                          />
-                          <span className="text-sm font-medium">{colorOption}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Stock Entry Section */}
-              {entry.selectedDesign && entry.selectedDesign !== 'new' && Object.keys(entry.stockData).length > 0 && (
-                <div className="space-y-4">
-                  <h4 className="font-medium text-gray-900">Stock Quantities</h4>
-                  {Object.keys(entry.stockData).map((color) => (
-                    <div key={color} className="border border-gray-200 rounded-lg p-4 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div
-                            className="w-6 h-6 rounded border border-gray-300"
-                            style={{ backgroundColor: getColorCode(color) }}
-                          />
-                          <span className="font-medium text-gray-900">{color}</span>
-                        </div>
-                        {entry.isNewProduct && (
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveColorFromEntry(entry.id, color)}
-                            className="text-red-600 hover:text-red-800 text-sm"
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Mode Selection */}
-                      <div className="flex gap-4">
-                        <label className="flex items-center gap-2">
-                          <input
-                            type="radio"
-                            checked={entry.stockData[color].mode === 'sets'}
-                            onChange={() => handleModeChange(entry.id, color, 'sets')}
-                            className="text-blue-600 focus:ring-blue-500"
-                          />
-                          <span className="text-sm font-medium text-gray-700">Full Sets</span>
-                        </label>
-                        <label className="flex items-center gap-2">
-                          <input
-                            type="radio"
-                            checked={entry.stockData[color].mode === 'pieces'}
-                            onChange={() => handleModeChange(entry.id, color, 'pieces')}
-                            className="text-blue-600 focus:ring-blue-500"
-                          />
-                          <span className="text-sm font-medium text-gray-700">Individual Pieces</span>
-                        </label>
-                      </div>
-
-                      {/* Sets Input */}
-                      {entry.stockData[color].mode === 'sets' && (
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Number of Sets
-                          </label>
-                          <input
-                            type="number"
-                            value={entry.stockData[color].sets}
-                            onChange={(e) => handleSetsChange(entry.id, color, e.target.value)}
-                            placeholder="0"
-                            min="0"
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                          />
-                          <p className="text-xs text-gray-600 mt-1">
-                            Each set contains one piece of each size ({enabledSizes.join(', ')})
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Pieces Input */}
-                      {entry.stockData[color].mode === 'pieces' && (
-                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                          {enabledSizes.map((size) => (
-                            <div key={size}>
-                              <label className="block text-sm font-medium text-gray-700 mb-1">
-                                {size}
-                              </label>
-                              <input
-                                type="number"
-                                value={entry.stockData[color].pieces[size] || ''}
-                                onChange={(e) => handlePiecesChange(entry.id, color, size, e.target.value)}
-                                placeholder="0"
-                                min="0"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Quantity Preview */}
-                      <div className="bg-gray-50 p-3 rounded">
-                        <p className="text-sm font-medium text-gray-700">
-                          Total for {color}:{' '}
-                          <span className="text-blue-600">
-                            {entry.stockData[color].mode === 'sets'
-                              ? entry.stockData[color].sets * enabledSizes.length
-                              : Object.values(entry.stockData[color].pieces || {}).reduce(
-                                  (sum, qty) => sum + (Number(qty) || 0),
-                                  0
-                                )}
-                          </span>{' '}
-                          units
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-
-          {/* Add Another Design Button */}
-          {!editMode && (
-            <button
-              type="button"
-              onClick={handleAddDesignEntry}
-              className="w-full py-2 border-2 border-dashed border-gray-300 rounded-lg text-gray-600 hover:border-blue-500 hover:text-blue-600 transition-colors"
-            >
-              + Add Another Design
-            </button>
-          )}
-
-          {/* Submit Buttons */}
-          <div className="flex gap-3 pt-4">
-            <button
-              type="button"
-              onClick={() => {
-                setShowModal(false);
-                resetForm();
-              }}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-              disabled={submitting}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-              disabled={submitting}
-            >
-              {submitting ? 'Processing...' : editMode ? 'Update Receiving' : 'Add Receiving'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        Cancel
+      </button>
+      <button
+        type="submit"
+        disabled={submitting}
+        className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed font-medium"
+      >
+        {submitting ? 'Submitting...' : editMode ? 'Update Receiving' : 'Receive Stock'}
+      </button>
+    </div>
+  </form>
+</Modal>
 
       {/* ✅ FLEXIBLE Return Modal with Cash Settlement */}
       <Modal

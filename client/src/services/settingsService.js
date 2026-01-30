@@ -1,4 +1,5 @@
 import axios from 'axios';
+import api from './api';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
@@ -203,6 +204,22 @@ const setDefaultCompany = async (companyId) => {
   return response.data;
 };
 
+export const getTenantSettings = async () => {
+  const response = await api.get('/tenant-settings/my-settings');
+  console.log('🔍 API Response:', response.data); // ✅ DEBUG
+  
+  // ✅ FIX: Return the nested data if it exists
+  if (response.data.success && response.data.data) {
+    return response.data.data; // Return just the data object
+  }
+  return response.data; // Fallback
+};
+
+export const updateInventoryMode = async (mode) => {
+  const response = await api.put('/tenant-settings/inventory-mode', { mode });
+  return response.data;
+};
+
 export const settingsService = {
   getSettings,
   getEnabledSizes,
@@ -226,5 +243,7 @@ export const settingsService = {
   updateCompany,
   deleteCompany,
   toggleCompanyActive,
-  setDefaultCompany
+  setDefaultCompany,
+  getTenantSettings,
+  updateInventoryMode
 };

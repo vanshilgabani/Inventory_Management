@@ -7,8 +7,8 @@ export const salesService = {
     return response.data.data;
   },
 
-  // ✅ UPDATED: Get all sales with pagination and search
-  async getAllSales(accountName = 'all', status = 'all', startDate = null, endDate = null, options = {}) {
+  // ✅ UPDATED: Get all sales with cursor-based pagination and search
+  async getAllSales(accountName = 'all', status = 'all', startDate = null, endDate = null, page = 1, limit = 50, search = '', cursor = null) {
     const params = {};
     
     if (accountName && accountName !== 'all') {
@@ -22,13 +22,18 @@ export const salesService = {
     if (startDate) params.startDate = startDate;
     if (endDate) params.endDate = endDate;
     
-    // ✅ NEW: Pagination parameters
-    params.page = options.page || 1;
-    params.limit = options.limit || 100;
+    // Pagination parameters
+    params.page = page;
+    params.limit = limit;
     
-    // ✅ NEW: Search parameter
-    if (options.search) {
-      params.search = options.search;
+    // Search parameter
+    if (search) {
+      params.search = search;
+    }
+    
+    // ✅ NEW: Cursor for infinite scroll
+    if (cursor) {
+      params.cursor = cursor;
     }
     
     const response = await api.get('/sales', { params });
@@ -114,6 +119,61 @@ export const salesService = {
     if (status && status !== 'all') params.status = status;
     
     const response = await api.get('/sales/by-date', { params });
+    return response.data;
+  },
+
+  // ✅ NEW: Get stats for cards
+  async getStatsForCards(accountName = 'all', status = 'all', startDate = null, endDate = null) {
+    const params = {};
+    
+    if (accountName && accountName !== 'all') {
+      params.accountName = accountName;
+    }
+    
+    if (status && status !== 'all') {
+      params.status = status;
+    }
+    
+    if (startDate) params.startDate = startDate;
+    if (endDate) params.endDate = endDate;
+    
+    const response = await api.get('/sales/stats-cards', { params });
+    return response.data.data;
+  },
+
+  // ✅ NEW: Get orders grouped by dates
+  async getOrdersByDateGroups(accountName = 'all', status = 'all', startDate = null, endDate = null, dateGroups = 3, beforeDate = null) {
+    const params = {
+      dateGroups
+    };
+    
+    if (accountName && accountName !== 'all') {
+      params.accountName = accountName;
+    }
+    
+    if (status && status !== 'all') {
+      params.status = status;
+    }
+    
+    if (startDate) params.startDate = startDate;
+    if (endDate) params.endDate = endDate;
+    if (beforeDate) params.beforeDate = beforeDate;
+    
+    const response = await api.get('/sales/by-date-groups', { params });
+    return response.data.data;
+  },
+
+    searchByDate: async (date, accountName = 'all', status = 'all') => {
+  const response = await api.get('/sales/search-by-date', {
+    params: { date, accountName, status }
+  });
+  return response.data;
+},
+  // Add this to your salesService.js
+  searchGlobally: async (query) => {
+    const response = await api.get('/sales/search-global', {
+      params: { query }
+    });
     return response.data;
   },
 

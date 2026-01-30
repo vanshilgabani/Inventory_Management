@@ -1,6 +1,9 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { SubscriptionProvider } from './context/SubscriptionContext';
+import { SettingsProvider } from './context/SettingsContext'; 
+import { SyncProvider } from './context/SyncContext';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Layout from './components/common/Layout';
@@ -21,10 +24,15 @@ import MonthlyBills from './pages/MonthlyBills';
 import Notifications from './pages/Notifications';
 import ActivityAuditPage from './pages/ActivityAuditPage';
 import GlobalNotificationBanner from './components/GlobalNotificationBanner';
-//import AdminRequestNotificationWidget from './components/widgets/AdminRequestNotificationWidget';
-//import ActiveSessionsMonitorWidget from './components/widgets/ActiveSessionsMonitorWidget';
+import TrialInitializationPage from './pages/TrialInitializationPage';
+import SubscriptionDashboard from './pages/SubscriptionDashboard';
+import InvoiceListPage from './pages/InvoiceListPage';
+import SyncLogViewer from './components/sync/SyncLogViewer';
 import MyPendingRequests from './pages/MyPendingRequests';
 import DeletedOrders from './pages/DeletedOrders';
+import ReceivedFromSupplier from './pages/ReceivedFromSupplier';
+import SupplierSyncLogs from './pages/SupplierSyncLogs';
+import CustomerManagement from './pages/CustomerManagement';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -49,6 +57,7 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
+
 // Admin Only Route Component
 const AdminRoute = ({ children }) => {
   const { user, loading, isAdmin } = useAuth();
@@ -68,7 +77,8 @@ const AdminRoute = ({ children }) => {
   return children;
 };
 
-// ✅ NEW: Separate component for routes that uses useAuth INSIDE AuthProvider
+
+// ✅ Routes component that uses useAuth INSIDE AuthProvider
 const AppRoutes = () => {
   const { user } = useAuth();
 
@@ -104,7 +114,9 @@ const AppRoutes = () => {
           <Route path="analytics" element={<Analytics />} />
           <Route path="notifications" element={<Notifications />} />
           <Route path="/activity-audit" element={<ActivityAuditPage />} />
-          <Route path="my-requests" element={<MyPendingRequests />} />
+          <Route path="my-requests" element={<MyPendingRequests />} />  
+          <Route path="/received-from-supplier" element={<ReceivedFromSupplier />} />  
+          <Route path="/sync/supplier-logs" element={<SupplierSyncLogs />} />      
           
           {/* Admin Routes */}
           <Route path="monthly-bills" element={
@@ -127,31 +139,36 @@ const AppRoutes = () => {
               <Settings />
             </AdminRoute>
           } />
-        </Route>
+        <Route path="/customers-management" element={<AdminRoute><CustomerManagement /></AdminRoute>} />
+
+        {/* ✅ NEW: Subscription Routes */}
+          <Route path="trial/start" element={<AdminRoute><TrialInitializationPage /></AdminRoute>} />
+          <Route path="subscription" element={<AdminRoute><SubscriptionDashboard /></AdminRoute>} />
+          <Route path="subscription/invoices" element={<AdminRoute><InvoiceListPage /></AdminRoute>} />
+          <Route path="sync/logs" element={<AdminRoute><SyncLogViewer /></AdminRoute>} />
 
         {/* Catch all */}
         <Route path="*" element={<Navigate to="/login" replace />} />
+        </Route>
       </Routes>
-
-      {/* ✅ Admin Widgets - Now inside AuthProvider 
-      {user?.role === 'admin' && (
-        <>
-          <AdminRequestNotificationWidget />
-          <ActiveSessionsMonitorWidget />
-        </>
-      )}
-      */}
     </>
   );
 };
+
 
 // ✅ Main App Component
 function App() {
   return (
     <AuthProvider>
-      <Router>
-        <AppRoutes />
-      </Router>
+      <SyncProvider>
+        <SubscriptionProvider>  {/* ✅ ADDED: Wrap with SubscriptionProvider */}
+          <SettingsProvider>
+          <Router>
+            <AppRoutes />
+          </Router>
+          </SettingsProvider>
+        </SubscriptionProvider>  {/* ✅ ADDED */}
+      </SyncProvider>
     </AuthProvider>
   );
 }

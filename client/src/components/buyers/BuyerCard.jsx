@@ -127,6 +127,24 @@ const BuyerCard = ({
           </div>
         )}
 
+        {/* Tenant Sync Status */}
+        {buyer.syncEnabled && buyer.customerTenantId && (
+          <div className="mt-3 pt-3 border-t border-gray-200">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-gray-500">Auto-Sync Status:</span>
+              <span className="px-2 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded flex items-center gap-1">
+                <FiCheckCircle size={12} />
+                Enabled
+              </span>
+            </div>
+            {buyer.lastSyncedAt && (
+              <p className="text-xs text-gray-400 mt-1">
+                Last synced: {new Date(buyer.lastSyncedAt).toLocaleDateString()}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Action Buttons */}
         <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-200">
           <button

@@ -47,10 +47,30 @@ const WholesaleBuyers = () => {
   // Monthly history data
   const [monthlyHistory, setMonthlyHistory] = useState([]);
 
+  const [tenants, setTenants] = useState([]);
+  const [linkingBuyerId, setLinkingBuyerId] = useState(null);
+  const [selectedTenantId, setSelectedTenantId] = useState('');
+  const [showLinkModal, setShowLinkModal] = useState(false);
+
   // Fetch data on mount
   useEffect(() => {
     fetchInitialData();
   }, []);
+
+  useEffect(() => {
+  fetchTenants();
+}, []);
+
+const fetchTenants = async () => {
+  try {
+    const tenantsData = await wholesaleService.getTenantUsers();
+    console.log('✅ Fetched tenants for linking:', tenantsData);
+    setTenants(tenantsData || []);
+  } catch (error) {
+    console.error('❌ Failed to fetch tenants:', error);
+    toast.error('Failed to load customers for linking');
+  }
+};
 
   const fetchInitialData = async () => {
     try {
@@ -210,6 +230,31 @@ const WholesaleBuyers = () => {
       setIsSubmitting(false);
     }
   };
+
+const handleLinkToTenant = async (buyerId, tenantId) => {
+  try {
+    const result = await wholesaleService.linkBuyerToTenant(buyerId, tenantId || null);
+    if (result.success) {
+      toast.success(result.message || (tenantId ? '✅ Buyer linked successfully!' : 'Buyer unlinked'));
+      await fetchInitialData(); // Refresh buyers
+      setShowLinkModal(false);
+      setLinkingBuyerId(null);
+      setSelectedTenantId('');
+    } else {
+      toast.error(result.message || 'Failed to link buyer');
+    }
+  } catch (error) {
+    const errorMsg = error.response?.data?.message || 'Failed to link buyer';
+    toast.error(errorMsg);
+    console.error('Link error:', error);
+  }
+};
+
+const openLinkModal = (buyer) => {
+  setLinkingBuyerId(buyer._id);
+  setSelectedTenantId(buyer.customerTenantId || '');
+  setShowLinkModal(true);
+};
 
   // Open payment history modal
   const openHistoryModal = async (buyer) => {
@@ -404,6 +449,7 @@ const WholesaleBuyers = () => {
               onViewHistory={openHistoryModal}
               onViewMonthlyHistory={openMonthlyHistoryModal}
               onSendReminder={handleSendReminder}
+              onLinkToTenant={openLinkModal}
             />
           </div>
         </div>
@@ -437,6 +483,123 @@ const WholesaleBuyers = () => {
         selectedBuyer={selectedBuyer}
         monthlyHistory={monthlyHistory}
       />
+
+      {/* ✅ UPDATED: Link to Tenant Modal with Phone Matching */}
+      {showLinkModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-semibold mb-4">🔗 Link Buyer to Customer Account</h3>
+            
+            {/* Buyer Info Display */}
+            <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="text-sm text-blue-800 mb-1">
+                <strong>Buyer:</strong> {buyers.find(b => b._id === linkingBuyerId)?.name || 'Unknown'}
+              </p>
+              <p className="text-sm text-blue-800">
+                <strong>Mobile:</strong> {buyers.find(b => b._id === linkingBuyerId)?.mobile || 'N/A'}
+              </p>
+            </div>
+
+            {/* Customer Selection Dropdown */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Select Customer Account (Phone must match)
+              </label>
+              <select
+                value={selectedTenantId}
+                onChange={(e) => setSelectedTenantId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">-- Select Customer --</option>
+                {(() => {
+                  const currentBuyer = buyers.find(b => b._id === linkingBuyerId);
+                  const buyerPhone = currentBuyer?.mobile?.replace(/\D/g, '') || '';
+                  
+                  // ✅ Filter tenants by matching phone number
+                  const matchingTenants = tenants.filter(tenant => {
+                    const tenantPhone = (tenant.phone || '').replace(/\D/g, '');
+                    return tenantPhone === buyerPhone;
+                  });
+
+                  if (matchingTenants.length === 0) {
+                    return (
+                      <option value="" disabled>
+                        No customers found with phone {currentBuyer?.mobile}
+                      </option>
+                    );
+                  }
+
+                  return matchingTenants.map(tenant => (
+                    <option key={tenant._id} value={tenant._id}>
+                      {tenant.name} ({tenant.phone}) {tenant.companyName ? `- ${tenant.companyName}` : ''}
+                    </option>
+                  ));
+                })()}
+              </select>
+              
+              {/* ✅ Helper Text */}
+              {(() => {
+                const currentBuyer = buyers.find(b => b._id === linkingBuyerId);
+                const buyerPhone = currentBuyer?.mobile?.replace(/\D/g, '') || '';
+                const matchingCount = tenants.filter(t => 
+                  (t.phone || '').replace(/\D/g, '') === buyerPhone
+                ).length;
+
+                if (matchingCount === 0) {
+                  return (
+                    <div className="mt-2 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                      <p className="text-sm text-orange-800">
+                        ⚠️ <strong>No customer accounts found</strong> with phone <strong>{currentBuyer?.mobile}</strong>.
+                      </p>
+                      <p className="text-xs text-orange-700 mt-1">
+                        Customer must register with this exact mobile number first.
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <p className="mt-2 text-sm text-green-600">
+                    ✅ {matchingCount} customer account{matchingCount > 1 ? 's' : ''} found with matching phone
+                  </p>
+                );
+              })()}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => handleLinkToTenant(linkingBuyerId, selectedTenantId)}
+                disabled={!selectedTenantId}
+                className="flex-1 bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {selectedTenantId ? '✅ Link Customer' : 'Select Customer'}
+              </button>
+              
+              {/* Unlink Button (if already linked) */}
+              {buyers.find(b => b._id === linkingBuyerId)?.customerTenantId && (
+                <button
+                  onClick={() => handleLinkToTenant(linkingBuyerId, null)}
+                  className="flex-1 bg-red-500 text-white px-4 py-2 rounded-md hover:bg-red-600 transition-colors"
+                >
+                  🔓 Unlink
+                </button>
+              )}
+              
+              <button
+                onClick={() => {
+                  setShowLinkModal(false);
+                  setLinkingBuyerId(null);
+                  setSelectedTenantId('');
+                }}
+                className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ScrollToTop />
       

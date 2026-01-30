@@ -20,6 +20,7 @@ import { debounce } from '../utils/debounce';
 import { formatDate, getDaysFromNow } from '../utils/dateUtils';
 import SkeletonCard from '../components/common/SkeletonCard';
 import ScrollToTop from '../components/common/ScrollToTop';
+import SyncStatusBadge from '../components/sync/SyncStatusBadge';
 import { useColorPalette } from '../hooks/useColorPalette';
 
 const Wholesale = () => {
@@ -28,6 +29,7 @@ const Wholesale = () => {
   const { colors, getColorsForDesign, getColorCode } = useColorPalette();
 
   // State Management
+  const [syncStatuses, setSyncStatuses] = useState({});
   const [orders, setOrders] = useState([]);
   const [products, setProducts] = useState([]);
   const [allBuyers, setAllBuyers] = useState([]);
@@ -111,6 +113,91 @@ useEffect(() => {
   
   return () => clearInterval(interval);
 }, []);
+
+  // 🆕 NEW: Fetch sync status for orders
+  const fetchOrderSyncStatus = async (orderId) => {
+    try {
+      const response = await fetch(`/api/wholesale/orders/${orderId}/sync-status`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        // ✅ FIX: Store the actual sync data, not nested in .data
+        setSyncStatuses(prev => ({
+          ...prev,
+          [orderId]: data.data || {} // Store directly
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to fetch sync status:', error);
+    }
+  };
+
+  // 🆕 NEW: Fetch sync statuses for all orders
+  useEffect(() => {
+    if (orders && orders.length > 0) {
+      orders.forEach(order => {
+        if (order._id) {
+          fetchOrderSyncStatus(order._id);
+        }
+      });
+    }
+  }, [orders]);
+
+  // 🆕 NEW: Resend sync request
+  const handleResendSync = async (orderId) => {
+    try {
+      const response = await fetch(`/api/supplier-sync/resend/${orderId}`, { // ✅ FIXED: Correct endpoint
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        toast.success('Sync request sent successfully!');
+        // Refresh orders to get updated status
+        await fetchOrders();
+      } else {
+        toast.error(data.message || 'Failed to send sync request');
+      }
+    } catch (error) {
+      console.error('Failed to resend sync:', error);
+      toast.error('Failed to send sync request');
+    }
+  };
+
+  // 🆕 NEW: Listen for real-time sync updates
+  useEffect(() => {
+    const handleSyncAccepted = (event) => {
+      const { orderId } = event.detail;
+      if (orderId) {
+        fetchOrderSyncStatus(orderId);
+      }
+    };
+
+    const handleSyncRejected = (event) => {
+      const { orderId } = event.detail;
+      if (orderId) {
+        fetchOrderSyncStatus(orderId);
+      }
+    };
+
+    window.addEventListener('syncAccepted', handleSyncAccepted);
+    window.addEventListener('syncRejected', handleSyncRejected);
+
+    return () => {
+      window.removeEventListener('syncAccepted', handleSyncAccepted);
+      window.removeEventListener('syncRejected', handleSyncRejected);
+    };
+  }, []);
 
 // Function to load all drafts from localStorage
 const loadAllDrafts = () => {
@@ -1039,6 +1126,16 @@ const handleItemDesignChange = (index, value) => {
                   <span className="inline-flex items-center px-3 py-1 rounded-md text-sm font-semibold bg-indigo-100 text-indigo-800">
                     📋 {order.challanNumber}
                   </span>
+                  {/* 🆕 NEW: Sync Status Badge */}
+                  <SyncStatusBadge 
+                    order={{
+                      ...order,
+                      syncStatus: syncStatuses[order._id]?.syncStatus || order.syncStatus,
+                      customerTenantId: order.customerTenantId
+                    }}
+                    onResend={handleResendSync}
+                    loading={false}
+                  />
                 </div>
 
                 {/* Buyer Info */}

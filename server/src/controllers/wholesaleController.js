@@ -9,6 +9,11 @@ const logger = require('../utils/logger');
 const { checkBuyerNotifications } = require('../utils/checkNotifications');
 const { generateChallanPDF } = require('../utils/pdfGenerator');
 const { sendWholesaleChallan } = require('../utils/emailService');
+const Subscription = require('../models/Subscription');
+const TenantSettings = require('../models/TenantSettings');
+const { syncOrderToTenant } = require('./syncController'); // Add this new controller
+const supplierSyncController = require('./supplierSyncController');
+const User = require('../models/User');
 
 // ✅ ADD THIS - Global flag to disable locked stock
 const STOCK_LOCK_DISABLED = true;
@@ -229,8 +234,7 @@ const createOrder = async (req, res) => {
       // STEP 1: Calculate max available per item
       for (const item of items) {
         const product = await Product.findOne({ 
-          design: item.design, 
-          organizationId 
+          design: item.design, organizationId: organizationId 
         }).session(session);
 
         if (!product) {
@@ -432,6 +436,30 @@ const createOrder = async (req, res) => {
       fulfillmentType: fulfillmentType || 'warehouse'
     });
 
+// ✅ NEW: Auto-sync to customer if they have a tenant account
+try {
+  const syncResult = await supplierSyncController.syncOrderToCustomer(
+    order[0]._id,
+    req.user.organizationId
+  );
+  
+  if (syncResult.synced) {
+    logger.info('✅ Order auto-synced to customer', {
+      orderId: order[0]._id,
+      customerTenantId: syncResult.customerTenantId,
+      itemsCount: syncResult.itemsCount
+    });
+  } else {
+    logger.info('ℹ️ Order not synced:', syncResult.reason);
+  }
+} catch (syncError) {
+  // Don't fail the order creation if sync fails
+  logger.warn('⚠️ Auto-sync failed (non-critical):', {
+    orderId: order[0]._id,
+    error: syncError.message
+  });
+}
+
     // Auto-email logic (keep your existing code)
     try {
       const settings = await Settings.findOne({ organizationId });
@@ -628,8 +656,7 @@ const updateOrder = async (req, res) => {
         // Only validate if we need MORE stock than before
         if (quantityDifference > 0) {
           const product = await Product.findOne({
-            design: newItem.design,
-            organizationId,
+            design: newItem.design, organizationId: organizationId
           }).session(session);
 
           if (!product) {
@@ -685,8 +712,7 @@ const updateOrder = async (req, res) => {
     if (existingOrder.fulfillmentType === 'warehouse') {
       for (const oldItem of existingOrder.items) {
         const product = await Product.findOne({
-          design: oldItem.design,
-          organizationId,
+          design: oldItem.design, organizationId: organizationId
         }).session(session);
 
         if (product) {
@@ -712,8 +738,7 @@ const updateOrder = async (req, res) => {
     if (newFulfillmentType === 'warehouse') {
       for (const newItem of req.body.items) {
         const product = await Product.findOne({
-          design: newItem.design,
-          organizationId,
+          design: newItem.design, organizationId: organizationId,
         }).session(session);
 
         if (product) {
@@ -789,6 +814,29 @@ const updateOrder = async (req, res) => {
 
     await session.commitTransaction();
 
+// ✅ NEW: Sync edit to customer if order was previously synced (within 24hrs)
+try {
+  const syncResult = await supplierSyncController.syncOrderEdit(
+    id,
+    req.user.organizationId,
+    req.body // Changes made
+  );
+  
+  if (syncResult.synced) {
+    logger.info('✅ Order edit synced to customer', {
+      orderId: id,
+      itemsCount: syncResult.itemsCount
+    });
+  } else {
+    logger.info('ℹ️ Edit not synced:', syncResult.reason);
+  }
+} catch (syncError) {
+  logger.warn('⚠️ Edit sync failed (non-critical):', {
+    orderId: id,
+    error: syncError.message
+  });
+}
+
     logger.info('Order updated successfully', {
       orderId: id,
       fulfillmentType: newFulfillmentType,
@@ -809,7 +857,7 @@ const updateOrder = async (req, res) => {
   }
 };
 
-// FEATURE 1: Soft Delete Order
+// 🆕 UPDATE: Add 24-hour check to delete function
 const deleteOrder = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -818,26 +866,62 @@ const deleteOrder = async (req, res) => {
     const { id } = req.params;
     const { organizationId, id: userId, name, email, role } = req.user;
 
-    const order = await WholesaleOrder.findOne({ 
-      _id: id, 
-      organizationId, 
-      deletedAt: null  // Only allow deleting active orders
+    const order = await WholesaleOrder.findOne({
+      _id: id,
+      organizationId,
+      deletedAt: null
     }).session(session);
 
     if (!order) {
       await session.abortTransaction();
-      return res.status(404).json({ 
-        code: 'ORDER_NOT_FOUND', 
-        message: 'Order not found or already deleted' 
+      return res.status(404).json({
+        code: 'ORDER_NOT_FOUND',
+        message: 'Order not found or already deleted'
       });
     }
 
-    // ✅ STEP 1: Restore stock to MAIN inventory (not reserved)
-    if (order.fulfillmentType !== 'factorydirect') {
+    // 🆕 NEW: Check 24-hour window for deletion
+    const orderAge = Date.now() - new Date(order.createdAt).getTime();
+    const twentyFourHours = 24 * 60 * 60 * 1000;
+
+    if (orderAge > twentyFourHours) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        code: 'DELETE_WINDOW_EXPIRED',
+        message: 'Cannot delete orders older than 24 hours',
+        orderAge: Math.floor(orderAge / (60 * 60 * 1000)) + ' hours',
+        maxAge: '24 hours'
+      });
+    }
+
+    // Sync deletion to customer FIRST before stock restoration
+    if (order.syncedToCustomer) {
+      try {
+        const syncResult = await supplierSyncController.syncOrderDelete(
+          order._id,
+          req.user.organizationId
+        );
+        
+        if (syncResult.synced) {
+          logger.info('Order deletion synced to customer', {
+            orderId: order._id,
+            receivingsDeleted: syncResult.receivingsDeleted
+          });
+        }
+      } catch (syncError) {
+        logger.warn('Delete sync failed (non-critical)', {
+          orderId: order._id,
+          error: syncError.message
+        });
+      }
+    }
+
+    // STEP 1: Restore stock to MAIN inventory
+    if (order.fulfillmentType !== 'factory-direct') {
       for (const item of order.items) {
-        const product = await Product.findOne({ 
-          design: item.design, 
-          organizationId 
+        const product = await Product.findOne({
+          design: item.design,
+          organizationId: organizationId
         }).session(session);
 
         if (product) {
@@ -845,10 +929,9 @@ const deleteOrder = async (req, res) => {
           if (colorVariant) {
             const sizeIndex = colorVariant.sizes.findIndex(s => s.size === item.size);
             if (sizeIndex !== -1) {
-              // ✅ CORRECT: Restore to MAIN inventory (currentStock)
               colorVariant.sizes[sizeIndex].currentStock += item.quantity;
               await product.save({ session });
-
+              
               logger.debug('Stock restored to main', {
                 design: item.design,
                 color: item.color,
@@ -872,71 +955,114 @@ const deleteOrder = async (req, res) => {
       }
     }
 
-    // STEP 3: Remove from monthly bills if present
-    const bills = await MonthlyBill.find({ 
-      organizationId, 
-      'orders.orderId': id 
+    // STEP 3: Remove from monthly bills
+    const bills = await MonthlyBill.find({
+      organizationId,
+      'orders.orderId': id
     }).session(session);
 
     for (const bill of bills) {
       bill.orders = bill.orders.filter(o => o.orderId.toString() !== id);
       
-      // Recalculate bill financials
       const newSubtotal = bill.orders.reduce((sum, o) => sum + (o.subtotalAmount || 0), 0);
       const newGst = bill.orders.reduce((sum, o) => sum + (o.gstAmount || 0), 0);
       const newTotal = bill.orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-
+      
       bill.financials.subtotalAmount = newSubtotal;
       bill.financials.gstAmount = newGst;
       bill.financials.totalAmount = newTotal;
       bill.financials.balanceDue = newTotal - (bill.financials.amountPaid || 0);
-
+      
       await bill.save({ session });
     }
 
-    // ✅ STEP 4: Soft delete the order
+    // STEP 4: Soft delete the order
     order.deletedAt = new Date();
     order.deletedBy = userId;
     order.deletionReason = 'User initiated deletion';
     await order.save({ session });
 
-    // ✅ NO TRANSFER RECORD NEEDED FOR SOFT DELETE
-
     await session.commitTransaction();
 
-    logger.info('Order soft deleted successfully', { 
-      orderId: id, 
-      deletedBy: `${name} ${email}`,
-      stockRestored: order.fulfillmentType !== 'factorydirect'
+    logger.info('Order soft deleted successfully', {
+      orderId: id,
+      deletedBy: name || email,
+      stockRestored: order.fulfillmentType !== 'factory-direct',
+      syncedToCustomer: order.syncedToCustomer || false
     });
 
-    res.json({ 
-      success: true, 
-      message: 'Order deleted successfully', 
-      stockRestored: order.fulfillmentType !== 'factorydirect'
+    res.json({
+      success: true,
+      message: 'Order deleted successfully',
+      stockRestored: order.fulfillmentType !== 'factory-direct',
+      syncedToCustomer: order.syncedToCustomer || false
     });
 
   } catch (error) {
     await session.abortTransaction();
-    logger.error('Order deletion failed', { error: error.message, orderId: req.params.id });
-    res.status(500).json({ 
-      code: 'DELETE_FAILED', 
-      message: 'Failed to delete order', 
-      error: error.message 
+    logger.error('Order deletion failed', {
+      error: error.message,
+      orderId: req.params.id
+    });
+    
+    res.status(500).json({
+      code: 'DELETE_FAILED',
+      message: 'Failed to delete order',
+      error: error.message
     });
   } finally {
     session.endSession();
   }
 };
 
+// 🆕 NEW: Get sync status for an order
+getOrderSyncStatus = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { organizationId } = req.user;
+
+    const order = await WholesaleOrder.findOne({
+      _id: orderId,
+      organizationId,
+      deletedAt: null
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        syncStatus: order.syncStatus || 'none',
+        syncedToCustomer: order.syncedToCustomer || false,
+        customerTenantId: order.customerTenantId || null,
+        syncAttempts: order.syncAttempts || 0,
+        lastSyncAttempt: order.lastSyncAttempt || null,
+        syncError: order.syncError || null
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching sync status:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sync status'
+    });
+  }
+};
+
 // Get pending payments
 const getPendingPayments = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
+    const { organizationId } = req.user.organizationId;
 
     const orders = await WholesaleOrder.find({
       organizationId,
       amountDue: { $gt: 0 },
+      deletedAt: null // ✅ EXCLUDE deleted orders
     })
       .populate('buyerId', 'name mobile businessName')
       .sort({ createdAt: -1 })
@@ -948,7 +1074,7 @@ const getPendingPayments = async (req, res) => {
     res.status(500).json({
       code: 'FETCH_FAILED',
       message: 'Failed to fetch pending payments',
-      error: error.message,
+      error: error.message
     });
   }
 };
@@ -957,44 +1083,107 @@ const getPendingPayments = async (req, res) => {
 const getAllBuyers = async (req, res) => {
   try {
     const { organizationId } = req.user;
-
+    
+    // Fetch all buyers
     const buyers = await WholesaleBuyer.find({ organizationId })
-      .select('name mobile email businessName gstNumber address creditLimit totalDue totalPaid totalSpent totalOrders lastOrderDate monthlyBills')
+      .select('name mobile email businessName gstNumber address creditLimit lastOrderDate customerTenantId syncEnabled lastSyncedAt totalOrders totalDue totalPaid totalSpent')
       .lean()
       .sort({ lastOrderDate: -1 });
 
-    // Calculate totals from monthlyBills if exists, else fallback to old method
-    const enrichedBuyers = buyers.map(buyer => {
-      if (buyer.monthlyBills && buyer.monthlyBills.length > 0) {
-        // ✅ NEW: Calculate from bills
-        const totalDue = buyer.monthlyBills.reduce((sum, bill) => sum + (bill.balanceDue || 0), 0);
-        const totalPaid = buyer.monthlyBills.reduce((sum, bill) => sum + (bill.amountPaid || 0), 0);
-        const totalSpent = buyer.monthlyBills.reduce((sum, bill) => sum + (bill.invoiceTotal || 0), 0);
-        
+    // Calculate fresh stats for each buyer
+    const enrichedBuyers = await Promise.all(
+      buyers.map(async (buyer) => {
+        // Get all active orders
+        const orders = await WholesaleOrder.find({
+          buyerId: buyer._id,
+          organizationId,
+          deletedAt: null
+        }).lean();
+
+        // Calculate totals from orders
+        const totalOrders = orders.length;
+        const totalAmount = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+        const totalPaid = orders.reduce((sum, o) => sum + (o.amountPaid || 0), 0);
+        const totalDue = orders.reduce((sum, o) => sum + (o.amountDue || 0), 0);
+
+        // Check if bills exist
+        const bills = await MonthlyBill.find({
+          organizationId,
+          'buyer.id': buyer._id
+        }).lean();
+
+        let finalStats;
+        if (bills.length > 0) {
+          // Use bill-based calculations
+          const billTotalDue = bills.reduce((sum, b) => sum + (b.financials?.balanceDue || 0), 0);
+          const billTotalPaid = bills.reduce((sum, b) => sum + (b.financials?.amountPaid || 0), 0);
+          const billTotalSpent = bills.reduce((sum, b) => sum + (b.financials?.totalAmount || 0), 0);
+
+          finalStats = {
+            totalOrders: totalOrders,
+            totalDue: parseFloat(billTotalDue.toFixed(2)),
+            totalPaid: parseFloat(billTotalPaid.toFixed(2)),
+            totalSpent: parseFloat(billTotalSpent.toFixed(2)),
+            hasBills: true
+          };
+        } else {
+          // Use order-based calculations
+          finalStats = {
+            totalOrders: totalOrders,
+            totalDue: parseFloat(totalDue.toFixed(2)),
+            totalPaid: parseFloat(totalPaid.toFixed(2)),
+            totalSpent: parseFloat(totalAmount.toFixed(2)),
+            hasBills: false
+          };
+        }
+
+        // 🔥 AUTO-FIX DATABASE (silently in background)
+        // Only update if values are different
+        const needsUpdate = 
+          buyer.totalOrders !== finalStats.totalOrders ||
+          Math.abs((buyer.totalDue || 0) - finalStats.totalDue) > 0.01 ||
+          Math.abs((buyer.totalPaid || 0) - finalStats.totalPaid) > 0.01 ||
+          Math.abs((buyer.totalSpent || 0) - finalStats.totalSpent) > 0.01;
+
+        if (needsUpdate) {
+          // Update database silently (fire and forget - no await)
+          WholesaleBuyer.findByIdAndUpdate(buyer._id, {
+            totalOrders: finalStats.totalOrders,
+            totalDue: finalStats.totalDue,
+            totalPaid: finalStats.totalPaid,
+            totalSpent: finalStats.totalSpent
+          }).catch(err => 
+            logger.error('Failed to auto-update buyer stats:', { 
+              buyerId: buyer._id, 
+              error: err.message 
+            })
+          );
+          
+          logger.info('Auto-fixing buyer stats', {
+            buyerId: buyer._id,
+            buyerName: buyer.name,
+            old: {
+              totalOrders: buyer.totalOrders,
+              totalDue: buyer.totalDue
+            },
+            new: {
+              totalOrders: finalStats.totalOrders,
+              totalDue: finalStats.totalDue
+            }
+          });
+        }
+
+        // Return fresh data to frontend
         return {
           ...buyer,
-          totalDue: parseFloat(totalDue.toFixed(2)),
-          totalPaid: parseFloat(totalPaid.toFixed(2)),
-          totalSpent: parseFloat(totalSpent.toFixed(2)),
-          totalOrders: buyer.monthlyBills.length,
-          hasBills: true
+          ...finalStats
         };
-      } else {
-        // ✅ OLD: Fallback for buyers without bills (use existing data)
-        return {
-          ...buyer,
-          totalDue: buyer.totalDue || 0,
-          totalPaid: buyer.totalPaid || 0,
-          totalSpent: buyer.totalSpent || 0,
-          totalOrders: buyer.totalOrders || 0,
-          hasBills: false
-        };
-      }
-    });
+      })
+    );
 
     res.json(enrichedBuyers);
   } catch (error) {
-    logger.error('Failed to fetch buyers', { error: error.message });
+    logger.error('Failed to fetch buyers:', { error: error.message });
     res.status(500).json({
       code: 'FETCH_FAILED',
       message: 'Failed to fetch buyers',
@@ -1033,11 +1222,12 @@ const getBuyerByMobile = async (req, res) => {
 const getBuyerHistory = async (req, res) => {
   try {
     const { id } = req.params;
-    const organizationId = req.user.organizationId;
+    const { organizationId } = req.user.organizationId;
 
     const orders = await WholesaleOrder.find({
       buyerId: id,
       organizationId,
+      deletedAt: null // ✅ EXCLUDE deleted orders
     })
       .sort({ createdAt: -1 })
       .lean();
@@ -1048,7 +1238,7 @@ const getBuyerHistory = async (req, res) => {
     res.status(500).json({
       code: 'FETCH_FAILED',
       message: 'Failed to fetch buyer history',
-      error: error.message,
+      error: error.message
     });
   }
 };
@@ -2050,45 +2240,41 @@ const previewPaymentAllocation = async (req, res) => {
   }
 };
 
-// ✅ Get buyer statistics with accurate totals
+// Get buyer statistics with accurate totals (EXCLUDING DELETED ORDERS)
 const getBuyerStats = async (req, res) => {
   try {
     const { organizationId } = req.user;
-
-    // Get all buyers and sum their individual totals (source of truth)
+    
+    // Get all buyers
     const buyers = await WholesaleBuyer.find({ organizationId }).lean();
-
-    const totalBuyers = buyers.length;
     
-    // Count buyers with pending dues
-    const buyersWithDue = buyers.filter(b => (b.totalDue || 0) > 0).length;
-    
-    // Sum from individual buyer records (accurate)
-    const totalOutstanding = buyers.reduce((sum, b) => sum + (b.totalDue || 0), 0);
-    
-    // Calculate total revenue from totalSpent field
-    const totalRevenue = buyers.reduce((sum, b) => sum + (b.totalSpent || 0), 0);
-
-    logger.info('Buyer stats calculated', {
+    // Calculate FRESH stats from actual orders
+    const orders = await WholesaleOrder.find({
       organizationId,
-      totalBuyers,
-      buyersWithDue,
-      totalOutstanding,
-      totalRevenue
-    });
+      deletedAt: null  // Exclude deleted orders
+    }).lean();
 
-    res.json({
-      totalBuyers,
-      buyersWithDue,
-      totalOutstanding: Math.round(totalOutstanding * 100) / 100,
-      totalRevenue: Math.round(totalRevenue * 100) / 100
-    });
+    // Calculate totals
+    const totalOutstanding = orders.reduce((sum, o) => sum + (o.amountDue || 0), 0);
+    const totalRevenue = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+    const buyersWithDue = new Set(
+      orders.filter(o => o.amountDue > 0).map(o => o.buyerId.toString())
+    ).size;
+
+    const stats = {
+      totalBuyers: buyers.length,
+      buyersWithDue: buyersWithDue,
+      totalOutstanding: parseFloat(totalOutstanding.toFixed(2)),
+      totalRevenue: parseFloat(totalRevenue.toFixed(2))
+    };
+    
+    res.json(stats);
   } catch (error) {
-    logger.error('Failed to fetch buyer stats', { error: error.message });
-    res.status(500).json({ 
-      code: 'STATS_FAILED', 
-      message: 'Failed to fetch statistics', 
-      error: error.message 
+    logger.error('Failed to fetch buyer stats:', { error: error.message });
+    res.status(500).json({
+      code: 'FETCH_FAILED',
+      message: 'Failed to fetch buyer stats',
+      error: error.message,
     });
   }
 };
@@ -2213,8 +2399,7 @@ const createOrderWithReservedBorrow = async (req, res) => {
     // ✅ STEP 3: Deduct stock (main + reserved)
     for (const item of items) {
       const product = await Product.findOne({
-        design: item.design,
-        organizationId
+        design: item.design, organizationId: organizationId
       }).session(session);
 
       const colorVariant = product.colors.find(c => c.color === item.color);
@@ -2525,6 +2710,177 @@ const deleteOrderPayment = async (req, res) => {
   }
 };
 
+// ============================================
+// TENANT LINKING FUNCTIONS
+// ============================================
+
+// ✅ UPDATED: Get all registered users for linking (match by phone)
+const getTenantUsers = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    
+    // ✅ Find ALL active users who are NOT in your organization
+    // These are potential customers to link to
+    const users = await User.find({
+      organizationId: { $ne: organizationId }, // Not your organization
+      isActive: true,
+      role: 'admin' // Only admin users (organization owners)
+    })
+    .select('_id name email phone businessName companyName organizationId createdAt')
+    .sort({ createdAt: -1 })
+    .lean();
+    
+    logger.info('Fetched users for buyer linking', {
+      requestedBy: organizationId,
+      usersFound: users.length
+    });
+    
+    res.json({
+      success: true,
+      data: users || []
+    });
+  } catch (error) {
+    logger.error('Get tenant users failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch users',
+      error: error.message
+    });
+  }
+};
+
+// ✅ UPDATED: Link buyer to customer organization (with phone matching)
+const linkBuyerToTenant = async (req, res) => {
+  try {
+    const { buyerId } = req.params;
+    const { customerTenantId } = req.body;
+    const { organizationId } = req.user;
+
+    // Find the buyer
+    const buyer = await WholesaleBuyer.findOne({
+      _id: buyerId,
+      organizationId
+    });
+
+    if (!buyer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Buyer not found'
+      });
+    }
+
+    // ✅ If linking (not unlinking)
+    if (customerTenantId) {
+      // Find the customer user
+      const customerUser = await User.findById(customerTenantId);
+      
+      if (!customerUser) {
+        return res.status(404).json({
+          success: false,
+          message: 'Customer user not found'
+        });
+      }
+
+      // ✅ SECURITY CHECK: Verify phone numbers match
+      const buyerPhone = buyer.mobile.replace(/\D/g, ''); // Remove non-digits
+      const customerPhone = (customerUser.phone || '').replace(/\D/g, '');
+
+      if (buyerPhone !== customerPhone) {
+        return res.status(400).json({
+          success: false,
+          message: `Phone number mismatch. Buyer phone: ${buyer.mobile}, Customer phone: ${customerUser.phone}. They must match for linking.`
+        });
+      }
+
+      // ✅ Update buyer with customer organization link
+      buyer.customerTenantId = customerUser.organizationId || customerUser._id;
+      buyer.customerUserId = customerUser._id;
+      buyer.isCustomer = true;
+      buyer.syncEnabled = true;
+      buyer.joinedAt = new Date();
+      buyer.inviteStatus = 'accepted';
+
+      logger.info('✅ Buyer linked to customer organization', {
+        buyerId: buyer._id,
+        buyerName: buyer.name,
+        buyerPhone: buyer.mobile,
+        customerUserId: customerUser._id,
+        customerName: customerUser.name,
+        customerOrganizationId: buyer.customerTenantId,
+        customerPhone: customerUser.phone
+      });
+
+    } else {
+      // ✅ Unlinking
+      buyer.customerTenantId = null;
+      buyer.customerUserId = null;
+      buyer.isCustomer = false;
+      buyer.syncEnabled = false;
+      buyer.inviteStatus = 'not_invited';
+
+      logger.info('🔓 Buyer unlinked from customer', {
+        buyerId: buyer._id,
+        buyerName: buyer.name
+      });
+    }
+
+    buyer.updatedAt = new Date();
+    await buyer.save();
+
+    res.json({
+      success: true,
+      message: customerTenantId ? '✅ Buyer linked successfully! Orders will now auto-sync.' : 'Buyer unlinked successfully',
+      data: buyer
+    });
+
+  } catch (error) {
+    logger.error('Link buyer to tenant failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to link buyer',
+      error: error.message
+    });
+  }
+};
+
+// Get buyer tenant info
+const getBuyerTenantInfo = async (req, res) => {
+  try {
+    const { buyerId } = req.params;
+    const { organizationId } = req.user;
+    
+    const buyer = await WholesaleBuyer.findOne({
+      _id: buyerId,
+      organizationId
+    })
+    .populate('customerTenantId', 'name email companyName')
+    .lean();
+    
+    if (!buyer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Buyer not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        customerTenantId: buyer.customerTenantId,
+        syncEnabled: buyer.syncEnabled,
+        lastSyncedAt: buyer.lastSyncedAt
+      }
+    });
+  } catch (error) {
+    logger.error('Get buyer tenant info failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch buyer tenant info',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getAllOrders,
   getOrderById,
@@ -2551,5 +2907,9 @@ module.exports = {
   sendChallanEmail,
   createOrderWithReservedBorrow,
   getBuyerMonthlyHistory,
-  deleteOrderPayment
+  deleteOrderPayment,
+  getTenantUsers,
+  linkBuyerToTenant,
+  getBuyerTenantInfo,
+  getOrderSyncStatus
 };

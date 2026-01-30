@@ -208,6 +208,12 @@ const monthlyBillSchema = new mongoose.Schema({
     actualAmount: Number         // Actual bill amount after product assignment
   },
   
+  tenantId: {
+    type: String,
+    required: false,
+    index: true
+  },
+
   // Organization
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,

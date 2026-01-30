@@ -19,6 +19,8 @@ import NotificationsSettings from '../components/settings/NotificationsSettings'
 import ColorPaletteManager from '../components/settings/ColorPaletteManager';
 import CompanyManagement from '../components/settings/CompanyManagement';
 import BuyerGSTManagement from '../components/settings/BuyerGSTManagement';
+import InventoryModeSettings from '../components/settings/InventoryModeSettings';
+import SKUMappings from '../components/settings/SKUMappings';
 
 const Settings = () => {
   const [searchParams] = useSearchParams();
@@ -319,6 +321,8 @@ const Settings = () => {
     { id: 'companies', label: 'Companies', icon: '🏭' },
     { id: 'buyer-gst', label: 'Buyer GST Profiles', icon: '📋' },
     { id: 'sizes-permissions', label: 'Sizes & Permissions', icon: '📏' },
+    { id: 'sku-mappings', label: 'SKU Mappings', icon: '🗺️' },
+    { id: 'inventory-mode', label: 'Inventory Mode', icon: '📦' },
     { id: 'colors', label: 'Color Palette', icon: '🎨' },
     { id: 'thresholds', label: 'Stock Alerts', icon: '🔔' },
     { id: 'accounts', label: 'Marketplace', icon: '🛒' },
@@ -334,7 +338,8 @@ const Settings = () => {
   }
 
   return (
-    <div className="p-6">
+    <div className="min-h-screen bg-gray-50 p-6">
+      <div className="max-w-7xl mx-auto">
       {/* Header */}
       <div className="mb-6">
         <div className="flex items-center gap-3 mb-2">
@@ -388,9 +393,16 @@ const Settings = () => {
               handleSizeToggle={handleSizeToggle}
               handleUpdateSettings={handleUpdateSettings}
               saving={saving}
-            />
-            
+            />            
           </div>
+        )}
+
+        {activeTab === 'sku-mappings' && (
+          <SKUMappings settings={settings} />
+        )}
+
+        {activeTab === 'inventory-mode' && (
+          <InventoryModeSettings />
         )}
 
         {activeTab === 'colors' && <ColorPaletteManager />}
@@ -436,6 +448,7 @@ const Settings = () => {
         )}
       </div>
       <ScrollToTop />
+      </div>
     </div>
   );
 };

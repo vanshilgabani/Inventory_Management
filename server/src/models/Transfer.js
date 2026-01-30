@@ -13,11 +13,11 @@ const transferSchema = new mongoose.Schema({
   type: {
     type: String,
     enum: [
-      'manual_refill',        // Main → Reserved (manual)
-      'manual_return',        // Reserved → Main (manual)
-      'marketplace_order',    // Reserved stock used for marketplace sale
-      'emergency_use',        // Main → Reserved (auto during marketplace order)
-      'emergency_borrow'      // Reserved → Main (auto during wholesale/direct)
+      'manualrefill',        // Main → Reserved (manual)
+      'manualreturn',        // Reserved → Main (manual)
+      'marketplaceorder',    // Reserved stock used for marketplace sale
+      'emergencyuse',        // Main → Reserved (auto during marketplace order)
+      'emergencyborrow'      // Reserved → Main (auto during wholesale/direct)
     ],
     required: true
   },

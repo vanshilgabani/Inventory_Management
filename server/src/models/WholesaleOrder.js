@@ -192,6 +192,64 @@ const wholesaleOrderSchema = new mongoose.Schema({
     default: Date.now,
   },
 
+  // Track if this order has been synced to customer
+  syncedToCustomer: {
+    type: Boolean,
+    default: false
+  },
+
+  syncedAt: {
+    type: Date,
+    default: null
+  },
+
+  syncStatus: {
+    type: String,
+    enum: ['none', 'pending', 'accepted', 'rejected', 'synced'],
+    default: 'none',
+    index: true
+  },
+
+  syncRequests: [{
+    requestId: mongoose.Schema.Types.ObjectId,
+    sentAt: {
+      type: Date,
+      default: Date.now
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'accepted', 'rejected'],
+      default: 'pending'
+    },
+    respondedAt: Date,
+    respondedBy: {
+      userId: mongoose.Schema.Types.ObjectId,
+      userName: String,
+      userEmail: String
+    },
+    rejectionReason: String
+  }],
+
+  customerTenantId: {
+    type: String,
+    default: null,
+    index: true
+    // Customer's tenantId if order is synced
+  },
+
+  // Track edits for 24hr window
+  canStillEdit: {
+    type: Boolean,
+    default: true
+  },
+
+  editDeadline: {
+    type: Date,
+    default: function() {
+      return new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours from creation
+    }
+  },
+
   // ✅ FEATURE 1: Soft Delete Fields
   deletedAt: {
     type: Date,
@@ -323,6 +381,8 @@ wholesaleOrderSchema.index(
 );
 wholesaleOrderSchema.index({ organizationId: 1, orderDate: -1 });
 wholesaleOrderSchema.index({ buyerId: 1, orderDate: -1 });
+wholesaleOrderSchema.index({ buyerId: 1, organizationId: 1, deletedAt: 1 });
+wholesaleOrderSchema.index({ organizationId: 1, deletedAt: 1, amountDue: 1 });
 // ✅ TTL index for auto-deletion after 60 days
 wholesaleOrderSchema.index({ deletedAt: 1 }, { expireAfterSeconds: 5184000 }); // 60 days
 

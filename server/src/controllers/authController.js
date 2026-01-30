@@ -37,7 +37,6 @@ const registerUser = async (req, res) => {
     // If created from register page (no req.user), they become their own admin (organizationId = null, will be set to _id after save)
     // If created from user management (req.user exists), use the creator's organizationId
     let organizationId = null;
-    
     if (req.user) {
       // User created by admin from User Management
       organizationId = req.user.organizationId || req.user._id;
@@ -50,15 +49,81 @@ const registerUser = async (req, res) => {
       password,
       businessName,
       phone,
-      role: userRole, // ✅ Use the fixed role logic
+      role: userRole,
       createdBy: req.user?._id,
-      organizationId: organizationId, // Will be null for self-registered users
+      organizationId: organizationId,
     });
 
     // ✅ If this is a self-registered user (organizationId is null), set it to their own _id
     if (!organizationId) {
       user.organizationId = user._id;
       await user.save();
+    }
+
+    // ✅ AUTO-START FREE TRIAL for self-registered users only
+    if (!req.user && userRole === 'admin') {
+      try {
+        const Subscription = require('../models/Subscription');
+        const TenantSettings = require('../models/TenantSettings');
+        const WholesaleBuyer = require('../models/WholesaleBuyer');
+        
+        const TRIAL_DAYS = parseInt(process.env.TRIAL_DAYS || '7');
+        const trialEndDate = new Date();
+        trialEndDate.setDate(trialEndDate.getDate() + TRIAL_DAYS);
+
+        // Create trial subscription
+        await Subscription.create({
+          userId: user._id,
+          organizationId: user._id,
+          planType: 'trial',
+          status: 'trial',
+          trialStartDate: new Date(),
+          trialEndDate,
+          trialOrdersUsed: 0
+        });
+
+        await TenantSettings.create({
+          userId: user._id,
+          organizationId: user._id,
+          enabledModules: ['inventory', 'marketplace-sales'],
+          inventoryMode: 'reserved'
+        });
+        
+        // ✅ Mark user as tenant (keep role as admin)
+        user.isTenant = true;
+        // role stays 'admin' - don't change it
+        await user.save();
+        
+        console.log('✅ Auto-trial initialized for new user:', user.email);
+        
+        // ✅ Link buyer to customer if they were a wholesale buyer
+        try {
+          const buyerRecord = await WholesaleBuyer.findOne({
+            $or: [
+              { mobile: user.phone },
+              { email: user.email }
+            ],
+            customerUserId: null  // Not already linked
+          });
+          
+          if (buyerRecord) {
+            // Link buyer to this user
+            buyerRecord.customerUserId = user._id;
+            buyerRecord.customerTenantId = user._id;
+            buyerRecord.isCustomer = true;
+            await buyerRecord.save();
+            
+            console.log(`✅ Linked buyer "${buyerRecord.businessName}" to customer account: ${user.email}`);
+          }
+        } catch (linkError) {
+          console.error('⚠️  Error linking buyer to customer:', linkError.message);
+          // Don't fail registration if linking fails
+        }
+        
+      } catch (trialError) {
+        console.error('⚠️ Trial auto-start failed:', trialError);
+        // Continue with normal registration
+      }
     }
 
     // Generate token
@@ -73,8 +138,10 @@ const registerUser = async (req, res) => {
       phone: user.phone,
       role: user.role,
       organizationId: user.organizationId,
+      isTenant: user.isTenant,
       token,
     });
+
   } catch (error) {
     console.error('Register error:', error);
     res.status(400).json({ message: error.message });
@@ -110,6 +177,7 @@ const loginUser = async (req, res) => {
     // Generate token
     const token = generateToken(user._id, user.role, user.email, user.name);
 
+    // ✅ FIXED: Include isSupplier and linkedSupplier
     res.json({
       _id: user._id,
       id: user._id,
@@ -119,6 +187,9 @@ const loginUser = async (req, res) => {
       phone: user.phone,
       role: user.role,
       organizationId: user.organizationId,
+      isSupplier: user.isSupplier,           // ✅ ADD THIS
+      isTenant: user.isTenant,                // ✅ ADD THIS
+      linkedSupplier: user.linkedSupplier,    // ✅ ADD THIS
       token,
     });
   } catch (error) {

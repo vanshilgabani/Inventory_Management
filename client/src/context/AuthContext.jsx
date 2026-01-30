@@ -68,30 +68,35 @@ const login = async (email, password) => {
     console.log('🔗 API Login call...');
     const response = await axios.post(`${API_URL}/auth/login`, { email, password });
     console.log('🔗 API Response:', response.data);
-    
-    const { token, _id, id, name, email: userEmail, role, organizationId, businessName, phone } = response.data;
-    
-    // ✅ FIXED: Use destructured variables directly
+
+    const { 
+      token, _id, id, name, email: userEmail, role, organizationId, 
+      businessName, phone, isSupplier, isTenant, linkedSupplier  // ✅ ADD THESE
+    } = response.data;
+
     const userData = {
-      _id: _id || id,        // ✅ Use destructured _id and id
-      id: id || _id,         // ✅ Fallback
-      name,                  // ✅ Use destructured name
-      email: userEmail,      // ✅ Use renamed email
-      role,                  // ✅ Use destructured role
-      organizationId,        // ✅ Use destructured organizationId
-      businessName,          // ✅ Use destructured businessName
-      phone,                 // ✅ Use destructured phone
+      _id: _id || id,
+      id: id || _id,
+      name,
+      email: userEmail,
+      role,
+      organizationId,
+      businessName,
+      phone,
+      isSupplier,      // ✅ ADD THIS
+      isTenant,        // ✅ ADD THIS
+      linkedSupplier,  // ✅ ADD THIS
     };
-    
+
     console.log('👤 Setting user:', userData);
-    
+
     localStorage.setItem('token', token);
     localStorage.setItem('user', JSON.stringify(userData));
     axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    
+
     setUser(userData);
+
     console.log('✅ Login complete, user set');
-    
     return { success: true };
   } catch (error) {
     console.error('💥 Login API error:', error.response?.data);

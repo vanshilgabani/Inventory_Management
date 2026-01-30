@@ -155,6 +155,26 @@ const deleteOrderPayment = async (orderId, paymentIndex) => {
   return response.data;
 };
 
+// Get tenant users
+const getTenantUsers = async () => {
+  const response = await api.get('/wholesale/tenants');
+  return response.data.data;
+};
+
+// Link buyer to tenant
+const linkBuyerToTenant = async (buyerId, customerTenantId) => {
+  const response = await api.put(`/wholesale/buyers/${buyerId}/link-tenant`, {
+    customerTenantId
+  });
+  return response.data;
+};
+
+// Get buyer tenant info
+const getBuyerTenantInfo = async (buyerId) => {
+  const response = await api.get(`/wholesale/buyers/${buyerId}/tenant-info`);
+  return response.data.data;
+};
+
 export const wholesaleService = {
   getAllOrders,
   getOrderById,
@@ -180,5 +200,8 @@ export const wholesaleService = {
   createOrderWithReservedBorrow,
   recordSmartPayment,
   getBuyerMonthlyHistory,
-  deleteOrderPayment
+  deleteOrderPayment,
+  getTenantUsers,           // ✅ ADD
+  linkBuyerToTenant,        // ✅ ADD
+  getBuyerTenantInfo
 };

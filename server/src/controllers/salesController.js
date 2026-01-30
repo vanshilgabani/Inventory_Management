@@ -5,6 +5,11 @@ const ActionLog = require('../models/ActionLog');
 const Transfer = require('../models/Transfer');
 const logger = require('../utils/logger');
 const mongoose = require('mongoose');
+const Subscription = require('../models/Subscription');
+const TenantSettings = require('../models/TenantSettings');
+const MarketplaceSKUMapping = require('../models/MarketplaceSKUMapping');
+const { parseMarketplaceSKU, matchColor, suggestDesign } = require('../utils/skuParser');
+const { convertSizeToLetter } = require('../utils/sizeMappings');
 
 // ✅ ADD THIS HELPER AT THE TOP OF EACH CONTROLLER FILE
 const decrementEditSession = async (req, action, module, itemId) => {
@@ -230,6 +235,57 @@ exports.createSale = async (req, res) => {
       });
     }
 
+    // ✅ ADD THIS - Check subscription for tenant users
+if (req.user.isTenant || req.user.role === 'tenant') {
+  const subscription = await Subscription.findOne({ userId: req.user.id });
+  
+  if (!subscription) {
+    await session.abortTransaction();
+    return res.status(403).json({
+      code: 'NO_SUBSCRIPTION',
+      message: 'No active subscription found. Please start a trial or subscribe.'
+    });
+  }
+
+  if (!['trial', 'active', 'grace-period'].includes(subscription.status)) {
+    await session.abortTransaction();
+    return res.status(403).json({
+      code: 'SUBSCRIPTION_EXPIRED',
+      message: 'Your subscription has expired. Please renew to continue.',
+      data: {
+        status: subscription.status,
+        expiredAt: subscription.yearlyEndDate || subscription.trialEndDate
+      }
+    });
+  }
+
+  // Check trial limits
+  if (subscription.planType === 'trial') {
+    if (subscription.trialOrdersUsed >= subscription.trialOrdersLimit) {
+      await session.abortTransaction();
+      return res.status(403).json({
+        code: 'TRIAL_LIMIT_REACHED',
+        message: 'Trial order limit reached. Please upgrade to continue.',
+        data: {
+          ordersUsed: subscription.trialOrdersUsed,
+          ordersLimit: currentLimit
+        }
+      });
+    }
+
+    if (new Date() > subscription.trialEndDate) {
+      await session.abortTransaction();
+      return res.status(403).json({
+        code: 'TRIAL_EXPIRED',
+        message: 'Trial period expired. Please upgrade to continue.',
+        data: {
+          trialEndDate: subscription.trialEndDate
+        }
+      });
+    }
+  }
+}
+
     // Find product
     const product = await Product.findOne({ design, organizationId }).session(session);
     if (!product) {
@@ -260,47 +316,103 @@ exports.createSale = async (req, res) => {
     }
 
     const sizeVariant = colorVariant.sizes[sizeIndex];
-    const reservedStock = sizeVariant.reservedStock || 0;
-    const mainStock = sizeVariant.currentStock || 0;
 
-    // ✅ NEW LOGIC: Check reserved stock first
-    if (reservedStock < quantity) {
-      const deficit = quantity - reservedStock;
-      
-      // Check if main inventory has enough to cover deficit
-      if (mainStock < deficit) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          code: 'INSUFFICIENT_STOCK',
-          message: `Insufficient stock. Reserved: ${reservedStock}, Main: ${mainStock}, Need: ${quantity}`,
-          variant: { design, color, size },
-          reservedStock,
-          mainStock,
-          required: quantity,
-          deficit
-        });
-      }
+// ✅ NEW: Get tenant's inventory mode preference
+const tenantSettings = await TenantSettings.findOne({ userId: req.user.id }).session(session);
 
-      // ⚠️ Need to use main stock - send popup trigger
+const inventoryMode = tenantSettings?.inventoryMode || 'reserved'; // Default to reserved
+
+logger.info('📦 Inventory mode for sale:', { 
+  organizationId, 
+  inventoryMode,
+  design,
+  color,
+  size,
+  quantity
+});
+
+// Store snapshots for logging
+const mainBefore = sizeVariant.currentStock || 0;
+const reservedBefore = sizeVariant.reservedStock || 0;
+
+if (inventoryMode === 'main') {
+  // ✅ MAIN INVENTORY MODE: Deduct from currentStock
+  const mainStock = sizeVariant.currentStock || 0;
+  
+  if (mainStock < quantity) {
+    await session.abortTransaction();
+    return res.status(400).json({
+      code: 'INSUFFICIENT_MAIN_STOCK',
+      message: `Insufficient main stock for ${design} - ${color} - ${size}`,
+      variant: { design, color, size },
+      available: mainStock,
+      required: quantity
+    });
+  }
+  
+  // Deduct from main stock
+  colorVariant.sizes[sizeIndex].currentStock -= quantity;
+  
+  logger.info('✅ Deducted from MAIN inventory', {
+    design,
+    color,
+    size,
+    quantity,
+    mainBefore,
+    mainAfter: colorVariant.sizes[sizeIndex].currentStock
+  });
+  
+} else {
+  // ✅ RESERVED INVENTORY MODE: Deduct from reservedStock (existing behavior)
+  const reservedStock = sizeVariant.reservedStock || 0;
+  const mainStock = sizeVariant.currentStock || 0;
+  
+  // NEW LOGIC: Check reserved stock first
+  if (reservedStock < quantity) {
+    const deficit = quantity - reservedStock;
+    
+    // Check if main inventory has enough to cover deficit
+    if (mainStock < deficit) {
       await session.abortTransaction();
       return res.status(400).json({
-        code: 'RESERVED_INSUFFICIENT_USE_MAIN',
-        message: `Reserved stock insufficient. Need ${deficit} units from main inventory.`,
+        code: 'INSUFFICIENT_STOCK',
+        message: `Insufficient stock. Reserved: ${reservedStock}, Main: ${mainStock}, Need: ${quantity}`,
         variant: { design, color, size },
         reservedStock,
         mainStock,
         required: quantity,
-        deficit,
-        canUseMain: true // Flag to show popup
+        deficit
       });
     }
+    
+    // Need to use main stock - send popup trigger
+    await session.abortTransaction();
+    return res.status(400).json({
+      code: 'RESERVED_INSUFFICIENT_USE_MAIN',
+      message: `Reserved stock insufficient. Need ${deficit} units from main inventory.`,
+      variant: { design, color, size },
+      reservedStock,
+      mainStock,
+      required: quantity,
+      deficit,
+      canUseMain: true // Flag to show popup
+    });
+  }
+  
+  // Sufficient reserved stock - proceed
+  colorVariant.sizes[sizeIndex].reservedStock -= quantity;
+  
+  logger.info('✅ Deducted from RESERVED inventory', {
+    design,
+    color,
+    size,
+    quantity,
+    reservedBefore,
+    reservedAfter: colorVariant.sizes[sizeIndex].reservedStock
+  });
+}
 
-    // Store snapshots
-    const reservedBefore = sizeVariant.reservedStock;
-
-    // ✅ Sufficient reserved stock - proceed
-    colorVariant.sizes[sizeIndex].reservedStock -= quantity;
-    await product.save({ session });
+await product.save({ session });
 
     // Create sale
     const sale = await MarketplaceSale.create([{
@@ -315,6 +427,8 @@ exports.createSale = async (req, res) => {
       status: status || 'dispatched',
       notes,
       organizationId,
+      tenantId: organizationId,
+      inventoryModeUsed: inventoryMode,
       createdByUser: {
         userId: req.user._id,
         userName: req.user.name || req.user.email,
@@ -323,25 +437,39 @@ exports.createSale = async (req, res) => {
       }
     }], { session });
 
-    // Log transfer (reserved stock used)
-    await Transfer.create([{
-      design,
-      color,
-      size,
-      quantity,
-      type: 'marketplace_order',
-      from: 'reserved',
-      to: 'sold',
-      mainStockBefore: sizeVariant.currentStock,
-      reservedStockBefore: reservedBefore,
-      mainStockAfter: sizeVariant.currentStock,
-      reservedStockAfter: sizeVariant.reservedStock,
-      relatedOrderId: sale[0]._id,
-      relatedOrderType: 'marketplace',
-      performedBy: userId,
-      notes: `Marketplace order ${marketplaceOrderId || 'created'}`,
-      organizationId
-    }], { session });
+// Log transfer (track which inventory was used)
+await Transfer.create([{
+  design,
+  color,
+  size,
+  quantity,
+  type: 'marketplaceorder',
+  from: inventoryMode === 'main' ? 'main' : 'reserved', // ✅ CHANGE THIS
+  to: 'sold',
+  mainStockBefore: mainBefore,
+  reservedStockBefore: reservedBefore,
+  mainStockAfter: inventoryMode === 'main' ? (mainBefore - quantity) : mainBefore, // ✅ CHANGE THIS
+  reservedStockAfter: inventoryMode === 'reserved' ? (reservedBefore - quantity) : reservedBefore, // ✅ CHANGE THIS
+  relatedOrderId: sale[0]._id,
+  relatedOrderType: 'marketplace',
+  performedBy: userId,
+  notes: `Marketplace order ${marketplaceOrderId || 'created'} (${inventoryMode} inventory)`, // ✅ CHANGE THIS
+  organizationId
+}], { session });
+
+    // Track subscription order count (BEFORE commit)
+    if (req.user.isTenant || req.user.role === 'tenant') {
+      const subscription = await Subscription.findOne({ userId: req.user.id }).session(session);
+      if (subscription && subscription.planType === 'trial') {
+        subscription.trialOrdersUsed += 1;
+        await subscription.save({ session });
+        logger.info('Trial order count incremented', { 
+          userId: req.user.id, 
+          ordersUsed: subscription.trialOrdersUsed, 
+          ordersLimit: subscription.trialOrdersLimit 
+        });
+      }
+    }
 
     await session.commitTransaction();
 
@@ -438,6 +566,7 @@ exports.createSaleWithMainStock = async (req, res) => {
       status: status || 'dispatched',
       notes: notes ? `${notes} [Used main stock]` : '[Used main stock]',
       organizationId,
+      tenantId: organizationId,
       createdByUser: {
         userId: req.user._id,
         userName: req.user.name || req.user.email,
@@ -452,7 +581,7 @@ exports.createSaleWithMainStock = async (req, res) => {
       await Transfer.create([{
         design, color, size,
         quantity: reservedStock,
-        type: 'marketplace_order',
+        type: 'marketplaceorder',
         from: 'reserved',
         to: 'sold',
         mainStockBefore: mainBefore,
@@ -471,7 +600,7 @@ exports.createSaleWithMainStock = async (req, res) => {
     await Transfer.create([{
       design, color, size,
       quantity: deficit,
-      type: 'emergency_use',
+      type: 'emergencyuse',
       from: 'main',
       to: 'sold',
       mainStockBefore: mainBefore,
@@ -518,26 +647,299 @@ exports.createSaleWithMainStock = async (req, res) => {
   }
 };
 
-// ============================================
-// GET SALES WITH PAGINATION (UPDATED)
-// ============================================
+// ✅ NEW: Get accurate stats for cards (separate from loaded orders)
+exports.getStatsForCards = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { accountName, startDate, endDate, status } = req.query;
+
+    const filter = { organizationId, deletedAt: null };
+
+    // Account filter
+    if (accountName && accountName !== 'all') {
+      filter.accountName = accountName;
+    }
+
+    // Date range filter
+    if (startDate || endDate) {
+      filter.saleDate = {};
+      if (startDate) filter.saleDate.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        filter.saleDate.$lte = end;
+      }
+    }
+
+    // Status filter (for tab filtering)
+    if (status && status !== 'all') {
+      const statuses = status.split(',').map(s => s.trim());
+      filter.status = { $in: statuses };
+    }
+
+    // Get counts grouped by status
+    const stats = await MarketplaceSale.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Get total count
+    const total = await MarketplaceSale.countDocuments(filter);
+
+    // Format response
+    const statusCounts = {
+      dispatched: 0,
+      delivered: 0,
+      returned: 0,
+      cancelled: 0,
+      wrongreturn: 0
+    };
+
+    stats.forEach(stat => {
+      if (statusCounts.hasOwnProperty(stat._id)) {
+        statusCounts[stat._id] = stat.count;
+      }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        total,
+        ...statusCounts
+      }
+    });
+
+  } catch (error) {
+    console.error('Get stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch stats',
+      error: error.message
+    });
+  }
+};
+
+// Helper: Calculate display date based on status
+// In salesController.js - REPLACE getDisplayDate function
+
+const getDisplayDate = (sale) => {
+  const returnStatuses = ['returned', 'cancelled', 'wrongreturn'];
+
+  // If current status is returned/cancelled/wrongreturn
+  if (returnStatuses.includes(sale.status)) {
+    const statusHistory = sale.statusHistory;
+
+    // Check if statusHistory exists and has entries
+    if (statusHistory && Array.isArray(statusHistory) && statusHistory.length > 0) {
+      // Search backwards (most recent first)
+      for (let i = statusHistory.length - 1; i >= 0; i--) {
+        const entry = statusHistory[i];
+        
+        // Make sure entry and newStatus exist
+        if (entry && entry.newStatus && returnStatuses.includes(entry.newStatus)) {
+          // Make sure changedAt exists
+          if (entry.changedAt) {
+            console.log(`✅ Found return date for ${sale.orderItemId}: ${entry.changedAt}`);
+            return new Date(entry.changedAt).toISOString().split('T')[0];
+          }
+        }
+      }
+    }
+    
+    // If we couldn't find a return date in statusHistory, log a warning
+    console.warn(`⚠️ No return date found in statusHistory for ${sale.orderItemId}, using saleDate`);
+  }
+
+  // Default: use dispatch date (saleDate)
+  return new Date(sale.saleDate).toISOString().split('T')[0];
+};
+
+// In salesController.js - REPLACE the entire getOrdersByDateGroups function
+
+exports.getOrdersByDateGroups = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { accountName, status, startDate, endDate, dateGroups = 5, beforeDate } = req.query;
+
+    const filter = { organizationId, deletedAt: null };
+
+    // Account filter
+    if (accountName && accountName !== 'all') {
+      filter.accountName = accountName;
+    }
+
+    // Status filter for tabs
+    if (status && status !== 'all') {
+      const statuses = status.split(',').map(s => s.trim());
+      filter.status = { $in: statuses };
+    }
+
+    // ❌ REMOVE THIS - DON'T filter by saleDate here!
+    // Date range filter will be applied AFTER calculating displayDate
+    
+    // ✅ Fetch ALL orders without date filtering
+    const orders = await MarketplaceSale.find(filter)
+      .sort({ saleDate: -1, createdAt: -1 })
+      .lean()
+      .select('-__v -editHistory')
+      .maxTimeMS(10000);
+
+    if (orders.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          dateGroups: [],
+          pagination: {
+            hasMore: false,
+            nextBeforeDate: null,
+            totalDatesLoaded: 0,
+            totalOrdersInResponse: 0
+          }
+        }
+      });
+    }
+
+    // ✅ Group orders by display date (return date for returned orders)
+    const dateGroupsMap = new Map();
+    
+    orders.forEach(order => {
+      const displayDate = getDisplayDate(order); // Get the correct display date
+      order.displayDate = displayDate; // Attach to order object
+
+      // ✅ Apply date filters AFTER calculating displayDate
+      const displayDateObj = new Date(displayDate);
+      
+      if (startDate) {
+        const startDateObj = new Date(startDate);
+        if (displayDateObj < startDateObj) return; // Skip this order
+      }
+      
+      if (endDate) {
+        const endDateObj = new Date(endDate);
+        endDateObj.setHours(23, 59, 59, 999);
+        if (displayDateObj > endDateObj) return; // Skip this order
+      }
+
+      if (beforeDate) {
+        const beforeDateObj = new Date(beforeDate);
+        beforeDateObj.setHours(0, 0, 0, 0);
+        if (displayDateObj >= beforeDateObj) return; // Skip this order
+      }
+
+      // Group by displayDate
+      if (!dateGroupsMap.has(displayDate)) {
+        dateGroupsMap.set(displayDate, {
+          date: displayDate,
+          orders: [],
+          accountBreakdown: {}
+        });
+      }
+
+      const group = dateGroupsMap.get(displayDate);
+      group.orders.push(order);
+
+      // Count by account
+      if (!group.accountBreakdown[order.accountName]) {
+        group.accountBreakdown[order.accountName] = 0;
+      }
+      group.accountBreakdown[order.accountName]++;
+    });
+
+    // Convert to array and sort by date (newest first)
+    let dateGroupsArray = Array.from(dateGroupsMap.values())
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .map(group => ({
+        date: group.date,
+        dateLabel: formatDateLabel(group.date),
+        orderCount: group.orders.length,
+        accountBreakdown: group.accountBreakdown,
+        orders: group.orders.map(order => ({
+          ...order,
+          displayDate: order.displayDate || order.date // ✅ Ensure displayDate is in each order
+        }))
+      }));
+
+    // Limit to requested number of date groups
+    const limitedDateGroups = dateGroupsArray.slice(0, parseInt(dateGroups));
+    const hasMore = dateGroupsArray.length > parseInt(dateGroups);
+    const oldestLoadedDate = limitedDateGroups[limitedDateGroups.length - 1]?.date;
+    
+    console.log('📤 SENDING DATE GROUPS:');
+    limitedDateGroups.slice(0, 3).forEach((group, idx) => {
+      console.log(`\n  Group ${idx + 1}: ${group.date} (${group.dateLabel})`);
+      console.log(`    - Total orders: ${group.orderCount}`);
+      console.log(`    - First order saleDate: ${group.orders[0]?.saleDate}`);
+      console.log(`    - First order displayDate: ${group.orders[0]?.displayDate}`);
+      console.log(`    - First order status: ${group.orders[0]?.status}`);
+    });
+
+    res.json({
+      success: true,
+      data: {
+        dateGroups: limitedDateGroups,
+        pagination: {
+          hasMore: hasMore,
+          nextBeforeDate: oldestLoadedDate,
+          totalDatesLoaded: limitedDateGroups.length,
+          totalOrdersInResponse: limitedDateGroups.reduce((sum, g) => sum + g.orders.length, 0)
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get orders by date groups error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch orders', error: error.message });
+  }
+};
+
+// Helper function to format date labels
+function formatDateLabel(dateString) {
+  const date = new Date(dateString);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const orderDate = new Date(dateString);
+  orderDate.setHours(0, 0, 0, 0);
+
+  if (orderDate.getTime() === today.getTime()) {
+    return 'TODAY';
+  } else if (orderDate.getTime() === yesterday.getTime()) {
+    return 'YESTERDAY';
+  } else {
+    return date.toLocaleDateString('en-GB', { 
+      day: 'numeric', 
+      month: 'short', 
+      year: 'numeric' 
+    });
+  }
+}
+
+// GET SALES WITH CURSOR-BASED PAGINATION (Optimized for Infinite Scroll)
 exports.getAllSales = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
-    const {
-      status,
-      accountName,
-      startDate,
-      endDate,
-      page = 1,
-      limit = 100, // ✅ Default 100 per page
-      search = '' // ✅ NEW: Search query
+    const { organizationId } = req.user;
+    const { 
+      status, 
+      accountName, 
+      startDate, 
+      endDate, 
+      page = 1, 
+      limit = 50, // ✅ Changed from unlimited
+      search,
+      cursor // ✅ NEW: for infinite scroll
     } = req.query;
 
     const filter = { organizationId, deletedAt: null };
 
     // Status filter
-    if (status) {
+    if (status && status !== 'all') {
       const statuses = status.split(',').map(s => s.trim());
       filter.status = { $in: statuses };
     }
@@ -558,7 +960,7 @@ exports.getAllSales = async (req, res) => {
       }
     }
 
-    // ✅ SEARCH FILTER (design, orderItemId, marketplaceOrderId)
+    // ✅ SEARCH FILTER
     if (search && search.trim()) {
       const searchTerm = search.trim();
       filter.$or = [
@@ -570,30 +972,35 @@ exports.getAllSales = async (req, res) => {
       ];
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    // ✅ CURSOR-BASED PAGINATION
+    if (cursor) {
+      filter._id = { $lt: cursor };
+    }
 
-    // ✅ PARALLEL QUERIES for speed
-    const [sales, total] = await Promise.all([
-      MarketplaceSale.find(filter)
-        .sort({ saleDate: -1, createdAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean()
-        .maxTimeMS(5000), // Timeout after 5 seconds
-      MarketplaceSale.countDocuments(filter)
-    ]);
+    const limitNum = parseInt(limit);
+
+    // Fetch one extra to check if more exist
+    const sales = await MarketplaceSale.find(filter)
+      .sort({ saleDate: -1, _id: -1 })
+      .limit(limitNum + 1)
+      .lean()
+      .select('-__v -editHistory')
+      .maxTimeMS(5000);
+
+    const hasMore = sales.length > limitNum;
+    const items = hasMore ? sales.slice(0, limitNum) : sales;
+    const nextCursor = hasMore ? items[items.length - 1]._id : null;
 
     res.json({
       success: true,
-      data: sales,
+      data: items,
       pagination: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(total / parseInt(limit)),
-        hasMore: skip + sales.length < total
+        hasMore,
+        nextCursor,
+        count: items.length
       }
     });
+
   } catch (error) {
     console.error('Get sales error:', error);
     res.status(500).json({
@@ -951,12 +1358,16 @@ exports.updateSale = async (req, res) => {
 
                 // ✅ SCENARIO 1: Moving TO restoring status (returned/cancelled)
                 if (newStatusType === 'restoring') {
-                  // Only restore if stock wasn't already restored
                   if ((sale.stockRestoredAmount || 0) === 0) {
-                    console.log(`✅ Restoring stock to RESERVED: +${sale.quantity}`);
+                    // ✅ USE THE INVENTORY MODE THAT WAS USED WHEN CREATING THE SALE
+                    const inventoryMode = sale.inventoryModeUsed || 'reserved';
+                    console.log(`✅ Restoring stock to ${inventoryMode.toUpperCase()}: +${sale.quantity}`);
                     
-                    // ✅ RESTORE TO RESERVED STOCK, NOT MAIN
-                    sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+                    if (inventoryMode === 'main') {
+                      sizeVariant.currentStock = (sizeVariant.currentStock || 0) + sale.quantity;
+                    } else {
+                      sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+                    }
                     
                     sale.stockRestoredAmount = sale.quantity;
                     stockRestored = sale.quantity;
@@ -966,24 +1377,32 @@ exports.updateSale = async (req, res) => {
                   }
                 }
 
-                // ✅ SCENARIO 2: Moving FROM restoring status TO deducting/none
+                // ✅ SCENARIO 2: Moving FROM restoring TO deducting/none
                 else if (oldStatusType === 'restoring' && (newStatusType === 'deducting' || newStatusType === 'none')) {
-                  // Deduct back the previously restored stock FROM RESERVED
                   if ((sale.stockRestoredAmount || 0) > 0) {
                     const amountToDeduct = sale.stockRestoredAmount;
+                    const inventoryMode = sale.inventoryModeUsed || 'reserved';
                     
-                    // ✅ Check reserved stock (not main stock)
-                    const availableReserved = sizeVariant.reservedStock || 0;
-                    if (availableReserved < amountToDeduct) {
+                    // ✅ Check the SAME inventory pool that was restored to
+                    const availableStock = inventoryMode === 'main' 
+                      ? (sizeVariant.currentStock || 0)
+                      : (sizeVariant.reservedStock || 0);
+                      
+                    if (availableStock < amountToDeduct) {
                       await session.abortTransaction();
                       return res.status(400).json({
                         success: false,
-                        message: `Insufficient reserved stock. Available: ${availableReserved}, Required: ${amountToDeduct}`
+                        message: `Insufficient ${inventoryMode} stock. Available: ${availableStock}, Required: ${amountToDeduct}`
                       });
                     }
 
-                    console.log(`🔄 Undoing stock restoration from RESERVED: -${amountToDeduct}`);
-                    sizeVariant.reservedStock -= amountToDeduct;
+                    console.log(`🔄 Undoing stock restoration from ${inventoryMode.toUpperCase()}: -${amountToDeduct}`);
+                    
+                    if (inventoryMode === 'main') {
+                      sizeVariant.currentStock -= amountToDeduct;
+                    } else {
+                      sizeVariant.reservedStock -= amountToDeduct;
+                    }
                     
                     sale.stockRestoredAmount = 0;
                     stockDeducted = amountToDeduct;
@@ -1008,8 +1427,14 @@ exports.updateSale = async (req, res) => {
                       });
                     }
 
-                    console.log(`🔄 Wrong return - undoing restoration from RESERVED: -${amountToDeduct}`);
-                    sizeVariant.reservedStock -= amountToDeduct;
+                    const inventoryMode = sale.inventoryModeUsed || 'reserved';
+                    console.log(`🔄 Wrong return - undoing restoration from ${inventoryMode.toUpperCase()}: -${amountToDeduct}`);
+
+                    if (inventoryMode === 'main') {
+                      sizeVariant.currentStock -= amountToDeduct;
+                    } else {
+                      sizeVariant.reservedStock -= amountToDeduct;
+                    }
                     
                     sale.stockRestoredAmount = 0;
                     stockDeducted = amountToDeduct;
@@ -1061,7 +1486,7 @@ exports.updateSale = async (req, res) => {
             userName: req.user.name || req.user.email,
             userRole: req.user.role
           },
-          changedAt: changedAt ? new Date(changedAt) : new Date(),
+          changedAt: changedAt ? new Date(changedAt + 'T00:00:00.000Z') : new Date(),
           comments: comments || `Status updated by admin`
         });
         sale.status = status;
@@ -1132,12 +1557,17 @@ exports.updateSale = async (req, res) => {
               console.log(`📦 Stock restored amount tracked: ${sale.stockRestoredAmount || 0}`);
 
               // ✅ SCENARIO 1: Moving TO restoring status (returned/cancelled)
-              if (newStatusType === 'restoring') {
-                if ((sale.stockRestoredAmount || 0) === 0) {
-                  console.log(`✅ Restoring stock to RESERVED: +${sale.quantity}`);
-                  
-                  // ✅ RESTORE TO RESERVED STOCK
-                  sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+                if (newStatusType === 'restoring') {
+                  if ((sale.stockRestoredAmount || 0) === 0) {
+                    // ✅ USE THE INVENTORY MODE THAT WAS USED WHEN CREATING THE SALE
+                    const inventoryMode = sale.inventoryModeUsed || 'reserved';
+                    console.log(`✅ Restoring stock to ${inventoryMode.toUpperCase()}: +${sale.quantity}`);
+                    
+                    if (inventoryMode === 'main') {
+                      sizeVariant.currentStock = (sizeVariant.currentStock || 0) + sale.quantity;
+                    } else {
+                      sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+                    }
                   
                   sale.stockRestoredAmount = sale.quantity;
                   stockRestored = sale.quantity;
@@ -1151,18 +1581,28 @@ exports.updateSale = async (req, res) => {
               else if (oldStatusType === 'restoring' && (newStatusType === 'deducting' || newStatusType === 'none')) {
                 if ((sale.stockRestoredAmount || 0) > 0) {
                   const amountToDeduct = sale.stockRestoredAmount;
+                  const inventoryMode = sale.inventoryModeUsed || 'reserved';
                   
-                  const availableReserved = sizeVariant.reservedStock || 0;
-                  if (availableReserved < amountToDeduct) {
+                  // ✅ Check the SAME inventory pool that was restored to
+                  const availableStock = inventoryMode === 'main' 
+                    ? (sizeVariant.currentStock || 0)
+                    : (sizeVariant.reservedStock || 0);
+                    
+                  if (availableStock < amountToDeduct) {
                     await session.abortTransaction();
                     return res.status(400).json({
                       success: false,
-                      message: `Insufficient reserved stock. Available: ${availableReserved}, Required: ${amountToDeduct}`
+                      message: `Insufficient ${inventoryMode} stock. Available: ${availableStock}, Required: ${amountToDeduct}`
                     });
                   }
 
-                  console.log(`🔄 Undoing restoration from RESERVED: -${amountToDeduct}`);
-                  sizeVariant.reservedStock -= amountToDeduct;
+                  console.log(`🔄 Undoing stock restoration from ${inventoryMode.toUpperCase()}: -${amountToDeduct}`);
+                  
+                  if (inventoryMode === 'main') {
+                    sizeVariant.currentStock -= amountToDeduct;
+                  } else {
+                    sizeVariant.reservedStock -= amountToDeduct;
+                  }
                   
                   sale.stockRestoredAmount = 0;
                   stockDeducted = amountToDeduct;
@@ -1184,8 +1624,14 @@ exports.updateSale = async (req, res) => {
                     });
                   }
 
-                  console.log(`🔄 Wrong return - undoing restoration from RESERVED: -${amountToDeduct}`);
-                  sizeVariant.reservedStock -= amountToDeduct;
+                  const inventoryMode = sale.inventoryModeUsed || 'reserved';
+                  console.log(`🔄 Wrong return - undoing restoration from ${inventoryMode.toUpperCase()}: -${amountToDeduct}`);
+
+                  if (inventoryMode === 'main') {
+                    sizeVariant.currentStock -= amountToDeduct;
+                  } else {
+                    sizeVariant.reservedStock -= amountToDeduct;
+                  }
                   
                   sale.stockRestoredAmount = 0;
                   stockDeducted = amountToDeduct;
@@ -1214,7 +1660,7 @@ exports.updateSale = async (req, res) => {
             userName: req.user.name || req.user.email,
             userRole: req.user.role
           },
-          changedAt: changedAt ? new Date(changedAt) : new Date(),
+          changedAt: changedAt ? new Date(changedAt + 'T00:00:00.000Z') : new Date(),
           comments: comments || `Status updated to ${status}`
         });
         sale.status = status;
@@ -1279,12 +1725,18 @@ exports.deleteSale = async (req, res) => {
       if (colorVariant) {
         const sizeVariant = colorVariant.sizes.find(s => s.size === sale.size);
         if (sizeVariant) {
-          console.log(`🔄 Restoring ${sale.quantity} units to reserved stock for ${sale.design}-${sale.color}-${sale.size}`);
-          console.log(`📦 Before: Reserved = ${sizeVariant.reservedStock || 0}`);
-          
-          sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
-          
-          console.log(`📦 After: Reserved = ${sizeVariant.reservedStock}`);
+          const inventoryMode = sale.inventoryModeUsed || 'reserved';
+          console.log(`🔄 Restoring ${sale.quantity} units to ${inventoryMode} stock for ${sale.design}-${sale.color}-${sale.size}`);
+
+          if (inventoryMode === 'main') {
+            console.log(`📦 Before: Main = ${sizeVariant.currentStock || 0}`);
+            sizeVariant.currentStock = (sizeVariant.currentStock || 0) + sale.quantity;
+            console.log(`📦 After: Main = ${sizeVariant.currentStock}`);
+          } else {
+            console.log(`📦 Before: Reserved = ${sizeVariant.reservedStock || 0}`);
+            sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+            console.log(`📦 After: Reserved = ${sizeVariant.reservedStock}`);
+          }
           
           // ✅ CRITICAL: Mark nested array as modified for Mongoose to save it
           product.markModified('colors');
@@ -1466,7 +1918,7 @@ exports.exportOrders = async (req, res) => {
   }
 };
 
-// ✅ OPTIMIZED CSV IMPORT - 10-25x FASTER
+// MODIFIED: Import with SKU mapping support
 exports.importFromCSV = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -1478,37 +1930,37 @@ exports.importFromCSV = async (req, res) => {
     // Validation
     if (!csvData || !Array.isArray(csvData) || csvData.length === 0) {
       await session.abortTransaction();
-      return res.status(400).json({
-        code: 'INVALID_DATA',
-        message: 'CSV data is required and must be an array'
+      return res.status(400).json({ 
+        code: 'INVALID_DATA', 
+        message: 'CSV data is required and must be an array' 
       });
     }
 
     if (!accountName) {
       await session.abortTransaction();
-      return res.status(400).json({
-        code: 'INVALID_DATA',
-        message: 'Account name is required'
+      return res.status(400).json({ 
+        code: 'INVALID_DATA', 
+        message: 'Account name is required' 
       });
     }
 
     if (!dispatchDate) {
       await session.abortTransaction();
-      return res.status(400).json({
-        code: 'INVALID_DATA',
-        message: 'Dispatch date is required'
+      return res.status(400).json({ 
+        code: 'INVALID_DATA', 
+        message: 'Dispatch date is required' 
       });
     }
 
-    const results = {
-      success: [],
-      failed: [],
-      duplicates: []
-    };
+    // Get tenant's inventory mode
+    const tenantSettings = await TenantSettings.findOne({ userId: req.user.id }).session(session);
+    const inventoryMode = tenantSettings?.inventoryMode || 'reserved';
 
-    // ========================================
-    // OPTIMIZATION 1: Bulk Check Duplicates
-    // ========================================
+    logger.info('CSV Import using inventory mode', { organizationId, inventoryMode, rowCount: csvData.length });
+
+    const results = { success: [], failed: [], duplicates: [] };
+
+    // STEP 1: Bulk check duplicates
     const orderItemIds = csvData.map(row => row.orderItemId).filter(Boolean);
     const existingOrders = await MarketplaceSale.find({
       orderItemId: { $in: orderItemIds },
@@ -1518,114 +1970,192 @@ exports.importFromCSV = async (req, res) => {
 
     const existingOrderItemIds = new Set(existingOrders.map(o => o.orderItemId));
 
-    // ========================================
-    // OPTIMIZATION 2: Pre-fetch All Products
-    // ========================================
+    // STEP 2: Pre-fetch ALL SKU mappings for this account
+    const allMappings = await MarketplaceSKUMapping.find({
+      organizationId,
+      accountName
+    }).session(session).lean();
+
+    // Create SKU lookup map
+    const skuMappingMap = new Map();
+    allMappings.forEach(mapping => {
+      skuMappingMap.set(mapping.marketplaceSKU, {
+        design: mapping.design,
+        color: mapping.color,
+        size: mapping.size
+      });
+    });
+
+    logger.info('Found existing SKU mappings', { count: skuMappingMap.size });
+
+    // STEP 3: Pre-fetch all products
     const uniqueDesigns = [...new Set(csvData.map(row => row.design))];
     const products = await Product.find({
       design: { $in: uniqueDesigns },
       organizationId
     }).session(session);
 
-    // Create product lookup map for O(1) access
     const productMap = new Map();
     products.forEach(product => {
       productMap.set(product.design, product);
     });
 
-    // ========================================
-    // OPTIMIZATION 3: Process & Validate in Memory
-    // ========================================
+    // STEP 4: Process and validate in memory
     const salesToInsert = [];
     const transfersToInsert = [];
-    const stockUpdates = []; // Track stock changes
+    const stockChangesByProduct = new Map();
+    const unmappedSKUs = new Set(); // Track SKUs that need mapping
 
     for (const row of csvData) {
       const { design, color, size, quantity, orderId, orderItemId, sku } = row;
 
-      // Check duplicate (from pre-fetched set)
+      // Check duplicate
       if (existingOrderItemIds.has(orderItemId)) {
-        results.duplicates.push({
+        results.duplicates.push({ orderItemId, sku, reason: 'Order already exists' });
+        continue;
+      }
+
+      let finalDesign, finalColor, finalSize;
+
+      // TRY 1: Check if SKU mapping exists
+      if (sku && skuMappingMap.has(sku)) {
+        const mapping = skuMappingMap.get(sku);
+        finalDesign = mapping.design;
+        finalColor = mapping.color;
+        finalSize = mapping.size;
+        
+        logger.info('Used existing SKU mapping', { sku, design: finalDesign, color: finalColor, size: finalSize });
+
+        // Update usage stats (async, don't wait)
+        MarketplaceSKUMapping.updateOne(
+          { organizationId, accountName, marketplaceSKU: sku },
+          { 
+            lastUsedAt: new Date(),
+            $inc: { usageCount: 1 }
+          }
+        ).session(session).exec();
+      }
+      // TRY 2: Use current parser (existing logic)
+      else if (design && color && size) {
+        finalDesign = design;
+        finalColor = color;
+        finalSize = size;
+      }
+      // TRY 3: Parse SKU if provided
+      else if (sku) {
+        const parsed = parseMarketplaceSKU(sku);
+        
+        if (!parsed.design || !parsed.color || !parsed.size) {
+          // Mark as unmapped - need user mapping
+          unmappedSKUs.add(sku);
+          results.failed.push({
+            orderItemId,
+            sku,
+            reason: 'SKU not mapped. Please map this SKU first.',
+            needsMapping: true
+          });
+          continue;
+        }
+
+        finalDesign = parsed.design;
+        finalColor = parsed.color;
+        finalSize = parsed.size;
+      }
+      // FAIL: No data available
+      else {
+        results.failed.push({
           orderItemId,
           sku,
-          reason: 'Order already exists'
+          reason: 'No SKU or product data available'
         });
         continue;
       }
 
-      // Find product (from pre-fetched map)
-      const product = productMap.get(design);
+      // Find product from pre-fetched map
+      const product = productMap.get(finalDesign);
       if (!product) {
         results.failed.push({
           orderItemId,
           sku,
-          reason: `Product ${design} not found`
+          reason: `Design "${finalDesign}" not found in inventory`,
+          needsMapping: sku ? true : false
         });
         continue;
       }
 
-      // Match color
-      const availableColors = product.colors.map(c => ({ color: c.color }));
-      const matchedColor = matchColorToInventory(color, availableColors);
+      // Match color (case-insensitive, fuzzy matching)
+      const availableColors = product.colors.map(c => c.color);
+      const matchedColor = matchColor(finalColor, availableColors);
+      
       if (!matchedColor) {
         results.failed.push({
           orderItemId,
           sku,
-          reason: `Color "${color}" not matched. Available: ${availableColors.map(c => c.color).join(', ')}`
+          reason: `Color "${finalColor}" not found in design "${finalDesign}". Available: ${availableColors.join(', ')}`,
+          needsMapping: sku ? true : false
         });
         continue;
       }
 
-      // Find color variant
       const colorVariant = product.colors.find(c => c.color === matchedColor);
-      if (!colorVariant) {
-        results.failed.push({
-          orderItemId,
-          sku,
-          reason: `Color ${color} not found in ${design}`
-        });
-        continue;
-      }
+      const sizeIndex = colorVariant.sizes.findIndex(s => s.size === finalSize);
 
-      // Find size
-      const sizeIndex = colorVariant.sizes.findIndex(s => s.size === size);
       if (sizeIndex === -1) {
         results.failed.push({
           orderItemId,
           sku,
-          reason: `Size ${size} not found in ${design}-${color}`
+          reason: `Size "${finalSize}" not found in ${finalDesign}-${matchedColor}`,
+          needsMapping: sku ? true : false
         });
         continue;
       }
 
       const sizeVariant = colorVariant.sizes[sizeIndex];
+
+      // Check stock based on inventory mode
+      const mainStock = sizeVariant.currentStock || 0;
       const reservedStock = sizeVariant.reservedStock || 0;
 
-      // Check stock
-      if (reservedStock < quantity) {
-        results.failed.push({
-          orderItemId,
-          reason: `Insufficient reserved stock. Available: ${reservedStock}, Need: ${quantity}`,
-          design,
-          color,
-          size
-        });
-        continue;
+      if (inventoryMode === 'main') {
+        if (mainStock < quantity) {
+          results.failed.push({
+            orderItemId,
+            sku,
+            reason: `Insufficient main stock. Available: ${mainStock}, Need: ${quantity}`,
+            design: finalDesign,
+            color: matchedColor,
+            size: finalSize
+          });
+          continue;
+        }
+      } else {
+        if (reservedStock < quantity) {
+          results.failed.push({
+            orderItemId,
+            sku,
+            reason: `Insufficient reserved stock. Available: ${reservedStock}, Need: ${quantity}`,
+            design: finalDesign,
+            color: matchedColor,
+            size: finalSize
+          });
+          continue;
+        }
       }
 
-      // ✅ Store stock snapshots BEFORE deduction
-      const reservedBefore = sizeVariant.reservedStock;
-      const mainBefore = sizeVariant.currentStock;
+      // Track stock changes
+      const productId = product._id.toString();
+      if (!stockChangesByProduct.has(productId)) {
+        stockChangesByProduct.set(productId, []);
+      }
 
-      // Deduct stock (in memory)
-      colorVariant.sizes[sizeIndex].reservedStock -= quantity;
-
-      // Track this update for later bulk save
-      stockUpdates.push({
-        product,
-        design,
-        color,
-        size
+      stockChangesByProduct.get(productId).push({
+        design: finalDesign,
+        color: matchedColor,
+        size: finalSize,
+        quantity,
+        sizeIndex,
+        mainBefore: mainStock,
+        reservedBefore: reservedStock
       });
 
       // Prepare sale document
@@ -1633,101 +2163,110 @@ exports.importFromCSV = async (req, res) => {
         accountName,
         marketplaceOrderId: orderId,
         orderItemId,
-        design,
-        color,
-        size,
+        design: finalDesign,
+        color: matchedColor,
+        size: finalSize,
         quantity,
         saleDate: new Date(dispatchDate),
         status: 'dispatched',
-        notes: `Imported from CSV`,
+        notes: 'Imported from CSV',
         organizationId,
+        tenantId: organizationId,
+        inventoryModeUsed: inventoryMode,
         createdByUser: {
-          userId: req.user._id,
+          userId,
           userName: req.user.name || req.user.email,
           userRole: req.user.role,
           createdAt: new Date()
         }
       });
 
-      // Prepare transfer log (will get saleId after insert)
-      transfersToInsert.push({
-        design,
-        color,
-        size,
-        quantity,
-        type: 'marketplace_order',
-        from: 'reserved',
-        to: 'sold',
-        mainStockBefore: mainBefore,
-        reservedStockBefore: reservedBefore,
-        mainStockAfter: mainBefore, // No change to main
-        reservedStockAfter: sizeVariant.reservedStock, // After deduction
-        relatedOrderId: null, // Will update after insertMany
-        relatedOrderType: 'marketplace',
-        performedBy: userId,
-        notes: `CSV Import - ${orderId}`,
-        organizationId
-      });
-
-      results.success.push({ orderItemId });
+      results.success.push({ orderItemId, sku });
     }
 
-    // ========================================
-    // OPTIMIZATION 4: Bulk Insert Sales
-    // ========================================
-    let insertedSales = [];
-    if (salesToInsert.length > 0) {
-      insertedSales = await MarketplaceSale.insertMany(salesToInsert, { session, ordered: false });
-      
-      // Update transfer logs with actual sale IDs
-      transfersToInsert.forEach((transfer, index) => {
-        transfer.relatedOrderId = insertedSales[index]._id;
-      });
-    }
+    // STEP 5: Apply stock changes and save products
+    for (const [productId, changes] of stockChangesByProduct.entries()) {
+      const product = products.find(p => p._id.toString() === productId);
 
-    // ========================================
-    // OPTIMIZATION 5: Bulk Update Stock
-    // ========================================
-    // Group by product to minimize saves
-    const productsToSave = new Map();
-    stockUpdates.forEach(({ product }) => {
-      if (!productsToSave.has(product._id.toString())) {
-        productsToSave.set(product._id.toString(), product);
+      for (const change of changes) {
+        const colorVariant = product.colors.find(c => c.color === change.color);
+        
+        if (inventoryMode === 'main') {
+          colorVariant.sizes[change.sizeIndex].currentStock -= change.quantity;
+        } else {
+          colorVariant.sizes[change.sizeIndex].reservedStock -= change.quantity;
+        }
       }
-    });
 
-    // Save each unique product once
-    for (const product of productsToSave.values()) {
+      product.markModified('colors');
       await product.save({ session });
     }
 
-    // ========================================
-    // OPTIMIZATION 6: Bulk Insert Transfers
-    // ========================================
+    // STEP 6: Bulk insert sales
+    let insertedSales = [];
+    if (salesToInsert.length > 0) {
+      insertedSales = await MarketplaceSale.insertMany(salesToInsert, { session });
+      logger.info('Bulk inserted sales', { count: insertedSales.length });
+    }
+
+    // STEP 7: Create transfer logs
+    for (let i = 0; i < insertedSales.length; i++) {
+      const sale = insertedSales[i];
+      const change = Array.from(stockChangesByProduct.values())
+        .flat()
+        .find(c => 
+          c.design === sale.design && 
+          c.color === sale.color && 
+          c.size === sale.size
+        );
+
+      if (change) {
+        transfersToInsert.push({
+          design: sale.design,
+          color: sale.color,
+          size: sale.size,
+          quantity: sale.quantity,
+          type: 'marketplaceorder',
+          from: inventoryMode === 'main' ? 'main' : 'reserved',
+          to: 'sold',
+          mainStockBefore: change.mainBefore,
+          reservedStockBefore: change.reservedBefore,
+          mainStockAfter: inventoryMode === 'main' ? change.mainBefore - sale.quantity : change.mainBefore,
+          reservedStockAfter: inventoryMode === 'reserved' ? change.reservedBefore - sale.quantity : change.reservedBefore,
+          relatedOrderId: sale._id,
+          relatedOrderType: 'marketplace',
+          performedBy: userId,
+          notes: `Marketplace order ${sale.marketplaceOrderId} created via CSV import`,
+          organizationId
+        });
+      }
+    }
+
     if (transfersToInsert.length > 0) {
-      await Transfer.insertMany(transfersToInsert, { session, ordered: false });
+      await Transfer.insertMany(transfersToInsert, { session });
+      logger.info('Created transfer logs', { count: transfersToInsert.length });
     }
 
     await session.commitTransaction();
 
-    logger.info('CSV Import completed', {
-      success: results.success.length,
-      failed: results.failed.length,
-      duplicates: results.duplicates.length
-    });
-
+    // Return results with unmapped SKUs info
     res.json({
       success: true,
-      message: `Imported ${results.success.length} orders`,
-      data: results
+      data: {
+        success: results.success,
+        failed: results.failed,
+        duplicates: results.duplicates,
+        unmappedSKUs: Array.from(unmappedSKUs),
+        needsMapping: unmappedSKUs.size > 0
+      }
     });
 
   } catch (error) {
     await session.abortTransaction();
-    logger.error('CSV Import failed', { error: error.message });
+    logger.error('CSV import failed', { error: error.message });
     res.status(500).json({
       code: 'IMPORT_FAILED',
-      message: 'CSV import failed',
+      message: 'Failed to import CSV',
       error: error.message
     });
   } finally {
@@ -1848,6 +2387,133 @@ exports.getOrdersByDate = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch orders',
+      error: error.message
+    });
+  }
+};
+
+// ADD THIS NEW ENDPOINT - Global search across all tabs
+exports.searchOrderGlobally = async (req, res) => {
+  try {
+    const { query } = req.query;
+    const { organizationId } = req.user;
+
+    if (!query || query.trim().length < 2) {
+      return res.json({ found: false, orders: [], count: 0 });
+    }
+
+    const searchTerm = query.trim();
+
+    // Search across ALL statuses, deletedAt: null
+    const orders = await MarketplaceSale.find({
+      organizationId,
+      deletedAt: null,
+      $or: [
+        { orderItemId: { $regex: searchTerm, $options: 'i' } },
+        { marketplaceOrderId: { $regex: searchTerm, $options: 'i' } },
+        { design: { $regex: searchTerm, $options: 'i' } },
+        { color: { $regex: searchTerm, $options: 'i' } },
+        { size: { $regex: searchTerm, $options: 'i' } }
+      ]
+    })
+    .sort({ saleDate: -1 })
+    .limit(100) // Limit to 100 results
+    .lean();
+
+    if (orders.length === 0) {
+      return res.json({ found: false, orders: [], count: 0 });
+    }
+
+    // Group by status for tab counts
+    const byStatus = orders.reduce((acc, order) => {
+      acc[order.status] = (acc[order.status] || 0) + 1;
+      return acc;
+    }, {});
+
+    res.json({
+      found: true,
+      orders: orders,
+      count: orders.length,
+      byStatus: byStatus, // { dispatched: 2, returned: 1, cancelled: 1 }
+      uniqueStatuses: [...new Set(orders.map(o => o.status))]
+    });
+  } catch (error) {
+    logger.error('Global search failed', { error: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: 'Search failed',
+      error: error.message 
+    });
+  }
+};
+
+// Search orders by specific date
+exports.searchByDate = async (req, res) => {
+  try {
+    const { date, accountName, status } = req.query;
+    const { organizationId } = req.user;
+
+    if (!date) {
+      return res.status(400).json({
+        success: false,
+        message: 'Date parameter is required'
+      });
+    }
+
+    const filter = { organizationId, deletedAt: null };
+
+    // Account filter
+    if (accountName && accountName !== 'all') {
+      filter.accountName = accountName;
+    }
+
+    // Status filter
+    if (status && status !== 'all') {
+      const statuses = status.split(',').map(s => s.trim());
+      filter.status = { $in: statuses };
+    }
+
+    // ✅ FETCH ALL ORDERS without date filter first
+    const allOrders = await MarketplaceSale.find(filter)
+      .sort({ saleDate: -1 })
+      .lean()
+      .maxTimeMS(10000);
+
+    // ✅ FILTER BY displayDate AFTER fetching
+    const orders = allOrders.filter(order => {
+      const displayDate = getDisplayDate(order);
+      return displayDate === date;
+    });
+
+    // ✅ ATTACH displayDate to each order
+    const ordersWithDisplayDate = orders.map(order => ({
+      ...order,
+      displayDate: getDisplayDate(order)
+    }));
+
+    if (ordersWithDisplayDate.length === 0) {
+      return res.json({ found: false, orders: [], count: 0 });
+    }
+
+    // Group by status for tab counts
+    const byStatus = ordersWithDisplayDate.reduce((acc, order) => {
+      acc[order.status] = (acc[order.status] || 0) + 1;
+      return acc;
+    }, {});
+
+    res.json({
+      found: true,
+      orders: ordersWithDisplayDate,
+      count: ordersWithDisplayDate.length,
+      byStatus: byStatus,
+      uniqueStatuses: [...new Set(ordersWithDisplayDate.map(o => o.status))]
+    });
+
+  } catch (error) {
+    logger.error('Date search failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Date search failed',
       error: error.message
     });
   }

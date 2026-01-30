@@ -171,6 +171,99 @@ const generateBillNumber = async (organizationId, customSequence = null, session
   }
 };
 
+/**
+ * SMART ALGORITHM: Find best product combination to match target amount
+ * Uses greedy approach with optimization
+ */
+const findBestProductCombination = (targetTaxableAmount, availablePrices, gstRate) => {
+  // Sort prices ascending
+  const prices = [...new Set(availablePrices)].sort((a, b) => a - b);
+  
+  let bestCombination = null;
+  let smallestDifference = Infinity;
+  
+  logger.info('Finding product combination', {
+    targetTaxable: targetTaxableAmount,
+    availablePrices: prices
+  });
+  
+  // STRATEGY 1: Try single price multiples (most common case)
+  for (const price of prices) {
+    // Try floor and ceil quantities
+    const exactQty = targetTaxableAmount / price;
+    const quantities = [Math.floor(exactQty), Math.ceil(exactQty)];
+    
+    for (const qty of quantities) {
+      if (qty <= 0 || qty > 1000) continue; // Reasonable limits
+      
+      const amount = qty * price;
+      const difference = Math.abs(targetTaxableAmount - amount);
+      
+      if (difference < smallestDifference) {
+        smallestDifference = difference;
+        bestCombination = {
+          products: [{ price, quantity: qty, amount }],
+          totalAmount: amount,
+          difference,
+          strategy: 'single-price'
+        };
+      }
+      
+      // If perfect match, return immediately
+      if (difference < 1) {
+        logger.info('Perfect match found', { price, qty, amount });
+        return bestCombination;
+      }
+    }
+  }
+  
+  // STRATEGY 2: Try two-price combinations (better accuracy)
+  if (smallestDifference > 50 && prices.length >= 2) {
+    for (let i = 0; i < prices.length; i++) {
+      for (let j = i; j < prices.length; j++) {
+        const price1 = prices[i];
+        const price2 = prices[j];
+        
+        // Try different quantity combinations (max 20 iterations each)
+        for (let qty1 = 0; qty1 <= 20; qty1++) {
+          const remaining = targetTaxableAmount - (qty1 * price1);
+          const qty2 = Math.round(remaining / price2);
+          
+          if (qty2 < 0 || qty2 > 20) continue;
+          
+          const amount = (qty1 * price1) + (qty2 * price2);
+          const difference = Math.abs(targetTaxableAmount - amount);
+          
+          if (difference < smallestDifference) {
+            smallestDifference = difference;
+            const products = [];
+            if (qty1 > 0) products.push({ price: price1, quantity: qty1, amount: qty1 * price1 });
+            if (qty2 > 0) products.push({ price: price2, quantity: qty2, amount: qty2 * price2 });
+            
+            bestCombination = {
+              products,
+              totalAmount: amount,
+              difference,
+              strategy: 'two-price'
+            };
+          }
+          
+          if (difference < 1) break;
+        }
+      }
+    }
+  }
+  
+  logger.info('Best combination found', {
+    strategy: bestCombination?.strategy,
+    products: bestCombination?.products,
+    difference: bestCombination?.difference,
+    accuracy: `${(100 - (bestCombination?.difference / targetTaxableAmount * 100)).toFixed(2)}%`
+  });
+  
+  return bestCombination;
+};
+
 // Generate monthly bill
 const generateBill = async (req, res) => {
   const session = await mongoose.startSession();
@@ -340,6 +433,88 @@ const generateBill = async (req, res) => {
       };
     });
 
+    // 🔥 NEW: Check if buyer has unbilled amount from previous period
+    const previousUnbilledAmount = req.body.adjustPreviousUnbilled || 0; // From frontend
+
+    if (previousUnbilledAmount > 0) {
+      logger.info('🔧 Adjusting for unbilled previous amount', {
+        buyerId: buyer._id,
+        unbilledAmount: previousUnbilledAmount,
+        month,
+        year
+      });
+      
+      // STEP 1: Convert to taxable amount
+      const targetTaxable = previousUnbilledAmount / (1 + gstRate / 100);
+      
+      // STEP 2: Extract unique prices from current orders
+      const availablePrices = [];
+      orders.forEach(order => {
+        order.items.forEach(item => {
+          if (item.pricePerUnit && item.pricePerUnit > 0) {
+            availablePrices.push(item.pricePerUnit);
+          }
+        });
+      });
+      
+      if (availablePrices.length === 0) {
+        logger.warn('No product prices available for adjustment');
+      } else {
+        // STEP 3: Find best product combination
+        const combination = findBestProductCombination(targetTaxable, availablePrices, gstRate);
+        
+        if (combination) {
+          // STEP 4: Create adjustment challan
+          const adjustmentItems = combination.products.map(p => {
+            // Find a product with this price to get color/size
+            let productInfo = { color: 'Mixed', size: 'Assorted' };
+            
+            for (const order of orders) {
+              const matchingItem = order.items.find(item => item.pricePerUnit === p.price);
+              if (matchingItem) {
+                productInfo = { color: matchingItem.color, size: matchingItem.size };
+                break;
+              }
+            }
+            
+            return {
+              color: productInfo.color,
+              size: productInfo.size,
+              quantity: p.quantity,
+              price: parseFloat(p.price.toFixed(2)),
+              amount: parseFloat(p.amount.toFixed(2))
+            };
+          });
+          
+          const adjustmentTaxable = combination.totalAmount;
+          const adjustmentGst = adjustmentTaxable * (gstRate / 100);
+          const adjustmentTotal = adjustmentTaxable + adjustmentGst;
+          
+          const adjustmentChallan = {
+            challanId: null, // No actual order
+            challanNumber: 'PREV-ADJ', // Special marker
+            challanDate: new Date(),
+            items: adjustmentItems,
+            itemsQty: combination.products.reduce((sum, p) => sum + p.quantity, 0),
+            taxableAmount: parseFloat(adjustmentTaxable.toFixed(2)),
+            gstAmount: parseFloat(adjustmentGst.toFixed(2)),
+            totalAmount: parseFloat(adjustmentTotal.toFixed(2))
+          };
+          
+          // Add to challans array
+          challans.push(adjustmentChallan);
+          
+          logger.info('✅ Adjustment challan added', {
+            targetAmount: previousUnbilledAmount,
+            actualAmount: adjustmentTotal,
+            difference: Math.abs(previousUnbilledAmount - adjustmentTotal),
+            products: combination.products,
+            accuracy: `${(100 - (combination.difference / targetTaxable * 100)).toFixed(2)}%`
+          });
+        }
+      }
+    }
+
     // Calculate financials
     const totalTaxableAmount = challans.reduce((sum, c) => sum + c.taxableAmount, 0);
     const totalGstAmount = challans.reduce((sum, c) => sum + c.gstAmount, 0);
@@ -355,14 +530,34 @@ const generateBill = async (req, res) => {
     const igst = !isSameState ? totalGstAmount : 0;
 
     // Get previous outstanding (unpaid bills)
-    const previousBills = await MonthlyBill.find({
-      organizationId,
-      'buyer.id': buyerId,
-      status: { $in: ['generated', 'sent', 'partial', 'overdue'] },
-      'billingPeriod.endDate': { $lt: startDate }
-    }).session(session);
+    // 🔥 NEW: If we're adjusting previous unbilled amount, skip previous outstanding
+    let previousOutstanding = 0;
 
-    const previousOutstanding = previousBills.reduce((sum, bill) => sum + bill.financials.balanceDue, 0);
+    if (!previousUnbilledAmount || previousUnbilledAmount === 0) {
+      // Normal flow - get previous outstanding from unpaid bills
+      const previousBills = await MonthlyBill.find({
+        organizationId,
+        'buyer.id': buyerId,
+        status: { $in: ['generated', 'sent', 'partial', 'overdue'] },
+        'billingPeriod.endDate': { $lt: startDate }
+      }).session(session);
+
+      previousOutstanding = previousBills.reduce((sum, bill) => 
+        sum + bill.financials.balanceDue, 0
+      );
+      
+      logger.info('Previous outstanding calculated from unpaid bills', {
+        buyerId,
+        previousBills: previousBills.length,
+        previousOutstanding
+      });
+    } else {
+      // Adjustment mode - previous unbilled amount is already included in products
+      logger.info('🔧 Skipping previous outstanding (adjustment mode)', {
+        buyerId,
+        adjustmentAmount: previousUnbilledAmount
+      });
+    }
 
     // ✅ NEW: Check if challans in this bill are already paid
     const challanIds = challans.map(c => c.challanId);
@@ -1878,7 +2073,7 @@ const deletePaymentFromBill = async (req, res) => {
 };
 
 // Split bill into multiple bills with different GST profiles - SMART HYBRID ALGORITHM
-// POST /api/monthly-bills/:id/split
+// Split bill into multiple bills with different GST profiles - FIXED VERSION
 const splitBill = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -1952,6 +2147,8 @@ const splitBill = async (req, res) => {
     // Generate split group ID for tracking
     const splitGroupId = `split_${Date.now()}`;
 
+    const gstRate = parentBill.financials.gstRate || 5;
+
     // ============================================================================
     // STEP 1: FLATTEN ALL ITEMS FROM ALL CHALLANS INTO ITEM POOL
     // ============================================================================
@@ -1965,14 +2162,12 @@ const splitBill = async (req, res) => {
           challanNumber: challan.challanNumber,
           challanDate: challan.challanDate,
           
-          // Item details
+          // Item details (prices are already taxable in your system)
           color: item.color,
           size: item.size,
           quantity: item.quantity,
-          price: item.price, // Price per unit (includes GST)
-          
-          // Amounts
-          amount: item.amount, // Total amount for this item (qty × price)
+          price: item.price, // ✅ Taxable price (₹360, ₹400)
+          amount: item.amount, // ✅ Taxable amount (qty × price)
           
           // Keep original challan reference for grouping later
           sourceChallan: {
@@ -1995,11 +2190,19 @@ const splitBill = async (req, res) => {
     // ============================================================================
     itemPool.sort((a, b) => a.price - b.price);
 
+    // ============================================================================
+    // STEP 3: DELETE PARENT BILL BEFORE CREATING CHILDREN
+    // ============================================================================
+    await MonthlyBill.findByIdAndDelete(parentBill._id).session(session);
+    logger.info('Parent bill deleted before creating children', {
+      parentBillId: parentBill._id,
+      parentBillNumber: parentBill.billNumber
+    });
+
     const createdBills = [];
-    const gstRate = parentBill.financials.gstRate || 5;
 
     // ============================================================================
-    // STEP 3: ALLOCATE ITEMS TO EACH SPLIT
+    // STEP 4: ALLOCATE ITEMS TO EACH SPLIT
     // ============================================================================
     for (let i = 0; i < splits.length; i++) {
       const split = splits[i];
@@ -2063,9 +2266,19 @@ const splitBill = async (req, res) => {
         });
       } else {
         // ========================================================================
-        // REGULAR SPLIT: SMART GREEDY ALLOCATION
+        // REGULAR SPLIT: SMART GREEDY ALLOCATION (WHOLE PIECES ONLY)
         // ========================================================================
-        let remainingTarget = targetAmount;
+        
+        // Convert target amount (with GST) to taxable target
+        const targetTaxable = targetAmount / (1 + gstRate / 100);
+        let remainingTarget = targetTaxable;
+
+        logger.info('Starting allocation for regular split', {
+          splitIndex: i + 1,
+          targetAmountWithGST: targetAmount,
+          targetTaxable: targetTaxable.toFixed(2),
+          gstRate
+        });
 
         while (remainingTarget > 0 && itemPool.length > 0) {
           const item = itemPool[0]; // Smallest price item (sorted)
@@ -2089,19 +2302,19 @@ const splitBill = async (req, res) => {
               item: `${item.color} ${item.size}`,
               quantity: itemQuantity,
               amount: itemTotalAmount,
-              remainingTarget
+              remainingTarget: remainingTarget.toFixed(2)
             });
           } else if (maxUnitsToFit > 0) {
             // ================================================================
-            // TAKE PARTIAL QUANTITY FROM THIS ITEM
+            // TAKE PARTIAL QUANTITY FROM THIS ITEM (WHOLE PIECES ONLY)
             // ================================================================
-            const partialAmount = maxUnitsToFit * itemUnitPrice;
+            const partialAmount = parseFloat((maxUnitsToFit * itemUnitPrice).toFixed(2));
             
             // Create partial item for this split
             const partialItem = {
               ...item,
-              quantity: maxUnitsToFit,
-              amount: parseFloat(partialAmount.toFixed(2))
+              quantity: maxUnitsToFit, // ✅ Always whole number
+              amount: partialAmount
             };
 
             allocatedItems.push(partialItem);
@@ -2117,7 +2330,7 @@ const splitBill = async (req, res) => {
               quantityTaken: maxUnitsToFit,
               quantityRemaining: item.quantity,
               amountTaken: partialAmount,
-              remainingTarget
+              remainingTarget: remainingTarget.toFixed(2)
             });
 
             // If item is fully consumed, remove from pool
@@ -2131,7 +2344,7 @@ const splitBill = async (req, res) => {
             logger.info('Item does not fit, stopping allocation', {
               item: `${item.color} ${item.size}`,
               itemUnitPrice,
-              remainingTarget
+              remainingTarget: remainingTarget.toFixed(2)
             });
             break;
           }
@@ -2141,13 +2354,13 @@ const splitBill = async (req, res) => {
           splitIndex: i + 1,
           targetAmount,
           actualAmount: allocatedAmount,
-          difference: targetAmount - allocatedAmount,
+          difference: targetTaxable - allocatedAmount,
           itemsAllocated: allocatedItems.length
         });
       }
 
       // ========================================================================
-      // STEP 4: GROUP ALLOCATED ITEMS BACK INTO CHALLANS BY SOURCE
+      // STEP 5: GROUP ALLOCATED ITEMS BACK INTO CHALLANS BY SOURCE
       // ========================================================================
       const challanMap = new Map();
 
@@ -2169,32 +2382,26 @@ const splitBill = async (req, res) => {
 
         const challan = challanMap.get(challanKey);
         
-        // Calculate taxable and GST amounts
-        const itemTotalWithGST = item.amount;
-        const itemTaxable = itemTotalWithGST / (1 + gstRate / 100);
-        const itemGST = itemTotalWithGST - itemTaxable;
-
+        // Add item with taxable amounts
         challan.items.push({
           color: item.color,
           size: item.size,
-          quantity: item.quantity,
-          price: parseFloat(item.price.toFixed(2)),
-          amount: parseFloat(item.amount.toFixed(2))
+          quantity: item.quantity, // ✅ Whole number
+          price: parseFloat(item.price.toFixed(2)), // ✅ Exact price from challan
+          amount: parseFloat(item.amount.toFixed(2)) // ✅ Taxable amount
         });
 
         challan.itemsQty += item.quantity;
-        challan.taxableAmount += itemTaxable;
-        challan.gstAmount += itemGST;
-        challan.totalAmount += itemTotalWithGST;
+        challan.taxableAmount += item.amount;
       });
 
-      // Convert map to array and round amounts
-      const reconstructedChallans = Array.from(challanMap.values()).map(challan => ({
-        ...challan,
-        taxableAmount: parseFloat(challan.taxableAmount.toFixed(2)),
-        gstAmount: parseFloat(challan.gstAmount.toFixed(2)),
-        totalAmount: parseFloat(challan.totalAmount.toFixed(2))
-      }));
+      // Calculate GST for each challan
+      const reconstructedChallans = Array.from(challanMap.values()).map(challan => {
+        challan.taxableAmount = parseFloat(challan.taxableAmount.toFixed(2));
+        challan.gstAmount = parseFloat((challan.taxableAmount * (gstRate / 100)).toFixed(2));
+        challan.totalAmount = parseFloat((challan.taxableAmount + challan.gstAmount).toFixed(2));
+        return challan;
+      });
 
       logger.info('Challans reconstructed for split', {
         splitIndex: i + 1,
@@ -2203,11 +2410,11 @@ const splitBill = async (req, res) => {
       });
 
       // ========================================================================
-      // STEP 5: CALCULATE FINANCIALS FOR THIS CHILD BILL
+      // STEP 6: CALCULATE FINANCIALS FOR THIS CHILD BILL
       // ========================================================================
-      const invoiceTotal = reconstructedChallans.reduce((sum, c) => sum + c.totalAmount, 0);
       const totalTaxableAmount = reconstructedChallans.reduce((sum, c) => sum + c.taxableAmount, 0);
       const totalGstAmount = reconstructedChallans.reduce((sum, c) => sum + c.gstAmount, 0);
+      const invoiceTotal = totalTaxableAmount + totalGstAmount;
 
       // Check state for CGST/SGST or IGST
       const buyerState = gstProfile ? gstProfile.stateCode : buyer.stateCode || parentBill.buyer.stateCode || '24';
@@ -2219,7 +2426,7 @@ const splitBill = async (req, res) => {
       const igst = !isSameState ? totalGstAmount : 0;
 
       // ============================================================================
-      // GENERATE BILL NUMBER: First child inherits parent's number
+      // STEP 7: GENERATE BILL NUMBER
       // ============================================================================
       let billNumber;
 
@@ -2274,7 +2481,7 @@ const splitBill = async (req, res) => {
       };
 
       // ========================================================================
-      // STEP 6: CREATE CHILD BILL
+      // STEP 8: CREATE CHILD BILL
       // ========================================================================
       const childBill = await MonthlyBill.create([{
         billNumber,
@@ -2313,7 +2520,8 @@ const splitBill = async (req, res) => {
           actualAmount: parseFloat(invoiceTotal.toFixed(2)),
           variance: parseFloat((invoiceTotal - targetAmount).toFixed(2))
         },
-        organizationId
+        organizationId,
+        tenantId: parentBill.tenantId || organizationId.toString()
       }], { session });
 
       createdBills.push(childBill[0]);
@@ -2336,20 +2544,9 @@ const splitBill = async (req, res) => {
     }
 
     // ============================================================================
-    // STEP 7: SAVE BUYER WITH UPDATED GST PROFILE USAGE
+    // STEP 9: SAVE BUYER WITH UPDATED GST PROFILE USAGE
     // ============================================================================
     await buyer.save({ session });
-
-    // ============================================================================
-    // STEP 8: DELETE PARENT BILL AFTER SUCCESSFUL SPLIT
-    // ============================================================================
-    await MonthlyBill.findByIdAndDelete(parentBill._id).session(session);
-
-    logger.info('Parent bill deleted after split', {
-      parentBillId: parentBill._id,
-      parentBillNumber: parentBill.billNumber,
-      childBillsCreated: createdBills.length
-    });
 
     await session.commitTransaction();
 

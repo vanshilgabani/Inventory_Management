@@ -419,6 +419,75 @@ const initCronJobs = () => {
   console.log('='.repeat(60) + '\n');
 };
 
+// ========================================
+// CHECK SUBSCRIPTION EXPIRY - Daily at 12:00 AM IST
+// ========================================
+cron.schedule('0 0 * * *', async () => {
+  console.log('🔔 Running Subscription Expiry Check...');
+  logger.info('Subscription Expiry Check Started');
+  
+  try {
+    const Subscription = require('../models/Subscription');
+    const Notification = require('../models/Notification');
+    const today = new Date();
+    
+    // Find expiring/expired subscriptions
+    const subscriptions = await Subscription.find({
+      status: { $in: ['trial', 'active'] }
+    });
+    
+    let expiryCount = 0;
+    let warningCount = 0;
+    
+    for (const sub of subscriptions) {
+      const endDate = sub.planType === 'trial' ? sub.trialEndDate : sub.yearlyEndDate;
+      const daysLeft = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
+      
+      // Expired
+      if (daysLeft <= 0) {
+        sub.status = 'expired';
+        await sub.save();
+        expiryCount++;
+        
+        await Notification.create({
+          userId: sub.userId,
+          type: 'alert',
+          category: 'subscription-expired',
+          title: 'Subscription Expired',
+          message: 'Your subscription has expired. Please renew to continue.',
+          priority: 'high',
+          read: false,
+          organizationId: sub.userId
+        });
+      }
+      // Warning (7 days before expiry)
+      else if (daysLeft <= 7 && daysLeft > 0) {
+        warningCount++;
+        
+        await Notification.create({
+          userId: sub.userId,
+          type: 'warning',
+          category: 'subscription-expiring',
+          title: 'Subscription Expiring Soon',
+          message: `Your subscription expires in ${daysLeft} days. Please renew.`,
+          priority: 'medium',
+          read: false,
+          organizationId: sub.userId
+        });
+      }
+    }
+    
+    console.log(`✅ Subscription Check Complete: ${expiryCount} expired, ${warningCount} warnings sent`);
+    logger.info('Subscription Expiry Check Complete', { expiryCount, warningCount });
+    
+  } catch (error) {
+    console.error('❌ Subscription expiry check failed:', error);
+    logger.error('Subscription expiry check failed', { error: error.message });
+  }
+}, {
+  timezone: 'Asia/Kolkata'
+});
+
 // Helper function to generate bill number
 const generateBillNumber = async (organizationId, session) => {
   try {

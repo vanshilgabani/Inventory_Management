@@ -26,7 +26,11 @@ const {
   createOrderWithReservedBorrow,
   recordSmartPayment,
   getBuyerMonthlyHistory,
-  deleteOrderPayment
+  deleteOrderPayment,
+  getTenantUsers,           // ✅ ADD
+  linkBuyerToTenant,        // ✅ ADD
+  getBuyerTenantInfo,
+  getOrderSyncStatus
 } = require('../controllers/wholesaleController');
 
 // NEW: Import GST Profile Controller
@@ -95,6 +99,15 @@ router.post('/buyers/:id/preview-payment', protect, previewPaymentAllocation);
 
 // Buyer by Mobile (more specific than generic /:id)
 router.get('/buyers/:mobile', protect, getBuyerByMobile);
+// Tenant Linking Routes
+router.get('/tenants', protect, getTenantUsers);
+router.put('/buyers/:buyerId/link-tenant', protect, linkBuyerToTenant);
+router.get('/buyers/:buyerId/tenant-info', protect, getBuyerTenantInfo);
+
+// ============================================
+// 🔥 ORDER SYNC STATUS (BEFORE generic /:id)
+// ============================================
+router.get('/orders/:id/sync-status', protect, getOrderSyncStatus);
 
 // ============================================
 // 🔥 ORDER ROUTES WITH :id (specific actions first)

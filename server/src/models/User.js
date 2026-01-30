@@ -27,7 +27,7 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['admin', 'sales'],
+    enum: ['admin', 'sales', 'tenant'], // ✅ FIXED: Added 'tenant' role
     default: 'sales',
     required: true,
   },
@@ -39,11 +39,87 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
   },
-  // ✅ NEW: Multi-tenant field
+
+  tenantId: {
+    type: String,
+    required: true,
+    index: true,
+    default: function() {
+      return this._id.toString(); // Master accounts use their own ID as tenantId
+    }
+  },
+
+  parentTenantId: {
+    type: String,
+    default: null, // Null for master accounts, set for customer accounts
+    index: true
+  },
+
+  accountType: {
+    type: String,
+    enum: ['master', 'customer'],
+    default: 'master'
+  },
+
+  // For linking to supplier (if this is a customer account)
+  linkedSupplierId: {
+    type: String,
+    default: null // ID of the master account they buy from
+  },
+
+  companyName: {
+    type: String,
+    default: ''
+  },
+
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+
+  // Metadata
+  createdAt: {
+    type: Date,
+    default: Date.now
+  },
+
+  lastLoginAt: {
+    type: Date,
+    default: Date.now
+  },
+
+  // Tenant-specific fields
+  isTenant: { type: Boolean, default: false },
+  isSupplier: { type: Boolean, default: false },
+
+  // Linked tenant (if this user is a supplier)
+  linkedTenants: [{
+    tenantUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    tenantName: String,
+    tenantEmail: String, // ✅ ADDED: Helpful for notifications
+    syncEnabled: { type: Boolean, default: true }
+  }],
+
+  // Linked supplier (if this user is a tenant)
+  linkedSupplier: {
+    supplierUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    supplierName: String,
+    supplierEmail: String, // ✅ ADDED: Helpful for notifications
+    syncEnabled: { type: Boolean, default: true }
+  },
+
+  // Multi-tenant field
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     default: null, // null for backward compatibility
+  },
+
+  // ✅ NEW: Sync preference for wholesale orders
+  syncPreference: {
+    type: String,
+    enum: ['direct', 'manual'],
+    default: 'direct'
   },
 }, { timestamps: true });
 

@@ -306,26 +306,30 @@ const createSale = async (req, res) => {
     }
 
     // ✅ FIXED: Create sale with correct field names
-    const sale = await DirectSale.create([{
+    const sale = await DirectSale.create([{  // ✅ Note: wrapping in array for session
       customerName: customerName || 'Walk-in Customer',
-      customerMobile: customerContact || '', // ✅ Changed from customerContact
+      customerMobile: customerContact,
       customerId: customer?._id,
-      items, // ✅ Array of items
+      items,
       subtotalAmount,
       discountAmount: discountAmount || 0,
       gstAmount: gstAmount || 0,
       totalAmount,
       paymentMethod: paymentMethod || 'Cash',
       notes: notes || '',
+      
+      // ✅ ADD THESE TWO LINES:
+      tenantId: req.user.id,  // ✅ REQUIRED by schema
       organizationId,
+      
       createdByUser: {
-        userId: req.user._id,
+        userId: req.user.id,
         userName: req.user.name || req.user.email,
         userRole: req.user.role,
         createdAt: new Date()
       },
       saleDate: new Date(),
-    }], { session });
+    }], { session });  // ✅ Pass session as second parameter
 
     await session.commitTransaction();
     logger.info('Direct sale created', { saleId: sale[0]._id, totalAmount });
@@ -779,20 +783,24 @@ const createSaleWithReservedBorrow = async (req, res) => {
 
     // Create sale
     const sale = await DirectSale.create([{
-      customerName: customerName || 'Walk-in Customer',
-      customerMobile: customerContact,
-      customerId: customer?._id,
-      items,
-      subtotalAmount,
-      discountAmount: discountAmount || 0,
-      gstAmount: gstAmount || 0,
-      totalAmount,
-      paymentMethod: paymentMethod || 'Cash',
-      notes: notes || '',
-      organizationId,
-      createdBy: req.user.id,
-      saleDate: new Date(),
-    }], { session });
+    customerName: customerName || 'Walk-in Customer',
+    customerMobile: customerContact,
+    customerId: customer?._id,
+    items,
+    subtotalAmount,
+    discountAmount: discountAmount || 0,
+    gstAmount: gstAmount || 0,
+    totalAmount,
+    paymentMethod: paymentMethod || 'Cash',
+    notes: notes || '',
+    
+    // ✅ ADD THIS:
+    tenantId: req.user.id,  // ✅ REQUIRED
+    organizationId,
+    
+    createdBy: req.user.id,
+    saleDate: new Date(),
+  }], { session });
 
     await session.commitTransaction();
     logger.info('Direct sale created with reserved borrow', { saleId: sale[0]._id, totalAmount });

@@ -107,6 +107,20 @@ const marketplaceSaleSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product'
   },
+
+  tenantId: {
+    type: String,
+    required: true,
+    index: true
+  },
+
+  // Track which inventory was used
+  inventoryModeUsed: {
+    type: String,
+    enum: ['main', 'reserved'],
+    default: 'reserved'
+  },
+
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

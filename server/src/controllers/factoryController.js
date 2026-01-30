@@ -398,13 +398,15 @@ const createReceiving = async (req, res) => {
   }
 };
 
-// ===== GET ALL RECEIVINGS (exclude deleted) =====
 const getAllReceivings = async (req, res) => {
   try {
     const receivings = await FactoryReceiving.find({
       organizationId: req.organizationId,
-      deletedAt: null, // ✅ Only get non-deleted
-    }).sort({ receivedDate: -1 });
+      deletedAt: null, // Only get non-deleted
+      sourceType: { $ne: 'supplier-sync' } // ✅ EXCLUDE supplier-synced items
+    })
+    .sort({ receivedDate: -1 });
+    
     res.json(receivings);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -435,124 +437,129 @@ const getReceivingById = async (req, res) => {
 const updateReceiving = async (req, res) => {
   try {
     const { quantities, batchId, notes } = req.body;
+    
     const receiving = await FactoryReceiving.findOne({
       _id: req.params.id,
       organizationId: req.organizationId,
-      deletedAt: null, 
+      deletedAt: null
     });
 
     if (!receiving) {
       return res.status(404).json({ message: 'Receiving not found' });
     }
 
-    // ✅ CORRECTED: Determine stock direction
+    // ✅ FIXED: Determine stock direction
     const isReturn = receiving.sourceType === 'return';
-    const isIncoming = !isReturn; // factory, borrowed_buyer, borrowed_vendor = incoming
+    const isIncoming = !isReturn; // factory, borrowedbuyer, borrowedvendor (incoming)
 
     if (isReturn) {
       console.warn('⚠️ Updating return receipt - stock changes will apply');
     }
 
-    console.log('Updating receiving:', receiving._id);
-    console.log('Design:', receiving.design, 'Color:', receiving.color);
+    console.log(`📝 Updating receiving: ${receiving._id}`);
+    console.log(`📦 Design: ${receiving.design}, Color: ${receiving.color}`);
 
-    let oldQuantities =
-      receiving.quantities instanceof Map
-        ? Object.fromEntries(receiving.quantities)
-        : receiving.quantities;
+    // Get old quantities
+    let oldQuantities = receiving.quantities instanceof Map 
+      ? Object.fromEntries(receiving.quantities) 
+      : receiving.quantities;
 
     oldQuantities = Object.keys(oldQuantities).reduce((acc, size) => {
       acc[size] = Number(oldQuantities[size]) || 0;
       return acc;
     }, {});
 
+    // Get new quantities
     const newQuantities = Object.keys(quantities).reduce((acc, size) => {
       acc[size] = Number(quantities[size]) || 0;
       return acc;
     }, {});
 
-    console.log('Old quantities:', oldQuantities);
-    console.log('New quantities:', newQuantities);
+    console.log('📊 Old quantities:', oldQuantities);
+    console.log('📊 New quantities:', newQuantities);
 
+    // ✅ CRITICAL FIX: Only update stock for THIS receiving's COLOR
     const product = await Product.findOne({
       design: receiving.design,
-      organizationId: req.organizationId,
+      organizationId: req.organizationId
     });
 
     if (product) {
-      const colorIndex = product.colors.findIndex((c) => c.color === receiving.color);
+      // ✅ Find ONLY this receiving's color
+      const colorIndex = product.colors.findIndex(c => c.color === receiving.color);
+      
       if (colorIndex !== -1) {
-        Object.keys(newQuantities).forEach((size) => {
+        // ✅ Only update sizes that changed
+        Object.keys(newQuantities).forEach(size => {
           if (size !== 'undefined') {
             const oldQty = oldQuantities[size] || 0;
             const newQty = newQuantities[size] || 0;
             const difference = newQty - oldQty;
 
-            console.log(`Size ${size}: old=${oldQty}, new=${newQty}, diff=${difference}`);
+            console.log(`📏 Size ${size}: old=${oldQty}, new=${newQty}, diff=${difference}`);
 
             if (difference !== 0) {
               const sizeIndex = product.colors[colorIndex].sizes.findIndex(
                 (s) => s.size === size
               );
+
               if (sizeIndex !== -1) {
                 const oldStock = product.colors[colorIndex].sizes[sizeIndex].currentStock;
-                
+
                 // ✅ CORRECTED: Apply correct operation based on type
                 if (isReturn) {
-                  // Return = outgoing, so SUBTRACT difference
+                  // Return (outgoing), so SUBTRACT difference
                   product.colors[colorIndex].sizes[sizeIndex].currentStock -= difference;
-                  console.log(`Return edit: ${size} stock ${oldStock} - ${difference} = ${product.colors[colorIndex].sizes[sizeIndex].currentStock}`);
+                  console.log(`🔻 Return edit: ${size} stock: ${oldStock} - ${difference} = ${product.colors[colorIndex].sizes[sizeIndex].currentStock}`);
                 } else {
-                  // Factory/Borrowed = incoming, so ADD difference
+                  // Factory/Borrowed (incoming), so ADD difference
                   product.colors[colorIndex].sizes[sizeIndex].currentStock += difference;
-                  console.log(`Incoming edit: ${size} stock ${oldStock} + ${difference} = ${product.colors[colorIndex].sizes[sizeIndex].currentStock}`);
+                  console.log(`🔺 Incoming edit: ${size} stock: ${oldStock} + ${difference} = ${product.colors[colorIndex].sizes[sizeIndex].currentStock}`);
                 }
-                
+
+                // Prevent negative stock
                 if (product.colors[colorIndex].sizes[sizeIndex].currentStock < 0) {
-                  console.log(
-                    '⚠️ Warning: Stock for ' +
-                      size +
-                      ' would be negative, setting to 0'
-                  );
+                  console.log('⚠️ Warning: Stock for size would be negative, setting to 0');
                   product.colors[colorIndex].sizes[sizeIndex].currentStock = 0;
                 }
 
                 console.log(
-                  `Updated ${receiving.color} ${size}: ${oldStock} → ${product.colors[colorIndex].sizes[sizeIndex].currentStock} (${
-                    difference > 0 ? '+' + difference : difference
-                  })`
+                  `✅ Updated ${receiving.color} ${size}: ${oldStock} → ${product.colors[colorIndex].sizes[sizeIndex].currentStock} (${difference > 0 ? '+' : ''}${difference})`
                 );
               } else {
-                console.log(`Size ${size} not found in product`);
+                console.log(`❌ Size ${size} not found in product`);
               }
             }
           }
         });
+
         await product.save();
-        console.log('Product stock updated');
+        console.log('💾 Product stock updated');
       } else {
-        console.log(`Color ${receiving.color} not found in product`);
+        console.log(`❌ Color ${receiving.color} not found in product`);
       }
     } else {
-      console.log(`Product ${receiving.design} not found`);
+      console.log(`❌ Product ${receiving.design} not found`);
     }
 
+    // Update receiving record
     receiving.quantities = newQuantities;
     receiving.totalQuantity = Object.values(newQuantities).reduce(
       (sum, qty) => sum + qty,
       0
     );
+
     if (batchId !== undefined) receiving.batchId = batchId;
     if (notes !== undefined) receiving.notes = notes;
 
     await receiving.save();
-    console.log('Receiving updated successfully');
+    console.log('✅ Receiving updated successfully');
 
     await decrementEditSession(req, 'edit', 'factory', req.params.id);
 
     res.json(receiving);
   } catch (error) {
-    console.error('Error updating receiving:', error);
+    console.error('❌ Error updating receiving:', error);
     res.status(500).json({ message: error.message });
   }
 };

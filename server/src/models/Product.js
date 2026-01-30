@@ -53,6 +53,19 @@ const productSchema = new mongoose.Schema({
     trim: true,
   },
   colors: [colorVariantSchema],
+
+  // Track if product was created via supplier sync
+  syncedFromSupplier: {
+    type: Boolean,
+    default: false
+  },
+
+  supplierProductId: {
+    type: mongoose.Schema.Types.ObjectId,
+    default: null
+    // Original product ID from supplier's inventory
+  },
+
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

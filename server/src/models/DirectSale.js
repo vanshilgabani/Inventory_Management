@@ -75,6 +75,12 @@ const directSaleSchema = new mongoose.Schema({
   notes: {
     type: String,
   },
+  tenantId: {
+    type: String,
+    required: true,
+    index: true
+  },
+  
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

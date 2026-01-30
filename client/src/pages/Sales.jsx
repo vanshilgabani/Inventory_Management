@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {salesService} from '../services/salesService';
 import {settlementService} from '../services/settlementService';
 import {settingsService} from '../services/settingsService';
@@ -13,12 +13,19 @@ import Modal from '../components/common/Modal';
 import InsufficientReservedStockModal from '../components/InsufficientReservedStockModal';
 import SkeletonCard from '../components/common/SkeletonCard';
 import toast from 'react-hot-toast';
-import { FiShoppingBag, FiPlus, FiTrash2, FiEdit2, FiCheckCircle, FiTruck, FiClock, FiRotateCcw, FiDollarSign, FiXCircle, FiAlertTriangle, FiFilter, FiCalendar, FiChevronDown, FiPackage, FiUpload, FiSearch, FiX, FiArrowLeft, FiAlertCircle, FiFileText, FiInfo } from 'react-icons/fi';
+import { FiShoppingBag, FiPlus, FiTrash2, FiEdit2, FiCheckCircle, FiTruck, FiClock, FiRotateCcw, FiDollarSign, FiXCircle, FiAlertTriangle, FiFilter, FiCalendar, FiChevronDown, FiPackage, FiUpload, FiSearch, FiX, FiArrowRight, FiAlertCircle, FiFileText, FiInfo } from 'react-icons/fi';
 import { formatCurrency } from '../utils/dateUtils';
 import Papa from 'papaparse';
 import RefillLockStockModal from '../components/RefillLockStockModal';
 import SettlementsView from '../components/SettlementsView';
 import ScrollToTop from '../components/common/ScrollToTop';
+import SKUMappingModal from '../components/modals/SKUMappingModal';
+import ImportPreviewModal from '../components/modals/ImportPreviewModal';
+import PatternDetectionModal from '../components/modals/PatternDetectionModal';
+import BulkSKUMappingModal from '../components/modals/BulkSKUMappingModal';
+import FinalImportPreviewModal from '../components/modals/FinalImportPreviewModal';
+import ImportResultModal from '../components/modals/ImportResultModal';
+import { skuMappingService } from '../services/skuMappingService';
 
 const Sales = () => {
   const { user } = useAuth();
@@ -26,9 +33,22 @@ const Sales = () => {
   const { canEditSales } = usePermissions();
   const navigate = useNavigate();
   
+  // SKU Mapping states (add after existing state declarations)
+  const [showSKUMappingModal, setShowSKUMappingModal] = useState(false);
+  const [showImportPreviewModal, setShowImportPreviewModal] = useState(false);
+  const [showPatternDetectionModal, setShowPatternDetectionModal] = useState(false);
+  const [currentUnmappedSKUs, setCurrentUnmappedSKUs] = useState([]);
+  const [currentMappingIndex, setCurrentMappingIndex] = useState(0);
+  const [completedMappings, setCompletedMappings] = useState([]);
+  const [importPreviewData, setImportPreviewData] = useState(null);
+  const [patternDetectionData, setPatternDetectionData] = useState(null);
+  const [pendingImportData, setPendingImportData] = useState(null);
+  const [showBulkSKUMappingModal, setShowBulkSKUMappingModal] = useState(false);
+  const [showFinalImportPreviewModal, setShowFinalImportPreviewModal] = useState(false);
+  const [showImportResultModal, setShowImportResultModal] = useState(false);
+  const [importResultData, setImportResultData] = useState(null);
 
-    // ============ DATA STATES ============
-  const [sales, setSales] = useState([]);
+  // ============ DATA STATES ============
   const [settlements, setSettlements] = useState([]);
   const [products, setProducts] = useState([]);
   const [marketplaceAccounts, setMarketplaceAccounts] = useState([]);
@@ -47,6 +67,7 @@ const Sales = () => {
     startDate: '',
     endDate: ''
   });
+  const [singleDateFilter, setSingleDateFilter] = useState('');
 
   // ============ BULK SELECTION ============
   const [selectedSales, setSelectedSales] = useState([]);
@@ -85,6 +106,19 @@ const Sales = () => {
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchInput, setSearchInput] = useState(''); 
+  const searchTimeoutRef = useRef(null);
+  const [filteredOrders, setFilteredOrders] = useState(null); // For date-filtered orders
+  const [searchType, setSearchType] = useState(null); // 'date' | 'order' | null
+  const [showSearchModal, setShowSearchModal] = useState(false); // For order ID search results
+  const [modalOrders, setModalOrders] = useState([]); // Orders to show in modal
+  const [searchResults, setSearchResults] = useState({
+    found: false,
+    orders: [],
+    byStatus: {},
+    showPanel: false
+  });
+  const [isSearching, setIsSearching] = useState(false);
 
   // ============ TIMELINE VIEW ============
   const [expandedDate, setExpandedDate] = useState(null);
@@ -117,6 +151,21 @@ const Sales = () => {
     maxCanAdd: 0,
     userInput: ''
   });
+
+  // DATA STATES
+const [dateGroups, setDateGroups] = useState([]); // ✅ NEW: Array of {date, orders, count}
+const [hasMoreDates, setHasMoreDates] = useState(true); // ✅ NEW
+const [lastLoadedDate, setLastLoadedDate] = useState(null); // ✅ NEW
+const [isLoadingMore, setIsLoadingMore] = useState(false);
+
+// ✅ NEW: Stats (separate from loaded orders)
+const [stats, setStats] = useState({
+  total: 0,
+  dispatched: 0,
+  returned: 0,
+  cancelled: 0,
+  wrongreturn: 0
+});
 
   const [settlementFormData, setSettlementFormData] = useState({
     accountName: '',
@@ -217,10 +266,9 @@ const fetchInitialData = async () => {
       inventoryService.getAllProducts(),
       settingsService.getSettings()
     ]);
-    
+
     setProducts(Array.isArray(productsData) ? productsData : (productsData?.products || []));
-    
-    // ✅ NEW: Capture stock lock settings
+
     if (settingsData.stockLockSettings) {
       setStockLockSettings({
         enabled: !!settingsData.stockLockSettings.enabled,
@@ -228,25 +276,26 @@ const fetchInitialData = async () => {
         maxThreshold: Number(settingsData.stockLockSettings.maxStockLockThreshold || 0)
       });
     }
-    
+
     const accounts = settingsData.marketplaceAccounts;
     const activeAccounts = accounts.filter(acc => acc.isActive);
     setMarketplaceAccounts(activeAccounts);
-    
+
     const defaultAccount = activeAccounts.find(acc => acc.isDefault);
     setSaleFormData(prev => ({
       ...prev,
       accountName: defaultAccount?.accountName || activeAccounts[0]?.accountName || ''
     }));
+
     setSettlementFormData(prev => ({
       ...prev,
       accountName: defaultAccount?.accountName || activeAccounts[0]?.accountName || ''
     }));
-    
-    await fetchSales();
+
     if (isAdmin || user?.role === 'sales') {
       await fetchSettlements();
     }
+
   } catch (error) {
     console.error(error);
     toast.error('Failed to load initial data');
@@ -255,16 +304,78 @@ const fetchInitialData = async () => {
   }
 };
 
-const fetchSales = async () => {
+// ✅ NEW: Fetch stats for cards
+const fetchStats = async () => {
   try {
     const { start, end } = getEffectiveDateRange();
-    const data = await salesService.getAllSales(selectedAccount, 'all', start, end, { limit: 999999999999 });
     
-    // ✅ FIX: Ensure we always have an array
-    setSales(Array.isArray(data) ? data : (data?.data || []));
+    // ✅ ALWAYS fetch ALL stats (don't filter by activeTab)
+    const data = await salesService.getStatsForCards(
+      selectedAccount,
+      'all',  // ✅ Always pass 'all' to get all stats
+      start,
+      end
+    );
+
+    setStats(data);
   } catch (error) {
-    toast.error('Failed to fetch sales');
+    console.error('Failed to fetch stats:', error);
   }
+};
+
+// ✅ NEW: Fetch date groups (initial load)
+const fetchDateGroups = async (reset = true) => {
+  try {
+    if (reset) {
+      setIsLoadingMore(true);
+    } else {
+      setIsLoadingMore(true);
+    }
+
+    const { start, end } = getEffectiveDateRange();
+    
+    const data = await salesService.getOrdersByDateGroups(
+      selectedAccount,
+      activeTab === 'dispatched' ? 'dispatched' :
+      activeTab === 'delivered' ? 'delivered' :
+      activeTab === 'returned' ? 'returned,cancelled,wrongreturn' :
+      'all',
+      start,
+      end,
+      5, // Load 5 dates at a time
+      reset ? null : lastLoadedDate
+    );
+
+    // ✅ ADD THIS DEBUG CODE
+    console.log('🔍 FRONTEND RECEIVED DATE GROUPS:', data.dateGroups);
+    data.dateGroups.slice(0, 2).forEach((group, idx) => {
+      console.log(`\n  Frontend Group ${idx + 1}:`);
+      console.log(`    - date: ${group.date}`);
+      console.log(`    - dateLabel: ${group.dateLabel}`);
+      console.log(`    - First order displayDate: ${group.orders[0]?.displayDate}`);
+      console.log(`    - First order saleDate: ${group.orders[0]?.saleDate}`);
+    });
+
+    if (reset) {
+      setDateGroups(data.dateGroups);
+    } else {
+      setDateGroups(prev => [...prev, ...data.dateGroups]);
+    }
+
+    setHasMoreDates(data.pagination.hasMore);
+    setLastLoadedDate(data.pagination.nextBeforeDate);
+
+  } catch (error) {
+    toast.error('Failed to fetch orders');
+  } finally {
+    setIsLoadingMore(false);
+  }
+};
+
+// ✅ NEW: Load more dates (button click)
+const loadMoreDates = async () => {
+  if (!hasMoreDates || isLoadingMore) return;
+  await fetchDateGroups(false);
 };
 
 const fetchSettlements = async () => {
@@ -284,73 +395,56 @@ const fetchSettlements = async () => {
     fetchInitialData();
   }, []);
 
+  // ✅ ADD THIS: Cleanup timeout on unmount
   useEffect(() => {
-    if (!loading) {
-      fetchSales();
-      if (showSettlementsTab) {
-        fetchSettlements();
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+    };
+  }, []);
+
+// ✅ ENHANCED: Re-apply search when tab changes
+useEffect(() => {
+  if (!loading) {
+    if (activeTab === 'settlements' && showSettlementsTab) {
+      fetchSettlements();
+    } else if (activeTab !== 'settlements') {
+      fetchStats();
+      fetchDateGroups(true);
+      
+      // ✅ ADD THIS: Re-trigger date search if one was active
+      if (searchQuery && searchType === 'date') {
+        console.log('🔄 Re-applying date search to new tab:', searchQuery);
+        handleSearch(searchQuery);
       }
     }
-  }, [selectedAccount, dateFilterType, customDateRange]);
+  }
+}, [loading, selectedAccount, dateFilterType, customDateRange, activeTab, showSettlementsTab]);
 
-    // ============ STATS COMPUTATION ============
-
-// ✅ SAFETY: Ensure sales is always an array
-const salesArray = Array.isArray(sales) ? sales : [];
-
-const stats = {
-  dispatched: salesArray.filter((s) => s.status === 'dispatched').length,
-  returned: salesArray.filter((s) => s.status === 'returned').length,
-  cancelled: salesArray.filter((s) => s.status === 'cancelled').length,
-  wrongreturn: salesArray.filter((s) => s.status === 'wrongreturn').length,
-};
-
-  const handleStatClick = (status) => {
-    setStatusFilter(status);
-    
-    if (status === 'all') {
+const handleStatClick = (status) => {
+  // Ignore Total Orders card
+  if (status === 'all') {
+    return;
+  }
+  
+  setStatusFilter(status);
+  
+  // Force refresh by toggling activeTab
+  if (status === 'dispatched') {
+    if (activeTab === 'dispatched') {
+      // Already on dispatched - force refresh
+      setActiveTab('temp');
+      setTimeout(() => setActiveTab('dispatched'), 0);
+    } else {
       setActiveTab('dispatched');
-    } else if (status === 'dispatched') {
-      setActiveTab('dispatched');
-    } else if (status === 'delivered') {
-      setActiveTab('delivered');
-    } else if (['returned', 'cancelled', 'wrongreturn'].includes(status)) {
-      setActiveTab('returned');
     }
-  };
-
-  // ============ FILTERING ============
-const filteredSales = sales.filter(sale => {
-  // 1. Tab Filter
-  let matchesTab = false;
-  if (activeTab === 'dispatched') {
-    matchesTab = sale.status === 'dispatched';
-  } else if (activeTab === 'delivered') {
-    matchesTab = sale.status === 'delivered';
-  } else if (activeTab === 'returned') {
-    matchesTab = ['returned', 'wrongreturn', 'cancelled'].includes(sale.status);
+  } else if (status === 'delivered') {
+    setActiveTab('delivered');
+  } else if (['returned', 'cancelled', 'wrongreturn'].includes(status)) {
+    setActiveTab('returned');
   }
-
-  // 2. Specific Status Filter from Stats Card
-  let matchesStatus = true;
-  if (statusFilter !== 'all') {
-    matchesStatus = sale.status === statusFilter;
-  }
-
-  // ✅ 3. SEARCH FILTER (Design, Order Item ID, Order ID, Color, Size)
-  let matchesSearch = true;
-  if (searchQuery.trim()) {
-    const query = searchQuery.toLowerCase();
-    matchesSearch = 
-      sale.design?.toLowerCase().includes(query) ||           // ✅ Search by Design (D11, D9)
-      sale.orderItemId?.toLowerCase().includes(query) ||      // ✅ Search by Order Item ID
-      sale.marketplaceOrderId?.toLowerCase().includes(query) || // Existing: Order ID
-      sale.color?.toLowerCase().includes(query) ||            // Existing: Color
-      sale.size?.toLowerCase().includes(query);               // Existing: Size
-  }
-
-  return matchesTab && matchesStatus && matchesSearch;
-});
+};
 
     // ============ SELECTION HANDLERS ============
 
@@ -361,34 +455,348 @@ const filteredSales = sales.filter(sale => {
   };
 
   const handleSelectAll = () => {
-    if (selectedSales.length === filteredSales.length) {
+    const allOrders = dateGroups.flatMap(dg => dg.orders);
+    if (selectedSales.length === allOrders.length) {
       setSelectedSales([]);
     } else {
-      setSelectedSales(filteredSales.map(s => s._id));
+      setSelectedSales(allOrders.map((s) => s._id));
     }
   };
 
-  // ✅ SKU PARSER
+// Helper: Group orders by date (used for search results)
+const groupOrdersByDate = (orders) => {
+  const grouped = new Map();
+  
+  orders.forEach(order => {
+    // ✅ USE displayDate if available, fallback to saleDate
+    const orderDate = order.displayDate || new Date(order.saleDate).toISOString().split('T')[0];
+    
+    if (!grouped.has(orderDate)) {
+      grouped.set(orderDate, {
+        date: orderDate,
+        dateString: orderDate,
+        dateObj: new Date(orderDate),
+        dateLabel: formatDateLabel(orderDate),
+        orders: [],
+        orderCount: 0,
+        accountBreakdown: {}
+      });
+    }
+
+    const group = grouped.get(orderDate);
+    group.orders.push(order);
+    group.orderCount++;
+
+    if (!group.accountBreakdown[order.accountName]) {
+      group.accountBreakdown[order.accountName] = 0;
+    }
+    group.accountBreakdown[order.accountName]++;
+  });
+
+  return Array.from(grouped.values()).sort((a, b) => new Date(b.date) - new Date(a.date));
+};
+
+// Helper: Format date labels
+const formatDateLabel = (dateString) => {
+  const date = new Date(dateString);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  
+  const orderDate = new Date(dateString);
+  orderDate.setHours(0, 0, 0, 0);
+  
+  if (orderDate.getTime() === today.getTime()) {
+    return 'TODAY';
+  } else if (orderDate.getTime() === yesterday.getTime()) {
+    return 'YESTERDAY';
+  } else {
+    return date.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric'
+    });
+  }
+};
+
+// Enhanced search with date filtering
+// Enhanced search with date filtering
+const handleSearch = useCallback(async (searchValue) => {
+  if (!searchValue || !searchValue.trim()) {
+    setSearchQuery('');
+    setFilteredOrders(null);
+    setSearchType(null);
+    setModalOrders([]);
+    setShowSearchModal(false);
+    return;
+  }
+
+  const query = searchValue.trim();
+  setSearchQuery(query);
+
+  // Check if input is a date (26/1/2026, 26/01/26, 26-1-2026, etc.)
+  const datePatterns = [
+    /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/, // 26/1/2026 or 26/01/26 or 26-1-2026
+  ];
+
+  let isDateSearch = false;
+  let searchDate = null;
+
+  for (const pattern of datePatterns) {
+    const match = query.match(pattern);
+    if (match) {
+      isDateSearch = true;
+      let [, day, month, year] = match;
+      
+      // Pad single digits
+      day = day.padStart(2, '0');
+      month = month.padStart(2, '0');
+      
+      // Handle 2-digit year
+      if (year.length === 2) {
+        year = '20' + year;
+      }
+      
+      // Create date in YYYY-MM-DD format
+      searchDate = `${year}-${month}-${day}`;
+      console.log('📅 Date search detected:', searchDate);
+      break;
+    }
+  }
+
+  // STEP 1: Search locally in current loaded orders
+  const allOrders = dateGroups.flatMap(dg => dg.orders);
+  
+  if (isDateSearch && searchDate) {
+    // ============ DATE SEARCH ============
+    setSearchType('date');
+    
+    // Filter by date (local)
+    const localResults = allOrders.filter(sale => {
+      const saleDate = new Date(sale.saleDate).toISOString().split('T')[0];
+      return saleDate === searchDate;
+    });
+
+    if (localResults.length > 0) {
+      console.log(`Found ${localResults.length} results for date ${searchDate} locally`);
+      const grouped = groupOrdersByDate(localResults);
+      setFilteredOrders(grouped);
+      toast.success(`Found ${localResults.length} order(s) for ${query}`);
+      return;
+    }
+
+    // Not found locally - search backend
+    console.log('Date not found locally, searching backend...');
+    setIsSearching(true);
+    
+    try {
+      const result = await salesService.searchByDate(searchDate, selectedAccount, activeTab);
+      
+      if (result.found && result.orders.length > 0) {
+        const grouped = groupOrdersByDate(result.orders);
+        setFilteredOrders(grouped);
+        toast.success(`Found ${result.orders.length} order(s) for ${query}`);
+      } else {
+        toast.error('No orders found for this date');
+        setFilteredOrders([]);
+      }
+    } catch (error) {
+      console.error('Date search error:', error);
+      toast.error('Search failed');
+    } finally {
+      setIsSearching(false);
+    }
+  } else {
+    // ============ ORDER ID / ORDER ITEM ID SEARCH ============
+    setSearchType('order');
+    
+    // Text search (local) - for Order ID or Order Item ID
+    const localResults = allOrders.filter(sale => {
+      const q = query.toLowerCase();
+      return (
+        sale.orderItemId?.toLowerCase().includes(q) ||
+        sale.marketplaceOrderId?.toLowerCase().includes(q) ||
+        sale.design?.toLowerCase().includes(q) ||
+        sale.color?.toLowerCase().includes(q) ||
+        sale.size?.toLowerCase().includes(q)
+      );
+    });
+
+    if (localResults.length > 0) {
+      console.log(`Found ${localResults.length} results locally`);
+      setModalOrders(localResults);
+      setShowSearchModal(true);
+      toast.success(`Found ${localResults.length} order(s)`);
+      return;
+    }
+
+    // Not found locally - search globally (backend)
+    console.log('Not found locally, searching globally...');
+    setIsSearching(true);
+    
+    try {
+      const result = await salesService.searchGlobally(query);
+
+      if (result.found && result.orders.length > 0) {
+        setModalOrders(result.orders);
+        setShowSearchModal(true);
+        toast.success(`Found ${result.orders.length} order(s)`);
+      } else {
+        toast.error('No orders found');
+      }
+    } catch (error) {
+      console.error('Global search error:', error);
+      toast.error('Search failed');
+    } finally {
+      setIsSearching(false);
+    }
+  }
+}, [dateGroups, selectedAccount, activeTab]);
+
+// ✅ ENHANCED: Clear search filter and refresh normal view
+const clearSearchFilter = () => {
+  setSearchInput('');
+  setSearchQuery('');
+  setFilteredOrders(null);
+  setSearchType(null);
+  setModalOrders([]);
+  setShowSearchModal(false);
+
+  if (searchTimeoutRef.current) {
+    clearTimeout(searchTimeoutRef.current);
+  }
+
+  // ✅ ADD THIS: Refresh the normal view after clearing
+  fetchDateGroups(true);
+  toast.success('Search cleared', { duration: 2000 });
+};
+
+// NEW: Input handler - NO auto-search, only on Enter or button click
+const handleSearchInput = (value) => {
+  setSearchInput(value);
+  
+  // Clear existing timeout
+  if (searchTimeoutRef.current) {
+    clearTimeout(searchTimeoutRef.current);
+  }
+
+  // Clear results if empty
+  if (!value || !value.trim()) {
+    setSearchQuery('');
+    setSearchResults({ found: false, orders: [], byStatus: {}, showPanel: false });
+    setFilteredOrders(null);
+    setSearchType(null);
+    return;
+  }
+
+  // ❌ REMOVED: No auto-search! User must press Enter or click Search button
+};
+
+// ✅ NEW: Handle Enter key press for instant search
+const handleSearchKeyPress = (e) => {
+  if (e.key === 'Enter') {
+    // Clear timeout and search immediately
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    handleSearch(searchInput);
+  }
+};
+
+// Navigate to specific order from search results
+const navigateToOrder = (order) => {
+  // Map status to correct tab
+  const tab = (order.status === 'returned' || order.status === 'cancelled' || order.status === 'wrongreturn') 
+    ? 'returned' 
+    : order.status;
+  
+  setActiveTab(tab);
+  setSearchQuery(order.orderItemId); // Keep search term to highlight
+  setSearchResults(prev => ({ ...prev, showPanel: false }));
+  toast.success(`Viewing in ${order.status} tab`, { duration: 2000 });
+};
+
+// ✅ UPDATED SKU PARSER - Handles underscore format
 const parseFlipkartSKU = (sku) => {
   if (!sku) return { design: null, color: null, size: null };
-  const cleaned = sku.replace('#', '').trim();
+
+  // Remove # and commas, trim
+  const cleaned = sku.replace(/#/g, '').replace(/,/g, '').trim();
+
+  // ✅ CHECK FOR UNDERSCORE (Color_Size format)
+  if (cleaned.includes('_')) {
+    // Format: XXX-XXX-XXX-Color_Size
+    const parts = cleaned.split('-');
+    
+    if (parts.length < 2) {
+      return { design: null, color: null, size: null };
+    }
+
+    // Last part contains Color_Size
+    const lastPart = parts[parts.length - 1];
+    
+    if (lastPart.includes('_')) {
+      const [colorPart, sizePart] = lastPart.split('_');
+      
+      // Design is everything except the last part
+      const design = parts.slice(0, -1).join('-');
+      const color = colorPart.trim();
+      let size = sizePart.trim();
+      
+      // Convert numeric size to letter (30 -> M, 32 -> L, 34 -> XL, 36 -> XXL)
+      const sizeMap = {
+        '28': 'S',
+        '30': 'M',
+        '32': 'L',
+        '34': 'XL',
+        '36': 'XXL',
+        '38': 'XXXL'
+      };
+      
+      size = sizeMap[size] || size;
+      
+      return {
+        design: design || null,
+        color: color || null,
+        size: size || null
+      };
+    }
+  }
+
+  // ✅ STANDARD DASH FORMAT (existing logic)
   const parts = cleaned.split('-');
+
   if (parts.length < 3) return { design: null, color: null, size: null };
-  
+
   let design, color, size;
+
+  // Pattern 1: D-11-KHAKHI-XL (D and number separate)
   if (parts[0] === 'D' && !isNaN(parts[1])) {
     design = 'D' + parts[1];
     color = parts.slice(2, -1).join('-');
     size = parts[parts.length - 1];
-  } else if (parts[0].startsWith('D') && !isNaN(parts[0].substring(1))) {
+  } 
+  // Pattern 2: D9-L.GREY-L (D and number together)
+  else if (parts[0].startsWith('D') && !isNaN(parts[0].substring(1))) {
     design = parts[0];
     color = parts.slice(1, -1).join('-');
     size = parts[parts.length - 1];
-  } else {
-    return { design: null, color: null, size: null };
+  } 
+  // Pattern 3: Multi-part design
+  else {
+    const lastPart = parts[parts.length - 1];
+    size = lastPart;
+    color = parts[parts.length - 2];
+    design = parts.slice(0, -2).join('-');
   }
-  
-  if (color) color = color.replace(/\./g, ' ').trim();
+
+  // Clean color (remove dots, spaces)
+  if (color) {
+    color = color.replace(/\./g, ' ').trim();
+  }
+
   return { design, color, size };
 };
 
@@ -549,16 +957,20 @@ const handleCSVUpload = (e) => {
 };
 
 const handleImportSubmit = async () => {
+  console.log('═══════════════════════════════════════════');
+  console.log('🚀 handleImportSubmit CALLED');
+  console.log('═══════════════════════════════════════════');
+
   if (!importAccount) {
     toast.error('Please select an account');
     return;
   }
-  
+
   if (!importFilterDate) {
     toast.error('Please enter dispatch date');
     return;
   }
-  
+
   if (!parsedCsvData || parsedCsvData.length === 0) {
     toast.error('No data to import');
     return;
@@ -567,129 +979,318 @@ const handleImportSubmit = async () => {
   try {
     setIsImporting(true);
 
-    const BATCH_SIZE = 20; // Process 20 records per batch
-    const PARALLEL_LIMIT = 3; // Upload 3 batches simultaneously
-
-    // Split data into batches
-    const batches = [];
-    for (let i = 0; i < parsedCsvData.length; i += BATCH_SIZE) {
-      batches.push(parsedCsvData.slice(i, i + BATCH_SIZE));
+    // ✅ NEW STEP 0: Check existing SKU mappings FIRST
+    console.log('🗺️ STEP 0: Checking existing SKU mappings...');
+    const uniqueSKUs = [...new Set(parsedCsvData.map(row => row.sku).filter(Boolean))];
+    
+    let existingMappings = {};
+    try {
+      const mappingResponse = await skuMappingService.getBulkMappings(importAccount, uniqueSKUs);
+      existingMappings = mappingResponse.mappings || {};
+      console.log(`✅ Found ${Object.keys(existingMappings).length} existing mappings`);
+    } catch (error) {
+      console.warn('Failed to fetch existing mappings:', error);
     }
 
-    console.log(`📦 Split ${parsedCsvData.length} records into ${batches.length} batches`);
+    // ✅ STEP 1: Check for unmapped SKUs (accounting for existing mappings)
+    console.log('🔍 STEP 1: Checking SKUs against inventory + mappings...');
+    const skuCounts = {};
 
-    let totalSuccess = 0;
-    let totalFailed = 0;
-    let totalDuplicates = 0;
-    const allFailed = [];
-    const allDuplicates = []; // ✅ Track duplicates too
-    const totalSkipped = importPreview?.skipped?.length || 0;
+    parsedCsvData.forEach((row, index) => {
+      const sku = row.sku;
+      let design, color, size;
 
-    // Process batches in parallel groups
-    for (let i = 0; i < batches.length; i += PARALLEL_LIMIT) {
-      const parallelBatches = batches.slice(i, i + PARALLEL_LIMIT);
-      const batchNumbers = parallelBatches.map((_, idx) => i + idx + 1);
+      // Check if mapping exists for this SKU
+      if (sku && existingMappings[sku]) {
+        design = existingMappings[sku].design;
+        color = existingMappings[sku].color;
+        size = existingMappings[sku].size;
+        console.log(`  ✅ Row ${index + 1}: ${sku} → Found in mappings: ${design}-${color}-${size}`);
+      } else {
+        // Use parsed data
+        design = row.design;
+        color = row.color;
+        size = row.size;
+      }
 
-      console.log(`⚡ Uploading batches ${batchNumbers.join(', ')} of ${batches.length}...`);
+      // Check if this product variant exists in inventory
+      const product = products.find(p => p.design === design);
+      let exists = false;
 
-      // Upload multiple batches in parallel
-      const results = await Promise.allSettled(
-        parallelBatches.map((batch, idx) =>
-          salesService.importFromCSV(batch, importAccount, importFilterDate)
-            .then(result => ({
-              batchNum: i + idx + 1,
-              ...result
-            }))
-        )
-      );
-
-      // Process results
-      results.forEach((result, idx) => {
-        const batchNum = i + idx + 1;
-        
-        if (result.status === 'fulfilled') {
-          const data = result.value.data;
-          totalSuccess += data.success?.length || 0;
-          totalFailed += data.failed?.length || 0;
-          totalDuplicates += data.duplicates?.length || 0;
-          
-          if (data.failed?.length > 0) {
-            allFailed.push(...data.failed);
+      if (product) {
+        const colorVariant = product.colors.find(c => c.color === color);
+        if (colorVariant) {
+          const sizeVariant = colorVariant.sizes.find(s => s.size === size);
+          if (sizeVariant) {
+            exists = true;
           }
-          
-          // ✅ Collect duplicates
-          if (data.duplicates?.length > 0) {
-            allDuplicates.push(...data.duplicates);
-          }
-
-          console.log(`✅ Batch ${batchNum}: ${data.success?.length || 0} imported`);
-        } else {
-          console.error(`❌ Batch ${batchNum} failed:`, result.reason);
-          toast.error(`Batch ${batchNum} failed: ${result.reason.message}`);
         }
-      });
+      }
 
-      // Update progress
-      const progress = Math.min(((i + PARALLEL_LIMIT) / batches.length) * 100, 100);
-      toast.loading(`Progress: ${Math.round(progress)}%`, { id: 'import-progress' });
+      console.log(`  Row ${index + 1}: ${design}-${color}-${size} | Exists=${exists}`);
+
+      // If product doesn't exist in inventory AND no mapping exists, mark as unmapped
+      if (!exists && !(sku && existingMappings[sku])) {
+        if (!skuCounts[sku]) {
+          skuCounts[sku] = { sku, count: 0 };
+        }
+        skuCounts[sku].count++;
+      }
+    });
+
+    const unmappedList = Object.values(skuCounts);
+    console.log('');
+    console.log('📋 Unmapped SKUs Summary:');
+    console.log('  - Total unmapped SKUs:', unmappedList.length);
+    console.log('  - Unmapped list:', unmappedList);
+
+    // If there are unmapped SKUs, show preview modal
+    if (unmappedList.length > 0) {
+      console.log('🗺️ UNMAPPED SKUs FOUND - SHOWING MODAL');
+
+      const previewData = {
+        totalOrders: parsedCsvData.length,
+        validOrders: parsedCsvData.length - unmappedList.reduce((sum, u) => sum + u.count, 0),
+        unmappedSKUs: unmappedList,
+        skippedOrders: importPreview?.skipped?.length || 0,
+        accountName: importAccount
+      };
+
+      console.log('📦 Preview Data:', previewData);
+
+      setImportPreviewData(previewData);
+      setCurrentUnmappedSKUs(unmappedList);
+      setPendingImportData({ parsedCsvData, importAccount, importFilterDate });
+      setShowImportModal(false);
+      setShowImportPreviewModal(true);
+      setIsImporting(false);
+
+      toast.success(`Found ${unmappedList.length} SKU formats that need mapping`);
+      console.log('Modal should now be visible!');
+      return;
     }
 
-    // Dismiss progress toast
-    toast.dismiss('import-progress');
+    // No unmapped SKUs - proceed with backend import
+    console.log('✅ All SKUs mapped or exist in inventory, calling backend...');
+    
+    const result = await salesService.importFromCSV(
+      parsedCsvData,
+      importAccount,
+      importFilterDate
+    );
 
-    // Show final summary
-    let message = '';
-    if (totalSuccess > 0) {
-      message = `✅ ${totalSuccess} orders imported successfully!`;
-    } else {
-      message = '❌ No orders imported';
-    }
+    handleImportSuccess(result);
+  } catch (error) {
+    console.error('❌ Import error:', error);
+    toast.error(error.response?.data?.message || 'Import failed');
+    setIsImporting(false);
+  }
+};
 
-    if (totalSkipped > 0) {
-      message += ` | ${totalSkipped} returns skipped`;
-    }
-    if (totalDuplicates > 0) {
-      message += ` | ${totalDuplicates} duplicates`;
-    }
-    if (totalFailed > 0) {
-      message += ` | ${totalFailed} failed`;
-    }
+const handleFinalImportConfirm = async () => {
+  console.log('═══════════════════════════════════════════');
+  console.log('🚀 FINAL IMPORT CONFIRM - Executing Import');
+  console.log('═══════════════════════════════════════════');
 
-    toast[totalSuccess > 0 ? 'success' : 'error'](message, { duration: 6000 });
+  if (!pendingImportData) {
+    toast.error('No import data found');
+    return;
+  }
 
-    // ✅ Show failed orders modal if there are failures or duplicates
-    if (totalFailed > 0 || totalDuplicates > 0) {
-      setFailedOrdersData({
-        failed: allFailed,
-        duplicates: allDuplicates,
-        totalSuccess,
-        totalFailed,
-        totalDuplicates
-      });
-      setShowFailedOrdersModal(true);
-    }
+  try {
+    setIsImporting(true);
 
-    // Close import modal and refresh
-    setShowImportModal(false);
+    const { parsedCsvData, importAccount, importFilterDate } = pendingImportData;
+
+    console.log('📤 Sending to backend:', {
+      orders: parsedCsvData.length,
+      account: importAccount,
+      date: importFilterDate
+    });
+
+    const result = await salesService.importFromCSV(
+      parsedCsvData,
+      importAccount,
+      importFilterDate
+    );
+
+    console.log('✅ Import response:', result);
+
+    const { success, failed, duplicates } = result.data;
+
+    // Close final preview modal
+    setShowFinalImportPreviewModal(false);
+
+    // Show success modal with results
+    setImportResultData({
+      success: success || [],
+      failed: failed || [],
+      duplicates: duplicates || [],
+      totalSuccess: success?.length || 0,
+      totalFailed: failed?.length || 0,
+      totalDuplicates: duplicates?.length || 0,
+      mappedSKUs: completedMappings.length
+    });
+    setShowImportResultModal(true);
+
+    // Reset states
+    setPendingImportData(null);
     setParsedCsvData([]);
     setImportPreview(null);
     setImportFilterDate('');
     setImportAccount('');
-    fetchSales();
+    setCompletedMappings([]);
+    setCurrentUnmappedSKUs([]);
+
+    // Refresh sales data
+    fetchStats(); // Refresh stats
+    fetchDateGroups(true); // Refresh orders
 
   } catch (error) {
-    console.error('Import error:', error);
+    console.error('❌ Import error:', error);
     toast.error(error.response?.data?.message || 'Import failed');
   } finally {
     setIsImporting(false);
   }
 };
 
+const handleImportSuccess = (result) => {
+  const { success, failed, duplicates } = result.data;
+
+  // Show summary
+  let message = '';
+  if (success.length > 0) message += `${success.length} orders imported successfully! `;
+  if (duplicates.length > 0) message += `${duplicates.length} duplicates. `;
+  if (failed.length > 0) message += `${failed.length} failed.`;
+
+  toast.success(message || 'Import completed');
+
+  // Check if we should show pattern detection
+  if (completedMappings.length >= 3) {
+    detectPattern();
+  }
+
+  // Reset and close
+  setShowImportModal(false);
+  setParsedCsvData([]);
+  setImportPreview(null);
+  setImportFilterDate('');
+  setImportAccount('');
+  setIsImporting(false);
+  setCompletedMappings([]);
+fetchStats(); // Refresh stats
+fetchDateGroups(true); // Refresh orders
+
+  // Show failed orders modal if needed
+  if (failed.length > 0 || duplicates.length > 0) {
+    setFailedOrdersData({
+      failed,
+      duplicates,
+      totalSuccess: success.length,
+      totalFailed: failed.length,
+      totalDuplicates: duplicates.length
+    });
+    setShowFailedOrdersModal(true);
+  }
+};
+
+const handleStartMapping = () => {
+  setShowImportPreviewModal(false);
+  setCurrentMappingIndex(0);
+  setCompletedMappings([]);
+  setShowSKUMappingModal(true);
+};
+
+const handleMappingComplete = (mapping) => {
+  const newMappings = [...completedMappings, mapping];
+  setCompletedMappings(newMappings);
+
+  // Move to next unmapped SKU
+  const nextIndex = currentMappingIndex + 1;
+  if (nextIndex < currentUnmappedSKUs.length) {
+    setCurrentMappingIndex(nextIndex);
+  } else {
+    // All SKUs mapped - retry import
+    setShowSKUMappingModal(false);
+    retryImportAfterMapping();
+  }
+};
+
+const retryImportAfterMapping = async () => {
+  if (!pendingImportData) return;
+
+  try {
+    setIsImporting(true);
+    const { parsedCsvData, importAccount, importFilterDate } = pendingImportData;
+
+    const result = await salesService.importFromCSV(
+      parsedCsvData,
+      importAccount,
+      importFilterDate
+    );
+
+    handleImportSuccess(result);
+  } catch (error) {
+    console.error('Retry import error:', error);
+    toast.error('Import failed after mapping');
+    setIsImporting(false);
+  }
+};
+
+const detectPattern = () => {
+  if (completedMappings.length < 3) return;
+
+  // Analyze mappings to detect pattern
+  const firstMapping = completedMappings[0];
+  const sku = firstMapping.sku;
+
+  // Simple pattern detection (you can enhance this)
+  let pattern = sku;
+  const sizeMappings = {};
+
+  completedMappings.forEach(m => {
+    // Extract numeric size from SKU if present
+    const sizeMatch = m.sku.match(/(\d{2})$/);
+    if (sizeMatch) {
+      sizeMappings[sizeMatch[1]] = m.size;
+    }
+
+    // Replace specific parts with placeholders
+    pattern = pattern.replace(m.design, '{XX}');
+    pattern = pattern.replace(m.color, '{COLOR}');
+    if (sizeMatch) {
+      pattern = pattern.replace(sizeMatch[1], '{SIZE}');
+    }
+  });
+
+  setPatternDetectionData({
+    pattern,
+    mappings: completedMappings,
+    sizeMappings
+  });
+
+  setShowPatternDetectionModal(true);
+};
+
+const handleEnablePattern = () => {
+  toast.success('Pattern enabled! Future imports will be faster.');
+  setShowPatternDetectionModal(false);
+  setPatternDetectionData(null);
+  // You can save pattern to backend here if needed
+};
+
+const handleSkipPattern = () => {
+  toast.info('Pattern not saved. You can enable it later in settings.');
+  setShowPatternDetectionModal(false);
+  setPatternDetectionData(null);
+};
+
 const executeBulkAction = async () => {
   try {
     if (bulkAction === 'delivered') {
       // Get all the sales being marked as delivered
-      const salesToDeliver = sales.filter(s => selectedSales.includes(s._id));
+      const allOrders = dateGroups.flatMap(dg => dg.orders);
+      const salesToDeliver = allOrders.filter((s) => selectedSales.includes(s._id));
       
       // Ask if user wants to refill locked stock
       const shouldRefill = window.confirm(
@@ -746,7 +1347,8 @@ const executeBulkAction = async () => {
       setShowBulkModal(false);
       setSelectedSales([]);
       setBulkComments('');
-      fetchSales();
+fetchStats(); // Refresh stats
+fetchDateGroups(true); // Refresh orders
     }
   } catch (error) {
     console.error('Bulk action error:', error);
@@ -825,7 +1427,8 @@ const handleConfirmUseMainStock = async () => {
     }
     
     // Refresh data
-    fetchSales();
+fetchStats(); // Refresh stats
+fetchDateGroups(true); // Refresh orders
     
     // Refresh products to get updated stock
     const productsData = await inventoryService.getAllProducts();
@@ -907,7 +1510,8 @@ const handleConfirmRefill = async () => {
           delete window.pendingSaleReject;
         }
         
-        fetchSales();
+fetchStats(); // Refresh stats
+fetchDateGroups(true); // Refresh orders
         
         // ✅ Refresh products to get updated lock values
         const productsData = await inventoryService.getAllProducts();
@@ -957,7 +1561,8 @@ const handleConfirmRefill = async () => {
     setShowRefillModal(false);
     setRefillData(null);
     setPendingSettlement(null);
-    fetchSales();
+fetchStats(); // Refresh stats
+fetchDateGroups(true); // Refresh orders
 
   } catch (error) {
     console.error('❌ Refill locked stock error (Sales):', error);
@@ -996,7 +1601,8 @@ const handleSaleSubmit = async (e) => {
       }
       setShowSaleModal(false);
       setIsSubmitting(false);
-      fetchSales();
+fetchStats(); // Refresh stats
+fetchDateGroups(true); // Refresh orders
     } else {
       // NEW: Create new sale with reserved stock check
       console.log('Creating new sale:', saleFormData);
@@ -1009,7 +1615,8 @@ const handleSaleSubmit = async (e) => {
         toast.success('Order created successfully!');
         setShowSaleModal(false);
         setIsSubmitting(false);
-        fetchSales();
+fetchStats(); // Refresh stats
+fetchDateGroups(true); // Refresh orders
       }
       // ✅ If modal is showing, handleConfirmUseMainStock will handle everything
     }
@@ -1081,7 +1688,8 @@ const handleConfirmLockRefill = async () => {
         delete window.__pendingSaleReject;
       }
       
-      fetchSales();
+fetchStats(); // Refresh stats
+fetchDateGroups(true); // Refresh orders
       
       // Refresh products to get updated lock value
       const productsData = await inventoryService.getAllProducts();
@@ -1142,12 +1750,15 @@ const handleDelete = async (id) => {
     
     // ✅ Check if backend returned success
     if (response?.success || response?.message) {
-      // ✅ Immediately remove from UI state (optimistic update)
-      setSales(prevSales => prevSales.filter(sale => sale._id !== id || sale.id !== id));
-      
-      // ✅ Then refresh data in background
-      await fetchSales();
-      
+      // Remove from dateGroups
+      setDateGroups(prevGroups => 
+        prevGroups.map(group => ({
+          ...group,
+          orders: group.orders.filter(sale => sale._id !== id && sale.id !== id),
+          orderCount: group.orders.filter(sale => sale._id !== id && sale.id !== id).length
+        })).filter(group => group.orders.length > 0) // Remove empty date groups
+      );
+            
       // ✅ Show detailed success message with stock restoration info
       const stockInfo = response?.stockRestored 
         ? ` (${response.stockRestored} units restored to reserved stock)` 
@@ -1177,9 +1788,6 @@ const handleDelete = async (id) => {
     } else {
       toast.error(error.response?.data?.message || error.message || 'Failed to delete order');
     }
-    
-    // ✅ Refresh data to restore correct state if error occurred
-    await fetchSales();
   }
 };
 
@@ -1250,8 +1858,9 @@ const handleDelete = async (id) => {
     toast.success('Order ID copied to clipboard');
   };
 
-    // ============ LOADING STATE ============
-  
+  const allOrders = dateGroups.flatMap(dg => dg.orders || []);
+
+  // ============ LOADING STATE ============  
   if (loading) {
     return (
       <div className="p-6">
@@ -1295,77 +1904,60 @@ const handleDelete = async (id) => {
               ))}
             </select>
 
-            {/* Date Filter */}
-            <div className="flex items-center gap-2">
-              <div className="relative">
-                <FiCalendar className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                <select
-                  className="border border-gray-300 rounded-lg pl-9 pr-3 py-2 bg-white text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={dateFilterType}
-                  onChange={(e) => setDateFilterType(e.target.value)}
-                >
-                  <option value="all">All Time</option>
-                  <option value="today">Today</option>
-                  <option value="yesterday">Yesterday</option>
-                  <option value="last7days">Last 7 Days</option>
-                  <option value="last30days">Last 30 Days</option>
-                  <option value="thismonth">This Month</option>
-                  <option value="custom">Custom Range</option>
-                </select>
+            {/* SEARCH BAR WITH COMPACT BUTTON */}
+            <div className="flex items-center gap-2 flex-1 max-w-lg">
+              <div className="relative flex-1">
+                <FiSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search by Date(26/01/2026), ID"
+                  value={searchInput}
+                  onChange={(e) => handleSearchInput(e.target.value)}
+                  onKeyPress={handleSearchKeyPress}
+                  className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                {searchInput && (
+                  <button
+                    onClick={clearSearchFilter}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    title="Clear search"
+                  >
+                    <FiX />
+                  </button>
+                )}
               </div>
-
-              {/* Custom Date Inputs */}
-              {dateFilterType === 'custom' && (
-                <div className="flex items-center gap-1 bg-white border border-gray-300 rounded-lg p-1 animate-fade-in">
-                  <input
-                    type="date"
-                    className="text-sm border-none focus:ring-0 text-gray-600 w-32"
-                    value={customDateRange.startDate}
-                    onChange={(e) => setCustomDateRange(prev => ({ ...prev, startDate: e.target.value }))}
-                  />
-                  <span className="text-gray-400">-</span>
-                  <input
-                    type="date"
-                    className="text-sm border-none focus:ring-0 text-gray-600 w-32"
-                    value={customDateRange.endDate}
-                    onChange={(e) => setCustomDateRange(prev => ({ ...prev, endDate: e.target.value }))}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* SEARCH BAR */}
-            <div className="relative">
-              <FiSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search by Design, Order Item ID, Order ID, Color, Size..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  <FiX />
-                </button>
-              )}
+              
+              {/* COMPACT SEARCH BUTTON */}
+              <button
+                onClick={() => {
+                  if (searchTimeoutRef.current) {
+                    clearTimeout(searchTimeoutRef.current);
+                  }
+                  if (searchInput.trim()) {
+                    handleSearch(searchInput);
+                  }
+                }}
+                disabled={!searchInput.trim() || isSearching}
+                className={`
+                  p-3 rounded-lg transition-all
+                  ${searchInput.trim() && !isSearching
+                    ? 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  }
+                `}
+                title="Search (or press Enter)"
+              >
+                {isSearching ? (
+                  <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent"></div>
+                ) : (
+                  <FiSearch className="text-xl" />
+                )}
+              </button>
             </div>
           </div>
 
           {/* Right Side - Action Buttons */}
           <div className="flex items-center gap-2 flex-shrink-0">
-            <button
-              onClick={() => navigate('/reserved-inventory')}
-              className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors shadow-sm"
-            >
-              <FiPackage className="w-4 h-4" />
-              <span className="hidden sm:inline">Reserved Inventory</span>
-              <span className="sm:hidden">Reserved</span>
-            </button>
-
             {activeTab !== 'settlements' && (
               <>
                 <button
@@ -1492,19 +2084,23 @@ const handleDelete = async (id) => {
         /* ORDERS STATS */
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           {[
-            { id: 'all', label: 'Total Orders', icon: FiShoppingBag, color: 'text-purple-600', bg: 'bg-purple-50', count: sales.length },
+            { id: 'all', label: 'Total Orders', icon: FiShoppingBag, color: 'text-purple-600', bg: 'bg-purple-50', count: stats.dispatched + stats.returned + stats.cancelled + stats.wrongreturn, disabled: true },
             { id: 'dispatched', label: 'Dispatched', icon: FiTruck, color: 'text-yellow-600', bg: 'bg-yellow-50', count: stats.dispatched },
             { id: 'returned', label: 'Returns', icon: FiRotateCcw, color: 'text-red-600', bg: 'bg-red-50', count: stats.returned },
             { id: 'cancelled', label: 'Cancelled', icon: FiXCircle, color: 'text-gray-600', bg: 'bg-gray-100', count: stats.cancelled },
             { id: 'wrongreturn', label: 'Wrong Return', icon: FiAlertTriangle, color: 'text-orange-600', bg: 'bg-orange-50', count: stats.wrongreturn }
-          ].map((card) => (
+          ].map(card => (
             <div
               key={card.id}
-              onClick={() => handleStatClick(card.id)}
-              className={`p-3 rounded-lg border cursor-pointer transition-all hover:shadow-md ${
-                statusFilter === card.id || (card.id === 'all' && statusFilter === 'all')
-                  ? 'ring-2 ring-indigo-500 border-transparent'
-                  : 'bg-white border-gray-200'
+              onClick={() => !card.disabled && handleStatClick(card.id)}
+              className={`p-3 rounded-lg border transition-all ${
+                card.disabled 
+                  ? 'bg-gray-50 border-gray-300 opacity-75' 
+                  : `cursor-pointer hover:shadow-md ${
+                      statusFilter === card.id || (card.id === 'all' && statusFilter === 'all') 
+                        ? 'ring-2 ring-indigo-500 border-transparent bg-white' 
+                        : 'border-gray-200'
+                    }`
               }`}
             >
               <div className="flex items-center justify-between">
@@ -1576,7 +2172,7 @@ const handleDelete = async (id) => {
 
           // ORDERS VIEW - GROUP BY DATE
           (() => {
-            const groupedByDate = filteredSales.reduce((acc, sale) => {
+            const groupedByDate = allOrders.reduce((acc, sale) => {
               const dateKey = new Date(sale.saleDate).toDateString();
               if (!acc[dateKey]) {
                 acc[dateKey] = {
@@ -1602,7 +2198,61 @@ const handleDelete = async (id) => {
               );
             }
 
-            return sortedDates.map(dateGroup => {
+            // Filter date search results by active tab
+            let displayOrders = sortedDates;
+
+            {/* ✅ ADD THIS: Date filter indicator BEFORE the map */}
+            {searchQuery && searchType === 'date' && filteredOrders && (
+              <div className="mx-6 mt-4 mb-6 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg flex items-center justify-between shadow-sm">
+                <div className="flex items-center gap-3">
+                  <FiSearch className="text-blue-600 text-xl" />
+                  <div>
+                    <p className="font-semibold text-blue-900">Date Filter Active</p>
+                    <p className="text-sm text-blue-700">
+                      Showing {filteredOrders.reduce((sum, dg) => sum + dg.orderCount, 0)} orders for {searchQuery}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={clearSearchFilter}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                >
+                  <FiX className="text-lg" />
+                  Clear Filter
+                </button>
+              </div>
+            )}
+
+            if (searchQuery && searchType === 'date' && filteredOrders) {
+              // Apply tab filter to date search results
+              displayOrders = filteredOrders.map(dateGroup => {
+                let filteredGroupOrders = dateGroup.orders;
+                
+                // Filter by active tab
+                if (activeTab === 'dispatched') {
+                  filteredGroupOrders = dateGroup.orders.filter(order => order.status === 'dispatched');
+                } else if (activeTab === 'delivered') {
+                  filteredGroupOrders = dateGroup.orders.filter(order => order.status === 'delivered');
+                } else if (activeTab === 'returned') {
+                  filteredGroupOrders = dateGroup.orders.filter(order => 
+                    ['returned', 'cancelled', 'wrongreturn'].includes(order.status)
+                  );
+                }
+                
+                // Only return date groups that have orders after filtering
+                if (filteredGroupOrders.length === 0) {
+                  return null;
+                }
+                
+                return {
+                  ...dateGroup,
+                  orders: filteredGroupOrders,
+                  orderCount: filteredGroupOrders.length,
+                };
+              }).filter(Boolean); // Remove null groups
+            }
+
+            return (searchType === 'date' && filteredOrders ? filteredOrders : dateGroups).map((dateGroup, idx) => {
               const isExpanded = expandedDate === dateGroup.dateString;
               const sortedOrders = [...dateGroup.orders].sort((a, b) => new Date(b.saleDate) - new Date(a.saleDate));
 
@@ -1613,20 +2263,6 @@ const handleDelete = async (id) => {
                 return acc;
               }, {});
 
-              // Date label
-              const today = new Date();
-              const yesterday = new Date(today);
-              yesterday.setDate(yesterday.getDate() - 1);
-              
-              let dateLabel;
-              if (dateGroup.dateString === today.toDateString()) {
-                dateLabel = 'TODAY';
-              } else if (dateGroup.dateString === yesterday.toDateString()) {
-                dateLabel = 'YESTERDAY';
-              } else {
-                dateLabel = format(dateGroup.dateObj, 'dd MMM yyyy');
-              }
-
               // Selection state
               const allOrdersSelected = sortedOrders.every(order => selectedSales.includes(order._id));
               const someOrdersSelected = sortedOrders.some(order => selectedSales.includes(order._id)) && !allOrdersSelected;
@@ -1634,7 +2270,28 @@ const handleDelete = async (id) => {
               return (
                 <div key={dateGroup.dateString} className="space-y-0">
 
-                                  {/* DATE HEADER CARD */}
+                  {/* 🔥 NEW: Date Search Filter Indicator - ADD THIS ENTIRE BLOCK */}
+                  {searchQuery && searchType === 'date' && idx === 0 && (
+                    <div className="mx-6 mt-4 mb-6 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <FiSearch className="text-blue-600 text-xl" />
+                        <div>
+                          <p className="font-semibold text-blue-900">Filtered by Date: {searchQuery}</p>
+                          <p className="text-sm text-blue-700">
+                            Showing {filteredOrders?.reduce((sum, dg) => sum + dg.orderCount, 0) || 0} orders
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={clearSearchFilter}
+                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                      >
+                        <FiX /> Clear Filter
+                      </button>
+                    </div>
+                  )}
+                  
+                  {/* DATE HEADER CARD */}
                   <div
                     className={`rounded-xl shadow-md cursor-pointer transition-all duration-300 hover:shadow-xl border-2 ${
                       isExpanded
@@ -1649,11 +2306,20 @@ const handleDelete = async (id) => {
                         {/* Left: Date and Order Count */}
                         <div className="flex items-center gap-4">
                           <div className={`p-3 rounded-xl ${isExpanded ? 'bg-indigo-600' : 'bg-gray-100'}`}>
-                            <FiCalendar className={`text-2xl ${isExpanded ? 'text-white' : 'text-gray-600'}`} />
+                            {/* ✅ CHANGE THIS: Dynamic icon based on tab */}
+                            {activeTab === 'returned' ? (
+                              <FiRotateCcw className={`text-2xl ${isExpanded ? 'text-white' : 'text-red-600'}`} />
+                            ) : (
+                              <FiCalendar className={`text-2xl ${isExpanded ? 'text-white' : 'text-gray-600'}`} />
+                            )}
                           </div>
                           <div>
                             <h3 className={`font-bold text-lg ${isExpanded ? 'text-indigo-900' : 'text-gray-800'}`}>
-                              {dateLabel}
+                              {/* ✅ ADD THIS: Label before date */}
+                              <span className="text-sm font-medium text-gray-500 mr-2">
+                                {activeTab === 'returned' ? 'Returned:' : 'Dispatched:'}
+                              </span>
+                              {dateGroup.dateLabel}
                             </h3>
                             <p className={`text-sm font-medium ${isExpanded ? 'text-indigo-600' : 'text-gray-500'}`}>
                               {dateGroup.orders.length} {dateGroup.orders.length === 1 ? 'Order' : 'Orders'}
@@ -1748,7 +2414,30 @@ const handleDelete = async (id) => {
                           </button>
                         </div>
 
-                                                    {/* ORDERS LIST */}
+                        {searchQuery && searchType === 'date' && (
+                        <div className="mx-6 mt-4 mb-2 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <FiSearch className="text-blue-600 text-xl" />
+                            <div>
+                              <p className="font-semibold text-blue-900">
+                                Filtered by Date: {searchQuery}
+                              </p>
+                              <p className="text-sm text-blue-700">
+                                Showing {filteredOrders?.reduce((sum, dg) => sum + dg.orderCount, 0) || 0} orders
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={clearSearchFilter}
+                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                          >
+                            <FiX />
+                            Clear Filter
+                          </button>
+                        </div>
+                      )}
+
+                        {/* ORDERS LIST */}
                         <div className="p-6 space-y-3">
                           {sortedOrders.map((sale, idx) => {
                             const isHighlighted = highlightedAccount === sale.accountName || highlightedAccount;
@@ -1843,6 +2532,30 @@ const handleDelete = async (id) => {
                                             <p className="font-bold text-gray-900">{sale.quantity}</p>
                                           </div>
                                         </div>
+
+                                        {/* ✅ NEW: Show dispatch date for returned/cancelled/wrongreturn orders */}
+                                        {['returned', 'cancelled', 'wrongreturn'].includes(sale.status) && (
+                                          <div className="mt-3 pt-3 border-t border-gray-200">
+                                            <div className="flex items-center justify-between text-xs">
+                                              <div className="flex items-center gap-2 text-gray-600">
+                                                <FiPackage className="text-blue-600" />
+                                                <span>Dispatched:</span>
+                                                <span className="font-semibold text-gray-800">
+                                                  {formatDateCustom(sale.saleDate)}
+                                                </span>
+                                              </div>
+                                              <div className="flex items-center gap-2 text-red-600">
+                                                <FiRotateCcw />
+                                                <span>
+                                                  {sale.status === 'returned' ? 'Returned' : sale.status === 'cancelled' ? 'Cancelled' : 'Wrong Return'}:
+                                                </span>
+                                                <span className="font-semibold">
+                                                  {formatDateCustom(sale.displayDate || sale.saleDate)}
+                                                </span>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        )}
                                       </div>
 
                                       {/* Notes */}
@@ -2045,14 +2758,15 @@ const handleDelete = async (id) => {
                     className="w-full border rounded p-2"
                     required
                   >
-                    {products.find(p => p.design === saleFormData.design)
-                      ?.colors.find(c => c.color === saleFormData.color)
-                      ?.sizes.filter(s => enabledSizes.includes(s.size))
-                      .map(s => (
+                    {products
+                      .find((p) => p.design === saleFormData.design)
+                      ?.colors.find((c) => c.color === saleFormData.color)
+                      ?.sizes?.filter((s) => enabledSizes.includes(s.size))
+                      ?.map((s) => (
                         <option key={s.size} value={s.size}>
                           {s.size}
                         </option>
-                      ))}
+                      )) || []}
                   </select>
                 </div>
               </div>
@@ -2650,6 +3364,320 @@ const handleDelete = async (id) => {
                 required={insufficientReservedData.required}
               />
             )}
+            {/* ============ SKU MAPPING MODALS ============ */}
+
+            {/* Step 2: Import Preview - Shows unmapped SKUs summary */}
+            <ImportPreviewModal
+              isOpen={showImportPreviewModal}
+              onClose={() => {
+                setShowImportPreviewModal(false);
+                setImportPreviewData(null);
+              }}
+              previewData={importPreviewData}
+              onMapSKUs={() => {
+                setShowImportPreviewModal(false);
+                setShowBulkSKUMappingModal(true);
+              }}
+            />
+
+            {/* Step 3: Bulk SKU Mapping - Map all unmapped SKUs at once */}
+            <BulkSKUMappingModal
+              isOpen={showBulkSKUMappingModal}
+              onClose={() => {
+                setShowBulkSKUMappingModal(false);
+              }}
+              unmappedSKUs={currentUnmappedSKUs}
+              products={products}
+              accountName={importAccount}
+              onMappingsComplete={(mappings) => {
+                setCompletedMappings(mappings);
+                setShowBulkSKUMappingModal(false);
+                // Show final preview
+                setShowFinalImportPreviewModal(true);
+              }}
+              onBack={() => {
+                setShowBulkSKUMappingModal(false);
+                setShowImportPreviewModal(true);
+              }}
+            />
+
+            {/* Step 5: Final Import Preview - Confirm before import */}
+            <FinalImportPreviewModal
+              isOpen={showFinalImportPreviewModal}
+              onClose={() => {
+                setShowFinalImportPreviewModal(false);
+              }}
+              previewData={{
+                totalOrders: parsedCsvData?.length || 0,
+                accountName: importAccount,
+                dispatchDate: importFilterDate,
+                productBreakdown: importPreview?.productBreakdown || new Map(),
+                skippedOrders: importPreview?.skipped?.length || 0
+              }}
+              onConfirm={handleFinalImportConfirm}
+              onBack={() => {
+                setShowFinalImportPreviewModal(false);
+                setShowBulkSKUMappingModal(true);
+              }}
+              isImporting={isImporting}
+            />
+
+            {/* Step 7: Import Result - Success/Failure details */}
+            <ImportResultModal
+              isOpen={showImportResultModal}
+              onClose={() => {
+                setShowImportResultModal(false);
+                setImportResultData(null);
+              }}
+              resultData={importResultData}
+            />
+
+            {/* ============ SEARCH RESULTS MODAL (for Order ID search) ============ */}
+            <Modal
+              isOpen={showSearchModal}
+              onClose={() => {
+                setShowSearchModal(false);
+                setModalOrders([]);
+              }}
+              title={`Search Results: "${searchQuery}"`}
+              maxWidth="max-w-6xl"
+            >
+              <div className="space-y-4">
+                {/* Header */}
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <FiSearch className="text-blue-600 text-2xl" />
+                    <div>
+                      <p className="font-semibold text-blue-900">
+                        Found {modalOrders.length} {modalOrders.length === 1 ? 'Order' : 'Orders'}
+                      </p>
+                      <p className="text-sm text-blue-700">
+                        Searching for: "{searchQuery}"
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowSearchModal(false);
+                      setModalOrders([]);
+                      clearSearchFilter();
+                    }}
+                    className="text-blue-600 hover:text-blue-800 font-medium flex items-center gap-2"
+                  >
+                    <FiX /> Close
+                  </button>
+                </div>
+
+                {/* Orders List in Modal */}
+                <div className="max-h-[600px] overflow-y-auto space-y-3">
+                  {modalOrders.map((sale) => (
+                    <div
+                      key={sale._id}
+                      className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-all bg-white"
+                    >
+                      <div className="flex justify-between items-start">
+                        {/* Left Side - Order Details */}
+                        <div className="flex-1 space-y-2">
+                          <div className="flex items-center gap-3">
+                            {getStatusBadge(sale.status)}
+                            <span className="text-xs text-gray-500">
+                              {formatDateCustom(sale.saleDate)}
+                            </span>
+                            <span className="text-xs font-medium text-gray-600">
+                              {sale.accountName}
+                            </span>
+                          </div>
+
+                          {/* Highlight matching text */}
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                            <div>
+                              <span className="text-gray-500">Order Item ID:</span>
+                              <p className="font-semibold">
+                                {sale.orderItemId?.toLowerCase().includes(searchQuery.toLowerCase()) ? (
+                                  <span className="bg-yellow-200 px-1 rounded">{sale.orderItemId}</span>
+                                ) : (
+                                  sale.orderItemId || '-'
+                                )}
+                              </p>
+                            </div>
+                            <div>
+                              <span className="text-gray-500">Marketplace Order ID:</span>
+                              <p className="font-semibold">
+                                {sale.marketplaceOrderId?.toLowerCase().includes(searchQuery.toLowerCase()) ? (
+                                  <span className="bg-yellow-200 px-1 rounded">{sale.marketplaceOrderId}</span>
+                                ) : (
+                                  sale.marketplaceOrderId || '-'
+                                )}
+                              </p>
+                            </div>
+                            <div>
+                              <span className="text-gray-500">Product:</span>
+                              <p className="font-semibold">
+                                {sale.design} - {sale.color} - {sale.size}
+                              </p>
+                            </div>
+                            <div>
+                              <span className="text-gray-500">Quantity:</span>
+                              <p className="font-semibold">{sale.quantity}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Right Side - Actions */}
+                        <div className="flex gap-2 ml-4">
+                          <button
+                            onClick={() => {
+                              handleEdit(sale);
+                              setShowSearchModal(false);
+                            }}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="Edit Order"
+                          >
+                            <FiEdit2 />
+                          </button>
+                          <button
+                            onClick={async () => {
+                              await handleDelete(sale._id);
+                              // Remove from modal list
+                              setModalOrders(prev => prev.filter(o => o._id !== sale._id));
+                              if (modalOrders.length === 1) {
+                                setShowSearchModal(false);
+                              }
+                            }}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete Order"
+                          >
+                            <FiTrash2 />
+                          </button>
+                          <button
+                            onClick={() => handleCopyOrderId(sale.orderItemId)}
+                            className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                            title="Copy Order Item ID"
+                          >
+                            <FiFileText />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Notes */}
+                      {sale.notes && (
+                        <div className="mt-3 pt-3 border-t border-gray-200">
+                          <p className="text-xs text-gray-500">Notes:</p>
+                          <p className="text-sm text-gray-700">{sale.notes}</p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Modal>
+
+            {/* GLOBAL SEARCH RESULTS PANEL */}
+            {searchResults.showPanel && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+                <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[80vh] overflow-hidden">
+                  {/* Header */}
+                  <div className="bg-gradient-to-r from-blue-500 to-purple-600 text-white p-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="text-2xl font-bold">Search Results</h2>
+                        <p className="text-blue-100 mt-1">
+                          Found {searchResults.orders.length} order(s) matching "{searchQuery}"
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setSearchResults(prev => ({ ...prev, showPanel: false }))}
+                        className="text-white hover:bg-white hover:bg-opacity-20 p-2 rounded-lg transition-colors"
+                      >
+                        <FiX size={24} />
+                      </button>
+                    </div>
+
+                    {/* Tab Counts */}
+                    <div className="flex gap-2 mt-4 flex-wrap">
+                      {Object.entries(searchResults.byStatus).map(([status, count]) => (
+                        <span
+                          key={status}
+                          className="px-3 py-1 bg-white bg-opacity-20 rounded-full text-sm font-medium"
+                        >
+                          {status.charAt(0).toUpperCase() + status.slice(1)}: {count}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Results List */}
+                  <div className="p-6 overflow-y-auto max-h-96">
+                    <div className="space-y-3">
+                      {searchResults.orders.map((order) => (
+                        <div
+                          key={order._id}
+                          className="border-2 border-gray-200 rounded-lg p-4 hover:border-blue-500 hover:shadow-lg transition-all cursor-pointer"
+                          onClick={() => navigateToOrder(order)}
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              {/* Order Header */}
+                              <div className="flex items-center gap-3 mb-2">
+                                <div className={`w-3 h-3 rounded-full ${
+                                  order.status === 'dispatched' ? 'bg-yellow-500' :
+                                  order.status === 'delivered' ? 'bg-green-500' :
+                                  order.status === 'returned' ? 'bg-red-500' :
+                                  order.status === 'cancelled' ? 'bg-gray-500' :
+                                  'bg-orange-500'
+                                }`} />
+                                <h3 className="font-bold text-lg text-gray-900">
+                                  {order.orderItemId}
+                                </h3>
+                                {getStatusBadge(order.status)}
+                              </div>
+
+                              {/* Order Details */}
+                              <div className="grid grid-cols-2 gap-3 text-sm">
+                                <div>
+                                  <span className="text-gray-500">Design:</span>
+                                  <span className="ml-2 font-semibold">{order.design}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Color:</span>
+                                  <span className="ml-2 font-semibold">{order.color}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Size:</span>
+                                  <span className="ml-2 font-semibold">{order.size}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Quantity:</span>
+                                  <span className="ml-2 font-semibold">{order.quantity}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Date:</span>
+                                  <span className="ml-2 font-semibold">
+                                    {new Date(order.saleDate).toLocaleDateString()}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Account:</span>
+                                  <span className="ml-2 font-semibold">{order.accountName}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Navigate Button */}
+                            <button
+                              className="ml-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2 whitespace-nowrap"
+                            >
+                              View in {order.status} tab
+                              <FiArrowRight />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             {/* IMPORT CSV MODAL - MANUAL DISPATCH DATE */}
             {showImportModal && (
               <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -2821,12 +3849,12 @@ const handleDelete = async (id) => {
                                 </tr>
                               </thead>
                               <tbody>
-                                {Array.from(importPreview.productBreakdown.values()).map((item, idx) => (
-                                  <tr key={idx} className="border-b hover:bg-gray-50">
-                                    <td className="px-3 py-2 font-medium">{item.design}</td>
-                                    <td className="px-3 py-2">{item.color}</td>
-                                    <td className="px-3 py-2">{item.size}</td>
-                                    <td className="px-3 py-2 text-right font-semibold">{item.quantity}</td>
+                                {Array.from(importPreview.productBreakdown.values()).map((variant, idx) => (
+                                  <tr key={`${variant.design}-${variant.color}-${variant.size}`}>
+                                    <td className="border px-3 py-2">{variant.design}</td>
+                                    <td className="border px-3 py-2">{variant.color}</td>
+                                    <td className="border px-3 py-2">{variant.size}</td>
+                                    <td className="border px-3 py-2 text-center">{variant.quantity}</td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -2900,46 +3928,93 @@ const handleDelete = async (id) => {
                     </div>
                   )}
             {/* Modal Footer - Action Buttons */}
-<div className="flex justify-end gap-3 pt-4 border-t">
-  <button
-    type="button"
-    onClick={() => {
-      setShowImportModal(false);
-      setParsedCsvData([]);
-      setImportPreview(null);
-      setImportFilterDate('');
-    }}
-    className="px-4 py-2 border rounded-lg hover:bg-gray-50"
-    disabled={isImporting}
-  >
-    Cancel
-  </button>
-  
-  <button
-    type="button"
-    onClick={handleImportSubmit}
-    disabled={!importPreview || importPreview.success.length === 0 || isImporting}
-    className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-  >
-    {isImporting ? (
-      <>
-        <FiClock className="animate-spin" />
-        Importing...
-      </>
-    ) : (
-      <>
-        <FiUpload />
-        Import {importPreview?.success.length || 0} Orders
-      </>
-    )}
-  </button>
-</div>
-
+            <div className="flex justify-end gap-3 pt-4 border-t">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowImportModal(false);
+                  setParsedCsvData([]);
+                  setImportPreview(null);
+                  setImportFilterDate('');
+                }}
+                className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+                disabled={isImporting}
+              >
+                Cancel
+              </button>
+              
+              <button
+                type="button"
+                onClick={handleImportSubmit}
+                disabled={!importPreview || importPreview.success.length === 0 || isImporting}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isImporting ? (
+                  <>
+                    <FiClock className="animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <FiUpload />
+                    Import {importPreview?.success.length || 0} Orders
+                  </>
+                )}
+              </button>
+            </div>
             </div>
           </div>
         </div>
       )}
       
+      {/* ✅ ADD: Infinite Scroll Loading Indicators */}
+      {activeTab !== 'settlements' && (
+        <>
+          {isLoadingMore && (
+            <div className="text-center py-8 mt-4">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-3 border-indigo-500 mx-auto"></div>
+              <p className="text-gray-500 mt-3 text-sm font-medium">Loading more orders...</p>
+            </div>
+          )}
+
+          {!hasMoreDates && dateGroups.flatMap(dg => dg.orders).length > 0 && !isLoadingMore && (
+            <div className="text-center py-6 mt-4">
+              <div className="inline-block px-6 py-2 bg-gray-100 text-gray-500 rounded-full text-sm font-medium">
+                ✓ End of list — All {dateGroups.flatMap(dg => dg.orders).length} orders loaded
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ✅ ADD THE BUTTON RIGHT HERE - After dateGroups.map() closes */}
+      {activeTab !== 'settlements' && dateGroups.length > 0 && (
+        <div className="mt-6 text-center">
+          {hasMoreDates ? (
+            <button
+              onClick={loadMoreDates}
+              disabled={isLoadingMore}
+              className="px-8 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 mx-auto"
+            >
+              {isLoadingMore ? (
+                <>
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                  <span>Loading...</span>
+                </>
+              ) : (
+                <>
+                  <FiArrowRight className="w-5 h-5" />
+                  <span>Load More Dates</span>
+                </>
+              )}
+            </button>
+          ) : (
+            <div className="inline-block px-6 py-3 bg-gray-100 text-gray-500 rounded-lg text-sm font-medium">
+              ✓ End of list — All dates loaded
+            </div>
+          )}
+        </div>
+      )}
       <ScrollToTop />
     </div>
   );

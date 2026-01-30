@@ -9,16 +9,49 @@ const factoryReceivingSchema = new mongoose.Schema(
     totalQuantity: { type: Number, required: true },
     batchId: { type: String },
     notes: { type: String },
-    receivedBy: { type: String, required: true },
+    receivedBy: { type: String, required: false },
     receivedDate: { type: Date, default: Date.now },
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
     },
+    supplierSyncId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'SupplierSync',
+      default: null
+    },
+
+    supplierTenantId: {
+      type: String,
+      default: null
+    },
+
+    supplierWholesaleOrderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'WholesaleOrder',
+      default: null
+    },
+
+    isReadOnly: {
+      type: Boolean,
+      default: false
+      // True for supplier-synced receivings (customer can't edit)
+    },
+
+    // Metadata from supplier
+    supplierMetadata: {
+      challanNumber: String,
+      orderDate: Date,
+      supplierCompanyName: String,
+      acceptedBy: String,      // ✅ ADD THIS
+      acceptedAt: Date,        // ✅ ADD THIS
+      isEdit: Boolean   
+    },
+
     sourceType: {
       type: String,
-      enum: ['factory', 'borrowed_buyer', 'borrowed_vendor', 'return', 'transfer', 'other'],
+      enum: ['factory', 'borrowed_buyer', 'borrowed_vendor', 'return', 'transfer', 'supplier-sync', 'other'],
       default: 'factory',
     },
     sourceName: { type: String },
