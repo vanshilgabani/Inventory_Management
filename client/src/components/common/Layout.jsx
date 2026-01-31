@@ -4,7 +4,7 @@ import Sidebar from './Sidebar';
 import NotificationDropdown from '../NotificationDropdown';
 import SyncRequestModal from '../sync/SyncRequestModal';
 import { authService } from '../../services/authService';
-import { FiMenu, FiX, FiPackage, FiMaximize2 } from 'react-icons/fi';
+import { FiMenu, FiX, FiPackage, FiMaximize2, FiShield, FiUser } from 'react-icons/fi';
 
 const Layout = () => {
   const navigate = useNavigate();
@@ -195,10 +195,31 @@ const Layout = () => {
             {/* Notification Bell */}
             <NotificationDropdown />
             
-            {/* User Info */}
-            <div className="text-right">
-              <div className="text-sm font-semibold text-gray-800">{user?.name}</div>
-              <div className="text-xs text-gray-500">{user?.email}</div>
+            {/* User Info with Role */}
+            <div className="flex items-center gap-3">
+              {/* Role Icon */}
+              <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
+                user?.role === 'admin' 
+                  ? 'bg-gradient-to-br from-purple-500 to-indigo-600' 
+                  : 'bg-gradient-to-br from-blue-500 to-cyan-600'
+              }`}>
+                {user?.role === 'admin' ? (
+                  <FiShield className="text-white text-sm" />
+                ) : (
+                  <FiUser className="text-white text-sm" />
+                )}
+              </div>
+              
+              {/* Role Display */}
+              <div className="text-right">
+                <span className={`inline-block px-3 py-1.5 rounded-lg text-sm font-bold ${
+                  user?.role === 'admin'
+                    ? 'bg-purple-100 text-purple-700'
+                    : 'bg-blue-100 text-blue-700'
+                }`}>
+                  {user?.role === 'admin' ? 'Admin' : 'Sales'}
+                </span>
+              </div>
             </div>
 
             {/* Logout Button */}
