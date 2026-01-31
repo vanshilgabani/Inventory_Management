@@ -16,6 +16,7 @@ import {
 } from 'react-icons/fi';
 import Card from '../components/common/Card';
 import { format } from 'date-fns';
+const API_URL = import.meta.env.VITE_API_URL
 
 const SupplierSyncLogs = () => {
   const { user } = useAuth();
@@ -44,7 +45,7 @@ const SupplierSyncLogs = () => {
   const fetchSyncLogs = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`/api/sync/supplier-logs?dateRange=${dateRange}`, {
+      const response = await fetch(`${API_URL}/sync/supplier-logs?dateRange=${dateRange}`, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
@@ -65,7 +66,7 @@ const SupplierSyncLogs = () => {
 
   const fetchCustomers = async () => {
     try {
-      const response = await fetch('/api/admin/customers', {
+      const response = await fetch(`${API_URL}/admin/customers`, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }

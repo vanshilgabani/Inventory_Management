@@ -190,6 +190,7 @@ const loginUser = async (req, res) => {
       isSupplier: user.isSupplier,           // ✅ ADD THIS
       isTenant: user.isTenant,                // ✅ ADD THIS
       linkedSupplier: user.linkedSupplier,    // ✅ ADD THIS
+      syncPreference: user.syncPreference,
       token,
     });
   } catch (error) {
@@ -203,7 +204,7 @@ const loginUser = async (req, res) => {
 // @access Private
 const getUserProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id).select('+syncPreference');
     res.json(user);
   } catch (error) {
     res.status(500).json({ message: error.message });

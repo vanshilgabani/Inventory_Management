@@ -71,7 +71,7 @@ const login = async (email, password) => {
 
     const { 
       token, _id, id, name, email: userEmail, role, organizationId, 
-      businessName, phone, isSupplier, isTenant, linkedSupplier  // ✅ ADD THESE
+      businessName, phone, isSupplier, isTenant, linkedSupplier, syncPreference
     } = response.data;
 
     const userData = {
@@ -86,6 +86,7 @@ const login = async (email, password) => {
       isSupplier,      // ✅ ADD THIS
       isTenant,        // ✅ ADD THIS
       linkedSupplier,  // ✅ ADD THIS
+      syncPreference,
     };
 
     console.log('👤 Setting user:', userData);

@@ -9,6 +9,7 @@ import {
   FiActivity, FiClock, FiZap 
 } from 'react-icons/fi';
 import Card from '../components/common/Card';
+const API_URL = import.meta.env.VITE_API_URL
 
 const CustomerManagement = () => {
   const { user } = useAuth();
@@ -84,7 +85,7 @@ const CustomerManagement = () => {
   const fetchCustomers = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/admin/customers', {
+      const response = await fetch(`${API_URL}/admin/customers`, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
@@ -109,7 +110,7 @@ const CustomerManagement = () => {
   const fetchPaymentRequests = async (status = 'pending') => {
     try {
       setLoadingRequests(true);
-      const response = await fetch(`/api/payment/admin/payment-requests?status=${status}`, {
+      const response = await fetch(`${API_URL}/payment/admin/payment-requests?status=${status}`, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
@@ -134,7 +135,7 @@ const CustomerManagement = () => {
     if (!confirm('Are you sure you want to approve this payment and activate the subscription?')) return;
 
     try {
-      const response = await fetch(`/api/payment/admin/payment-requests/${requestId}/approve`, {
+      const response = await fetch(`${API_URL}/payment/admin/payment-requests/${requestId}/approve`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -161,7 +162,7 @@ const CustomerManagement = () => {
     if (reason === null) return; // User cancelled
 
     try {
-      const response = await fetch(`/api/payment/admin/payment-requests/${requestId}/reject`, {
+      const response = await fetch(`${API_URL}/payment/admin/payment-requests/${requestId}/reject`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -211,7 +212,7 @@ const CustomerManagement = () => {
   const savePermissions = async () => {
     try {
       setSaving(true);
-      const response = await fetch(`/api/admin/customers/${selectedCustomer._id}/sidebar-permissions`, {
+      const response = await fetch(`${API_URL}/admin/customers/${selectedCustomer._id}/sidebar-permissions`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -243,7 +244,7 @@ const CustomerManagement = () => {
   const handleSyncPreferenceChange = async (customerId, newPreference) => {
     try {
       setUpdatingSyncFor(customerId);
-      const response = await fetch(`/api/admin/customers/${customerId}/sync-preference`, {
+      const response = await fetch(`${API_URL}/admin/customers/${customerId}/sync-preference`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
