@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { useColorPalette } from '../../src/hooks/useColorPalette';
+const API_URL = import.meta.env.VITE_API_URL
 
 const ReceivedFromSupplier = () => {
   const [orders, setOrders] = useState([]);
@@ -25,7 +26,7 @@ const ReceivedFromSupplier = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('/api/supplier-sync/received-from-supplier', {
+      const response = await fetch(`${API_URL}/supplier-sync/received-from-supplier`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'

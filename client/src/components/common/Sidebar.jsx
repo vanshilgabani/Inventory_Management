@@ -24,7 +24,8 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
   const [expandedSections, setExpandedSections] = useState({
     main: true,
     subscription: true,
-    admin: true
+    admin: true,
+    analytics: false
   });
 
 
@@ -110,9 +111,18 @@ const isItemAllowed = (itemKey) => {
     { key: 'marketplace-sales', path: '/marketplace-sales', icon: FiBarChart2, label: 'Marketplace Sales', color: 'text-indigo-500' },
     { key: 'wholesale-buyers', path: '/wholesale-buyers', icon: FiUsers, label: 'Wholesale Buyers', color: 'text-teal-500' },
     { key: 'customers', path: '/customers', icon: FiUserCheck, label: 'Customers', color: 'text-cyan-500' },
-    { key: 'analytics', path: '/analytics', icon: FiActivity, label: 'Analytics', color: 'text-red-500' },
-  ];
-
+    { 
+    key: 'analytics', 
+    icon: FiActivity, 
+    label: 'Analytics', 
+    color: 'text-red-500',
+    hasSubmenu: true,
+    submenu: [
+      { key: 'analytics-wholesale', path: '/analytics/wholesale', label: 'Wholesale & Direct', badge: 'New', badgeColor: 'from-green-500 to-emerald-500' },
+      { key: 'analytics-marketplace', path: '/analytics/marketplace', label: 'Marketplace & Inventory', badge: 'New', badgeColor: 'from-blue-500 to-cyan-500' },
+    ]
+  },
+];
 
   const subscriptionItems = [
     { 
@@ -230,6 +240,65 @@ const isItemAllowed = (itemKey) => {
             <nav className="px-3 py-4 space-y-1">
               {visibleMenuItems.map((item, index) => {
                 const Icon = item.icon;
+                
+                // ✅ Handle Analytics with submenu
+                if (item.hasSubmenu && item.key === 'analytics') {
+                  return (
+                    <div key={item.key}>
+                      {/* Analytics parent button */}
+                      <button
+                        onClick={() => toggleSection('analytics')}
+                        className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100 transition-all duration-200"
+                        style={{
+                          animationDelay: `${index * 50}ms`,
+                          animation: 'slideIn 0.3s ease-out forwards'
+                        }}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <Icon className={item.color} />
+                          <span className="text-sm font-medium">{item.label}</span>
+                        </div>
+                        {expandedSections.analytics ? <FiChevronDown /> : <FiChevronRight />}
+                      </button>
+
+                      {/* Submenu items */}
+                      {expandedSections.analytics && (
+                        <div className="ml-8 mt-1 space-y-1 animate-fadeIn">
+                          {item.submenu.map((subItem) => (
+                            <NavLink
+                              key={subItem.key}
+                              to={subItem.path}
+                              onClick={() => setSidebarOpen(false)}
+                              className={({ isActive }) => `
+                                flex items-center justify-between px-4 py-2 rounded-lg
+                                transition-all duration-200
+                                ${isActive 
+                                  ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-md' 
+                                  : 'text-gray-600 hover:bg-gray-100'
+                                }
+                              `}
+                            >
+                              <span className="text-sm">{subItem.label}</span>
+                              {subItem.badge && (
+                                <span className={`
+                                  px-2 py-0.5 text-xs font-semibold rounded-full
+                                  bg-gradient-to-r ${subItem.badgeColor}
+                                  text-white shadow-sm
+                                `}>
+                                  {subItem.badge}
+                                </span>
+                              )}
+                            </NavLink>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                // ✅ Regular items (unchanged)
+                if (item.tenantOnly && user?.isSupplier) return null;
+
                 return (
                   <NavLink
                     key={item.path}
@@ -267,7 +336,6 @@ const isItemAllowed = (itemKey) => {
               })}
             </nav>
           )}
-
 
           {/* Subscription Section */}
           {visibleSubscriptionItems.length > 0 && (

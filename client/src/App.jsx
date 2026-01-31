@@ -17,7 +17,8 @@ import FactoryReceiving from './pages/FactoryReceiving';
 import Sales from './pages/Sales';
 import WholesaleBuyers from './pages/WholesaleBuyers';
 import Customers from './pages/Customers';
-import Analytics from './pages/Analytics';
+import WholesaleDirectAnalytics from './pages/WholesaleDirectAnalytics';
+import MarketplaceAnalytics from './pages/MarketplaceAnalytics';
 import UserManagement from './pages/UserManagement';
 import Settings from './pages/Settings';
 import MonthlyBills from './pages/MonthlyBills';
@@ -111,7 +112,8 @@ const AppRoutes = () => {
           <Route path="marketplace-sales" element={<Sales />} />
           <Route path="wholesale-buyers" element={<WholesaleBuyers />} />
           <Route path="customers" element={<Customers />} />
-          <Route path="analytics" element={<Analytics />} />
+          <Route path="/analytics/wholesale" element={<WholesaleDirectAnalytics />} />
+          <Route path="/analytics/marketplace" element={<MarketplaceAnalytics />} />
           <Route path="notifications" element={<Notifications />} />
           <Route path="/activity-audit" element={<ActivityAuditPage />} />
           <Route path="my-requests" element={<MyPendingRequests />} />  
