@@ -1,8 +1,8 @@
 // src/components/subscription/UpgradePlanModal.jsx
 import React, { useState, useEffect } from 'react';
 import { upgradePlan } from '../../services/subscriptionService';
-import { createPaymentOrder, verifyPayment } from '../../services/paymentService';
 import { useSubscription } from '../../context/SubscriptionContext';
+import ManualPaymentModal from './ManualPaymentModal';
 import api from '../../services/api';
 
 const UpgradePlanModal = ({ onClose }) => {
@@ -12,17 +12,19 @@ const UpgradePlanModal = ({ onClose }) => {
   const [error, setError] = useState(null);
   const [plans, setPlans] = useState([]);
   const [fetchingPrices, setFetchingPrices] = useState(true);
+  const [showManualPayment, setShowManualPayment] = useState(false);
+  const [selectedPlanData, setSelectedPlanData] = useState(null);
 
-  // ✅ Fetch pricing from backend on mount
+  // Fetch pricing from backend on mount
   useEffect(() => {
     const fetchPricing = async () => {
       try {
         setFetchingPrices(true);
         const response = await api.get('/payment/pricing');
-        
+
         if (response.data.success) {
           const pricing = response.data.data;
-          
+
           // Build plans array with fetched prices
           setPlans([
             {
@@ -36,7 +38,7 @@ const UpgradePlanModal = ({ onClose }) => {
                 'Monthly billing',
                 'Email support',
                 'Cancel anytime',
-                'No setup fee'
+                'No setup fee',
               ],
               badge: 'Starter',
               badgeColor: 'bg-purple-500',
@@ -57,7 +59,7 @@ const UpgradePlanModal = ({ onClose }) => {
               ],
               badge: 'Popular',
               badgeColor: 'bg-green-500',
-              savings: Math.round((pricing.monthly * 12) - pricing.yearly), // Calculate savings
+              savings: Math.round(pricing.monthly * 12 - pricing.yearly),
             },
             {
               id: 'order-based',
@@ -109,68 +111,14 @@ const UpgradePlanModal = ({ onClose }) => {
         return;
       }
 
-      // For yearly/monthly plan: Open Razorpay payment modal
+      // For yearly/monthly plan: Open Manual Payment Modal
       if (['yearly', 'monthly'].includes(selectedPlan)) {
-        // Step 1: Create Razorpay order
-        const orderResponse = await createPaymentOrder(selectedPlan);
-
-        if (!orderResponse.success) {
-          throw new Error(orderResponse.message);
-        }
-
-        const { orderId, amount, currency, key } = orderResponse.data;
-
-        // Step 2: Open Razorpay checkout
-        const options = {
-          key: key, // Razorpay Key ID from backend
-          amount: amount, // Amount in paise
-          currency: currency,
-          name: 'VeeRaa Inventory System',
-          description: `${selectedPlan === 'yearly' ? 'Yearly' : 'Monthly'} Subscription Plan`,
-          order_id: orderId,
-          handler: async function (response) {
-            try {
-              // Step 3: Verify payment on backend
-              const verifyResponse = await verifyPayment({
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature,
-                planType: selectedPlan
-              });
-
-              if (verifyResponse.success) {
-                alert('Payment successful! Your plan has been upgraded.');
-                await refreshSubscription();
-                onClose();
-              } else {
-                setError('Payment verification failed');
-              }
-            } catch (err) {
-              setError('Payment verification failed: ' + err.message);
-            }
-          },
-          prefill: {
-            name: '',
-            email: '',
-            contact: ''
-          },
-          theme: {
-            color: '#6366F1'
-          },
-          modal: {
-            ondismiss: function() {
-              setLoading(false);
-              setError('Payment cancelled by user');
-            }
-          }
-        };
-
-        const razorpay = new window.Razorpay(options);
-        razorpay.open();
-        setLoading(false); // Reset loading after opening modal
+        const planData = plans.find((p) => p.id === selectedPlan);
+        setSelectedPlanData(planData);
+        setShowManualPayment(true);
+        setLoading(false);
         return;
       }
-
     } catch (err) {
       setError(err.response?.data?.message || 'Upgrade failed');
     } finally {
@@ -178,13 +126,19 @@ const UpgradePlanModal = ({ onClose }) => {
     }
   };
 
+  const handleManualPaymentSuccess = async () => {
+    setShowManualPayment(false);
+    await refreshSubscription();
+    onClose();
+  };
+
   if (fetchingPrices) {
     return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg p-8">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-            <p className="mt-4 text-gray-600">Loading pricing...</p>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+        <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4">
+          <div className="flex flex-col items-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+            <p className="text-gray-600">Loading pricing...</p>
           </div>
         </div>
       </div>
@@ -192,108 +146,151 @@ const UpgradePlanModal = ({ onClose }) => {
   }
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg max-w-5xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="p-6 border-b">
-          <div className="flex justify-between items-center">
-            <h2 className="text-2xl font-bold text-gray-900">Upgrade Your Plan</h2>
-            <button
-              onClick={onClose}
-              className="text-gray-400 hover:text-gray-600"
-            >
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+    <>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+          {/* Header */}
+          <div className="sticky top-0 bg-gradient-to-r from-blue-600 to-purple-600 text-white p-6 rounded-t-xl">
+            <h2 className="text-3xl font-bold mb-2">Upgrade Your Plan</h2>
+            <p className="text-blue-100">Choose the plan that fits your needs</p>
           </div>
-          <p className="text-gray-600 mt-2">Choose the plan that fits your needs</p>
-        </div>
 
-        <div className="p-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {plans.map((plan) => (
-              <div
-                key={plan.id}
-                onClick={() => setSelectedPlan(plan.id)}
-                className={`relative border-2 rounded-lg p-6 cursor-pointer transition-all ${
-                  selectedPlan === plan.id
-                    ? 'border-blue-500 shadow-lg'
-                    : 'border-gray-200 hover:border-gray-300'
+          <div className="p-6">
+            {error && (
+              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+                {error}
+              </div>
+            )}
+
+            {/* Plans Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+              {plans.map((plan) => (
+                <div
+                  key={plan.id}
+                  onClick={() => setSelectedPlan(plan.id)}
+                  className={`relative cursor-pointer rounded-xl border-2 transition-all duration-300 ${
+                    selectedPlan === plan.id
+                      ? 'border-blue-500 bg-blue-50 shadow-lg transform scale-105'
+                      : 'border-gray-200 hover:border-blue-300 hover:shadow-md'
+                  }`}
+                >
+                  {/* Badge */}
+                  {plan.badge && (
+                    <div
+                      className={`${plan.badgeColor} text-white text-center py-2 text-sm font-semibold rounded-t-xl`}
+                    >
+                      {plan.badge}
+                    </div>
+                  )}
+
+                  <div className="p-6">
+                    {/* Plan Name */}
+                    <h3 className="text-xl font-bold text-gray-800 mb-2">{plan.name}</h3>
+                    <p className="text-gray-600 text-sm mb-4">{plan.description}</p>
+
+                    {/* Price */}
+                    <div className="mb-4">
+                      <div className="text-3xl font-bold text-gray-900">{plan.priceLabel}</div>
+                      {plan.savings && (
+                        <p className="text-green-600 text-sm mt-2 font-semibold">
+                          💰 Save ₹{plan.savings.toLocaleString()} per year
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Features */}
+                    <ul className="space-y-2">
+                      {plan.features.map((feature, index) => (
+                        <li key={index} className="flex items-start text-sm text-gray-700">
+                          <span className="text-green-500 mr-2">✓</span>
+                          {feature}
+                        </li>
+                      ))}
+                    </ul>
+
+                    {/* Selection Indicator */}
+                    {selectedPlan === plan.id && (
+                      <div className="mt-4 flex items-center justify-center">
+                        <div className="bg-blue-500 text-white px-4 py-2 rounded-full text-sm font-semibold">
+                          ✓ Selected
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex gap-4">
+              <button
+                onClick={onClose}
+                className="flex-1 px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition font-semibold"
+                disabled={loading}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleUpgrade}
+                disabled={!selectedPlan || loading}
+                className={`flex-1 px-6 py-3 rounded-lg font-semibold transition ${
+                  selectedPlan && !loading
+                    ? 'bg-gradient-to-r from-blue-600 to-purple-600 text-white hover:from-blue-700 hover:to-purple-700'
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 }`}
               >
-                {/* Badge */}
-                {plan.badge && (
-                  <div className={`absolute top-4 right-4 ${plan.badgeColor} text-white text-xs px-3 py-1 rounded-full font-semibold`}>
-                    {plan.badge}
-                  </div>
-                )}
-
-                {/* Plan Name */}
-                <h3 className="text-xl font-bold text-gray-900 mb-2">{plan.name}</h3>
-                
-                {/* Description */}
-                <p className="text-sm text-gray-600 mb-4">{plan.description}</p>
-
-                {/* Price */}
-                <div className="mb-4">
-                  <span className="text-3xl font-bold text-gray-900">{plan.priceLabel}</span>
-                  {plan.savings && (
-                    <p className="text-sm text-green-600 mt-1">
-                      💰 Save ₹{plan.savings.toLocaleString()} per year
-                    </p>
-                  )}
-                </div>
-
-                {/* Features */}
-                <ul className="space-y-2 mb-6">
-                  {plan.features.map((feature, index) => (
-                    <li key={index} className="flex items-start gap-2 text-sm text-gray-700">
-                      <svg className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                      <span>{feature}</span>
-                    </li>
-                  ))}
-                </ul>
-
-                {/* Selection Indicator */}
-                {selectedPlan === plan.id && (
-                  <div className="absolute inset-0 border-4 border-blue-500 rounded-lg pointer-events-none"></div>
-                )}
-              </div>
-            ))}
-          </div>
-
-          {/* Error Message */}
-          {error && (
-            <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-              {error}
+                {loading ? 'Processing...' : 'Proceed to Payment'}
+              </button>
             </div>
-          )}
 
-          {/* Action Buttons */}
-          <div className="mt-6 flex justify-end gap-4">
-            <button
-              onClick={onClose}
-              className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleUpgrade}
-              disabled={!selectedPlan || loading}
-              className={`px-6 py-2 rounded-lg font-semibold ${
-                !selectedPlan || loading
-                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  : 'bg-blue-500 text-white hover:bg-blue-600'
-              }`}
-            >
-              {loading ? 'Processing...' : 'Upgrade Now'}
-            </button>
+            {/* FAQ Section */}
+            <div className="mt-8 pt-6 border-t border-gray-200">
+              <h4 className="font-semibold text-gray-800 mb-4">Frequently Asked Questions</h4>
+              <div className="space-y-3 text-sm text-gray-600">
+                <div>
+                  <p className="font-semibold text-gray-700">
+                    Can I upgrade from monthly to yearly?
+                  </p>
+                  <p>
+                    Yes! You can upgrade anytime. Remaining credits will be adjusted automatically.
+                  </p>
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-700">
+                    What happens when my trial expires?
+                  </p>
+                  <p>
+                    You can choose any paid plan. Your data remains safe for 30 days.
+                  </p>
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-700">
+                    Can I switch from monthly to yearly mid-billing?
+                  </p>
+                  <p>
+                    Yes! Unused days will be credited towards your yearly subscription.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+
+      {/* Manual Payment Modal */}
+      {showManualPayment && selectedPlanData && (
+        <ManualPaymentModal
+          onClose={() => {
+            setShowManualPayment(false);
+            setLoading(false);
+          }}
+          planType={selectedPlanData.id}
+          planName={selectedPlanData.name}
+          amount={selectedPlanData.price}
+          onSuccess={handleManualPaymentSuccess}
+        />
+      )}
+    </>
   );
 };
 

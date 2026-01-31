@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { FiX, FiCreditCard, FiDollarSign, FiCheck, FiCopy } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
-import { QRCodeSVG } from 'qrcode.react'; // ✅ Add this
+import upiQRCode from '../../../public/upi-qr-code.png.jpeg';
 
 const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrderId, onSuccess }) => {
   const [paymentMethod, setPaymentMethod] = useState('');
@@ -10,13 +10,10 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
   const [loading, setLoading] = useState(false);
 
   const paymentDetails = {
-    upiId: '9328822592@upi',
+    upiId: 'vanshilgabani-1@oksbi',
     upiNumber: '9328822592',
     name: 'Vanshil Rajubhai Gabani'
   };
-
-  // ✅ Generate UPI payment URL
-  const upiPaymentUrl = `upi://pay?pa=${paymentDetails.upiId}&pn=${encodeURIComponent(paymentDetails.name)}&am=${amount}&cu=INR`;
 
   // ✅ Copy to clipboard function
   const copyToClipboard = (text) => {
@@ -117,16 +114,24 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
               {/* ✅ UPI Details - Show when selected */}
               {paymentMethod === 'upi' && (
                 <div className="mt-4 pt-4 border-t border-gray-200 space-y-4">
-                  {/* QR Code Section */}
+                  {/* ✅ OPTION 1: Use static QR code image (Recommended) */}
                   <div className="flex flex-col items-center bg-white p-4 rounded-lg border border-gray-200">
                     <p className="text-sm font-semibold text-gray-700 mb-3">Scan QR Code to Pay</p>
                     <div className="bg-white p-3 rounded-lg border-2 border-gray-300">
-                      <QRCodeSVG 
-                        value={upiPaymentUrl} 
-                        size={180}
-                        level="H"
-                        includeMargin={true}
+                      {/* ✅ Replace with your actual QR code image */}
+                      <img 
+                        src={upiQRCode} 
+                        alt="UPI QR Code" 
+                        className="w-48 h-48"
+                        onError={(e) => {
+                          // Fallback: Show text if image not found
+                          e.target.style.display = 'none';
+                          e.target.nextSibling.style.display = 'block';
+                        }}
                       />
+                      <div style={{ display: 'none' }} className="w-48 h-48 flex items-center justify-center bg-gray-100 text-gray-500 text-sm text-center p-4">
+                        QR Code not available.<br/>Please use UPI ID below.
+                      </div>
                     </div>
                     <p className="text-xs text-gray-500 mt-2 text-center">
                       Scan with any UPI app (GPay, PhonePe, Paytm, etc.)
