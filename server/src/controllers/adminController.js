@@ -500,3 +500,45 @@ exports.getCustomerDetails = async (req, res) => {
     });
   }
 };
+
+// Add this new function to fetch payment requests filtered by organization
+exports.getPaymentRequests = async (req, res) => {
+  try {
+    const { status = 'pending' } = req.query;
+    const adminOrgId = req.user.organizationId || req.user.id;
+
+    // ✅ FIX: Filter payment requests by organizationId
+    // Only show requests from customers linked to this admin/supplier
+    const query = {
+      organizationId: adminOrgId,
+      status
+    };
+
+    const requests = await ManualPaymentRequest.find(query)
+      .populate('userId', 'name email phone businessName')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      data: {
+        requests: requests.map(req => ({
+          ...req,
+          userDetails: {
+            name: req.userId?.name || req.userDetails?.name,
+            email: req.userId?.email || req.userDetails?.email,
+            phone: req.userId?.phone || req.userDetails?.phone,
+            businessName: req.userId?.businessName || req.userDetails?.businessName
+          }
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Get payment requests error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payment requests',
+      error: error.message
+    });
+  }
+};
