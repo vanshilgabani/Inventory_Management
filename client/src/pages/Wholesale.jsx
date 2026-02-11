@@ -40,7 +40,6 @@ const Wholesale = () => {
   const [editingOrder, setEditingOrder] = useState(null);
   const [viewingOrder, setViewingOrder] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterStatus, setFilterStatus] = useState('all');
   const [filterPayment, setFilterPayment] = useState('all');
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentOrder, setPaymentOrder] = useState(null);
@@ -384,7 +383,7 @@ const clearAllDrafts = () => {
   const getPaymentStatusColor = (status) => {
     switch (status) {
       case 'paid':
-        return 'border-l-4 border-green-500';
+        return 'border-l-4 border-green-600';
       case 'partial':
         return 'border-l-4 border-yellow-500';
       case 'pending':
@@ -396,19 +395,19 @@ const clearAllDrafts = () => {
 
   const getPaymentStatusBadge = (status) => {
     switch (status) {
-      case 'paid':
+      case 'Paid':
         return (
           <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
             <FiCheckCircle className="mr-1" /> Paid
           </span>
         );
-      case 'partial':
+      case 'Partial':
         return (
           <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
             <FiAlertTriangle className="mr-1" /> Partial Payment
           </span>
         );
-      case 'pending':
+      case 'Pending':
         return (
           <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
             <FiAlertTriangle className="mr-1" /> Pending Payment
@@ -884,7 +883,6 @@ const handleItemDesignChange = (index, value) => {
 
   const clearAllFilters = () => {
     setSearchQuery('');
-    setFilterStatus('all');
     setFilterPayment('all');
     setQuickFilters([]);
   };
@@ -897,11 +895,10 @@ const handleItemDesignChange = (index, value) => {
       const orderDate = new Date(order.createdAt).toDateString();
       if (today !== orderDate) return false;
     }
-    if (quickFilters.includes('pending') && order.paymentStatus !== 'pending') return false;
-    if (quickFilters.includes('paid') && order.paymentStatus !== 'paid') return false;
+    if (quickFilters.includes('Partial') && order.paymentStatus !== 'Partial') return false;
+    if (quickFilters.includes('Paid') && order.paymentStatus !== 'Paid') return false;
 
-    // Status filters
-    if (filterStatus !== 'all' && order.orderStatus !== filterStatus) return false;
+  // Status filters
     if (filterPayment !== 'all' && order.paymentStatus !== filterPayment) return false;
 
     // Search query
@@ -1013,16 +1010,6 @@ const handleItemDesignChange = (index, value) => {
           <div className="flex flex-wrap gap-2">
             <span className="text-sm text-gray-600 font-medium">Quick Filters:</span>
             <button
-              onClick={() => handleQuickFilter('due')}
-              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                quickFilters.includes('due')
-                  ? 'bg-red-100 text-red-800'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              🔴 Due Only
-            </button>
-            <button
               onClick={() => handleQuickFilter('today')}
               className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
                 quickFilters.includes('today')
@@ -1033,19 +1020,29 @@ const handleItemDesignChange = (index, value) => {
               📅 Today
             </button>
             <button
-              onClick={() => handleQuickFilter('pending')}
+              onClick={() => handleQuickFilter('due')}
               className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                quickFilters.includes('pending')
+                quickFilters.includes('due')
+                  ? 'bg-red-100 text-red-800'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              🔴 Due
+            </button>
+            <button
+              onClick={() => handleQuickFilter('Partial')}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                quickFilters.includes('Partial')
                   ? 'bg-yellow-100 text-yellow-800'
                   : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
               }`}
             >
-              ⏳ Pending
+              ⏳ Partial
             </button>
             <button
-              onClick={() => handleQuickFilter('paid')}
+              onClick={() => handleQuickFilter('Paid')}
               className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                quickFilters.includes('paid')
+                quickFilters.includes('Paid')
                   ? 'bg-green-100 text-green-800'
                   : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
               }`}
@@ -1054,7 +1051,7 @@ const handleItemDesignChange = (index, value) => {
             </button>
           </div>
 
-          {/* Advanced Filters */}
+          {/* Advanced Filters 
           <div className="flex flex-wrap gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Payment Status</label>
@@ -1064,12 +1061,13 @@ const handleItemDesignChange = (index, value) => {
                 className="block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
               >
                 <option value="all">All Payments</option>
-                <option value="paid">Paid</option>
-                <option value="partial">Partial</option>
-                <option value="pending">Pending</option>
+                <option value="Paid">Paid</option>
+                <option value="Partial">Partial</option>
+                <option value="Pending">Pending</option>
               </select>
             </div>
           </div>
+          */}
 
           {/* Active Filters */}
           {(searchQuery || quickFilters.length > 0 || filterPayment !== 'all') && (
@@ -1146,9 +1144,12 @@ const handleItemDesignChange = (index, value) => {
                     <span className="mx-2 text-gray-400">|</span>
                     <span className="text-gray-600 font-normal">📱 {order.buyerContact}</span>
                   </div>
-                  {order.businessName && (
-                    <div className="text-sm text-gray-600 ml-6">{order.businessName}</div>
-                  )}
+                  <div className='flex items-center justify-between'>
+                    {order.businessName && (
+                      <div className="text-sm text-gray-600 ml-6">{order.businessName}</div>
+                    )}
+                    {getPaymentStatusBadge(order.paymentStatus)}
+                  </div>
                 </div>
 
                 <div className="border-t border-gray-200 my-4"></div>
@@ -1188,11 +1189,6 @@ const handleItemDesignChange = (index, value) => {
                       ₹{order.amountDue?.toLocaleString('en-IN')}
                     </div>
                   </div>
-                </div>
-
-                {/* Payment Status Badge */}
-                <div className="mb-4">
-                  {getPaymentStatusBadge(order.paymentStatus)}
                 </div>
 
                 {/* Actions */}
@@ -2727,17 +2723,36 @@ const handleItemDesignChange = (index, value) => {
           // ✅ Handle borrow from reserved error
           if (createError.response?.data?.code === 'MAIN_INSUFFICIENT_BORROW_RESERVED') {
             console.log('Main insufficient, showing borrow modal:', createError.response.data);
+            
+            // ✅ Build borrowItems from insufficientItems
+            const borrowItems = createError.response.data.insufficientItems.map(item => ({
+              design: item.design,
+              color: item.color,
+              size: item.size,
+              quantity: item.neededFromReserved || item.shortfall || item.requestedQty
+            }));
+
+            console.log('📦 Built borrowItems:', borrowItems);
+
+            // ✅ Set borrowData for modal display
             setBorrowData({
               insufficientItems: createError.response.data.insufficientItems,
-              totalNeededFromReserved: createError.response.data.totalNeededFromReserved
+              totalNeededFromReserved: createError.response.data.totalNeededFromReserved,
+              totalRequested: createError.response.data.totalRequested,
+              totalAvailableMain: createError.response.data.totalAvailableMain,
+              totalShortfall: createError.response.data.totalShortfall,
+              totalAvailableReserved: createError.response.data.totalAvailableReserved
             });
+            
+            // ✅ Set pendingOrderData with correct structure
             setPendingOrderData({
-              ...orderData,
-              borrowFromReserved: true  // ✅ Add flag here
+              orderData: orderData,      // ← All order details
+              borrowItems: borrowItems   // ← Items to borrow from reserved
             });
+            
             setShowBorrowModal(true);
             setSubmitting(false);
-            return; // Don't throw error
+            return;
           }
           throw createError; // Re-throw other errors
         }
