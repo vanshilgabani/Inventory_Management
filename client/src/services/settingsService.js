@@ -17,12 +17,56 @@ const getSettings = async () => {
   return response.data;
 };
 
-// ✅ Get enabled sizes
+// ✅ UPDATED: Get enabled sizes (uses new API endpoint)
 const getEnabledSizes = async () => {
-  const response = await axios.get(`${API_URL}/settings`, {
+  try {
+    const response = await axios.get(`${API_URL}/settings/sizes/enabled`, {
+      headers: getAuthHeader()
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Failed to fetch enabled sizes:', error);
+    // Fallback to default sizes
+    return ['S', 'M', 'L', 'XL', 'XXL'];
+  }
+};
+
+// ✅ NEW: Get all sizes (enabled + disabled)
+const getAllSizes = async () => {
+  const response = await axios.get(`${API_URL}/settings/sizes`, {
     headers: getAuthHeader()
   });
-  return response.data.enabledSizes || ['S', 'M', 'L', 'XL', 'XXL'];
+  return response.data;
+};
+
+// ✅ NEW: Add new size
+const addSize = async (sizeName) => {
+  const response = await axios.post(
+    `${API_URL}/settings/sizes`,
+    { name: sizeName },
+    { headers: getAuthHeader() }
+  );
+  return response.data;
+};
+
+// ✅ NEW: Toggle size enable/disable
+const toggleSize = async (sizeName, isEnabled) => {
+  const response = await axios.put(
+    `${API_URL}/settings/sizes/${sizeName}/toggle`,
+    { isEnabled },
+    { headers: getAuthHeader() }
+  );
+  return response.data;
+};
+
+// ✅ NEW: Reorder sizes
+const reorderSizes = async (sizes) => {
+  const response = await axios.put(
+    `${API_URL}/settings/sizes/reorder`,
+    { sizes },
+    { headers: getAuthHeader() }
+  );
+  return response.data;
 };
 
 // Update settings
@@ -72,7 +116,7 @@ const setDefaultMarketplaceAccount = async (accountId) => {
   return response.data;
 };
 
-// ✅ NEW: Get stock thresholds
+// Get stock thresholds
 const getStockThresholds = async () => {
   const response = await axios.get(`${API_URL}/settings/stock-thresholds`, {
     headers: getAuthHeader()
@@ -80,7 +124,7 @@ const getStockThresholds = async () => {
   return response.data;
 };
 
-// ✅ NEW: Update stock thresholds (Admin only)
+// Update stock thresholds (Admin only)
 const updateStockThresholds = async (thresholdData) => {
   const response = await axios.put(
     `${API_URL}/settings/stock-thresholds`,
@@ -90,7 +134,7 @@ const updateStockThresholds = async (thresholdData) => {
   return response.data;
 };
 
-// ✅ NEW: Add or update design-specific threshold (Admin only)
+// Add or update design-specific threshold (Admin only)
 const addDesignThreshold = async (design, threshold) => {
   const response = await axios.post(
     `${API_URL}/settings/stock-thresholds/design`,
@@ -100,7 +144,7 @@ const addDesignThreshold = async (design, threshold) => {
   return response.data;
 };
 
-// ✅ NEW: Remove design threshold override (Admin only)
+// Remove design threshold override (Admin only)
 const removeDesignThreshold = async (design) => {
   const response = await axios.delete(
     `${API_URL}/settings/stock-thresholds/design/${design}`,
@@ -109,7 +153,7 @@ const removeDesignThreshold = async (design) => {
   return response.data;
 };
 
-// ✅ NEW: Color Palette APIs
+// Color Palette APIs
 const getColorPalette = async () => {
   const response = await axios.get(`${API_URL}/settings/color-palette`, {
     headers: getAuthHeader()
@@ -152,7 +196,7 @@ const reorderColors = async (orderedColorIds) => {
   return response.data;
 };
 
-// ✅✅ NEW: Company Management APIs
+// Company Management APIs
 const getCompanies = async () => {
   const response = await axios.get(`${API_URL}/settings/companies`, {
     headers: getAuthHeader()
@@ -206,13 +250,12 @@ const setDefaultCompany = async (companyId) => {
 
 export const getTenantSettings = async () => {
   const response = await api.get('/tenant-settings/my-settings');
-  console.log('🔍 API Response:', response.data); // ✅ DEBUG
+  console.log('🔍 API Response:', response.data);
   
-  // ✅ FIX: Return the nested data if it exists
   if (response.data.success && response.data.data) {
-    return response.data.data; // Return just the data object
+    return response.data.data;
   }
-  return response.data; // Fallback
+  return response.data;
 };
 
 export const updateInventoryMode = async (mode) => {
@@ -220,30 +263,85 @@ export const updateInventoryMode = async (mode) => {
   return response.data;
 };
 
+// Flipkart Integration
+const getFlipkartSettings = async () => {
+  const response = await api.get('/flipkart/settings');
+  return response.data;
+};
+
+const updateFlipkartSettings = async (settingsData) => {
+  const response = await api.put('/flipkart/settings', settingsData);
+  return response.data;
+};
+
+const testFlipkartCredentials = async (appId, appSecret) => {
+  const response = await api.post('/flipkart/test-credentials', {
+    appId,
+    appSecret
+  });
+  return response.data;
+};
+
+const updateAccountFlipkart = async (accountId, flipkartConfig) => {
+  const response = await api.put(`/settings/marketplace-accounts/${accountId}/flipkart`, flipkartConfig);
+  return response.data;
+};
+
+const syncProductsWithSizes = async () => {
+  const response = await axios.post(
+    `${API_URL}/settings/sizes/sync-products`,
+    {},
+    { headers: getAuthHeader() }
+  );
+  return response.data;
+};
+
 export const settingsService = {
   getSettings,
-  getEnabledSizes,
   updateSettings,
+  
+  // ✅ Size Management
+  getAllSizes,
+  getEnabledSizes,
+  addSize,
+  toggleSize,
+  reorderSizes,
+  syncProductsWithSizes,
+  
+  // Marketplace Accounts
   addMarketplaceAccount,
   updateMarketplaceAccount,
   deleteMarketplaceAccount,
   setDefaultMarketplaceAccount,
+  
+  // Stock Thresholds
   getStockThresholds,
   updateStockThresholds,
   addDesignThreshold,
   removeDesignThreshold,
+  
+  // Color Palette
   getColorPalette,
   addColorToPalette,
   updateColorInPalette,
   deleteColorFromPalette,
   reorderColors,
-  // ✅✅ Company Management
+  
+  // Company Management
   getCompanies,
   addCompany,
   updateCompany,
   deleteCompany,
   toggleCompanyActive,
   setDefaultCompany,
+  
+  // Tenant Settings
   getTenantSettings,
-  updateInventoryMode
+  updateInventoryMode,
+  
+  // Flipkart Integration
+  getFlipkartSettings,
+  updateFlipkartSettings,
+  testFlipkartCredentials,
+  updateAccountFlipkart
 };

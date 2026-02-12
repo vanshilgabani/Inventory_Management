@@ -41,4 +41,18 @@ export const inventoryService = {
     const response = await api.get('/inventory/stock-status');
     return response.data;
   },
+
+  async allocateReservedStock(productId, allocations) {
+    const response = await api.post(`/inventory/${productId}/allocate-reserved-stock`, {
+      allocations
+    });
+    return response.data;
+  },
+
+  async getReservedStockByAccount(accountName = 'all') {
+    const response = await api.get('/inventory/reserved-stock/by-account', {
+      params: { accountName }
+    });
+    return response.data;
+  }
 };

@@ -1512,10 +1512,461 @@ const setDefaultCompany = async (req, res) => {
   }
 };
 
+// ✅ NEW: Update Flipkart config for a marketplace account
+// @route PUT /api/settings/marketplace-accounts/:accountId/flipkart
+// @access Private (Admin only)
+const updateAccountFlipkart = async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    const { enabled, appId, appSecret, locationId, syncTime, syncFrequency, secondSyncTime, autoSyncEnabled } = req.body;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    const account = settings.marketplaceAccounts.id(accountId);
+    
+    if (!account) {
+      return res.status(404).json({ message: 'Account not found' });
+    }
+
+    // Initialize flipkart object if doesn't exist
+    if (!account.flipkart) {
+      account.flipkart = {};
+    }
+
+    // Update Flipkart config
+    account.flipkart.enabled = enabled !== undefined ? enabled : account.flipkart.enabled;
+    
+    if (appId !== undefined) account.flipkart.appId = appId;
+    if (appSecret !== undefined) account.flipkart.appSecret = appSecret;
+    if (locationId !== undefined) account.flipkart.locationId = locationId;
+    if (syncTime !== undefined) account.flipkart.syncTime = syncTime;
+    if (syncFrequency !== undefined) account.flipkart.syncFrequency = syncFrequency;
+    if (secondSyncTime !== undefined) account.flipkart.secondSyncTime = secondSyncTime;
+    if (autoSyncEnabled !== undefined) account.flipkart.autoSyncEnabled = autoSyncEnabled;
+
+    await settings.save();
+
+    res.json({
+      success: true,
+      message: 'Flipkart settings updated for account',
+      account
+    });
+  } catch (error) {
+    console.error('Update account Flipkart error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Get all sizes (enabled + disabled)
+// @route GET /api/settings/sizes
+// @access Private
+const getAllSizes = async (req, res) => {
+  try {
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      // Return default sizes if settings don't exist
+      return res.json([
+        { name: 'S', isEnabled: true, displayOrder: 1, createdAt: new Date() },
+        { name: 'M', isEnabled: true, displayOrder: 2, createdAt: new Date() },
+        { name: 'L', isEnabled: true, displayOrder: 3, createdAt: new Date() },
+        { name: 'XL', isEnabled: true, displayOrder: 4, createdAt: new Date() },
+        { name: 'XXL', isEnabled: true, displayOrder: 5, createdAt: new Date() }
+      ]);
+    }
+
+    // Check if migration needed (old enabledSizes to new sizes structure)
+    if (!settings.sizes || settings.sizes.length === 0) {
+      if (settings.enabledSizes && settings.enabledSizes.length > 0) {
+        // Migrate old structure to new
+        settings.sizes = settings.enabledSizes.map((size, index) => ({
+          name: size,
+          isEnabled: true,
+          displayOrder: index + 1,
+          createdAt: new Date()
+        }));
+        await settings.save();
+      }
+    }
+
+    // Sort by displayOrder
+    const sizes = settings.sizes.sort((a, b) => a.displayOrder - b.displayOrder);
+    res.json(sizes);
+  } catch (error) {
+    console.error('Get all sizes error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Get only enabled sizes (for dropdowns)
+// @route GET /api/settings/sizes/enabled
+// @access Private
+const getEnabledSizes = async (req, res) => {
+  try {
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      return res.json(['S', 'M', 'L', 'XL', 'XXL']);
+    }
+
+    // Check if migration needed
+    if (!settings.sizes || settings.sizes.length === 0) {
+      if (settings.enabledSizes && settings.enabledSizes.length > 0) {
+        return res.json(settings.enabledSizes);
+      }
+      return res.json(['S', 'M', 'L', 'XL', 'XXL']);
+    }
+
+    // Return only enabled sizes, sorted by displayOrder
+    const enabledSizes = settings.sizes
+      .filter(s => s.isEnabled)
+      .sort((a, b) => a.displayOrder - b.displayOrder)
+      .map(s => s.name);
+    
+    res.json(enabledSizes);
+  } catch (error) {
+    console.error('Get enabled sizes error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ UPDATED: Add new size with AUTO-SYNC
+// @route POST /api/settings/sizes
+// @access Private (Admin only)
+const addSize = async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ message: 'Size name is required' });
+    }
+
+    // Validate size name
+    const sizeName = name.trim().toUpperCase();
+    
+    if (sizeName.length > 10) {
+      return res.status(400).json({ message: 'Size name must be 10 characters or less' });
+    }
+
+    if (!/^[A-Z0-9]+$/.test(sizeName)) {
+      return res.status(400).json({ message: 'Size name can only contain letters and numbers' });
+    }
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings) {
+      settings = await Settings.create({ organizationId: req.organizationId });
+    }
+
+    // Initialize sizes array if doesn't exist
+    if (!settings.sizes) {
+      settings.sizes = [];
+    }
+
+    // Check for duplicate (case-insensitive)
+    const isDuplicate = settings.sizes.some(
+      (s) => s.name.toUpperCase() === sizeName
+    );
+
+    if (isDuplicate) {
+      return res.status(400).json({ message: 'Size already exists' });
+    }
+
+    // Calculate new displayOrder (highest + 1)
+    const maxOrder = settings.sizes.length > 0 
+      ? Math.max(...settings.sizes.map(s => s.displayOrder)) 
+      : 0;
+
+    // Add new size
+    settings.sizes.push({
+      name: sizeName,
+      isEnabled: true,
+      displayOrder: maxOrder + 1,
+      createdAt: new Date()
+    });
+
+    await settings.save();
+
+    // ✅ AUTO-SYNC: Add this new size to all existing products
+    const Product = require('../models/Product');
+    const products = await Product.find({ organizationId: req.organizationId });
+    
+    let syncedProducts = 0;
+    let totalSizesAdded = 0;
+
+    for (const product of products) {
+      let productModified = false;
+      
+      for (const color of product.colors) {
+        // Check if this color already has the new size
+        const sizeExists = color.sizes.some(s => s.size === sizeName);
+        
+        if (!sizeExists) {
+          color.sizes.push({
+            size: sizeName,
+            currentStock: 0,
+            lockedStock: 0,
+            reservedStock: 0,
+            reorderPoint: 20,
+            reservedAllocations: []
+          });
+          totalSizesAdded++;
+          productModified = true;
+        }
+      }
+      
+      if (productModified) {
+        await product.save();
+        syncedProducts++;
+      }
+    }
+
+    res.status(201).json({
+      message: `Size "${sizeName}" added successfully and synced to ${syncedProducts} products`,
+      size: settings.sizes[settings.sizes.length - 1],
+      syncStats: {
+        productsUpdated: syncedProducts,
+        totalProducts: products.length,
+        sizesAdded: totalSizesAdded
+      }
+    });
+  } catch (error) {
+    console.error('Add size error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ UPDATED: Toggle size with auto-sync when re-enabling
+// @route PUT /api/settings/sizes/:sizeName/toggle
+// @access Private (Admin only)
+const toggleSize = async (req, res) => {
+  try {
+    const { sizeName } = req.params;
+    const { isEnabled } = req.body;
+
+    if (isEnabled === undefined) {
+      return res.status(400).json({ message: 'isEnabled field is required' });
+    }
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings || !settings.sizes) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    const size = settings.sizes.find(s => s.name.toUpperCase() === sizeName.toUpperCase());
+    
+    if (!size) {
+      return res.status(404).json({ message: 'Size not found' });
+    }
+
+    // Check if at least one size will remain enabled
+    if (!isEnabled) {
+      const enabledCount = settings.sizes.filter(s => s.isEnabled).length;
+      if (enabledCount === 1 && size.isEnabled) {
+        return res.status(400).json({ 
+          message: 'Cannot disable all sizes. At least one size must be enabled.' 
+        });
+      }
+    }
+
+    const wasEnabled = size.isEnabled;
+    size.isEnabled = isEnabled;
+    await settings.save();
+
+    // ✅ AUTO-SYNC: If re-enabling a size, add it to products that don't have it
+    let syncStats = { productsUpdated: 0, sizesAdded: 0 };
+    
+    if (isEnabled && !wasEnabled) {
+      const Product = require('../models/Product');
+      const products = await Product.find({ organizationId: req.organizationId });
+      
+      for (const product of products) {
+        let productModified = false;
+        
+        for (const color of product.colors) {
+          const sizeExists = color.sizes.some(s => s.size === sizeName.toUpperCase());
+          
+          if (!sizeExists) {
+            color.sizes.push({
+              size: sizeName.toUpperCase(),
+              currentStock: 0,
+              lockedStock: 0,
+              reservedStock: 0,
+              reorderPoint: 20,
+              reservedAllocations: []
+            });
+            syncStats.sizesAdded++;
+            productModified = true;
+          }
+        }
+        
+        if (productModified) {
+          await product.save();
+          syncStats.productsUpdated++;
+        }
+      }
+    }
+
+    // Check if any products use this size (warning only)
+    const Product = require('../models/Product');
+    const productsUsingSize = await Product.countDocuments({
+      organizationId: req.organizationId,
+      'colors.sizes.size': sizeName.toUpperCase()
+    });
+
+    const response = {
+      message: `Size ${isEnabled ? 'enabled' : 'disabled'} successfully`,
+      size: size,
+      warning: !isEnabled && productsUsingSize > 0 
+        ? `${productsUsingSize} product(s) currently use this size. Existing data will be preserved but hidden from new entries.`
+        : null
+    };
+
+    if (syncStats.productsUpdated > 0) {
+      response.syncStats = syncStats;
+      response.message += ` and synced to ${syncStats.productsUpdated} products`;
+    }
+
+    res.json(response);
+  } catch (error) {
+    console.error('Toggle size error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ✅ NEW: Manual sync endpoint (for existing products)
+// @route POST /api/settings/sizes/sync-products
+// @access Private (Admin only)
+const syncProductsWithSizes = async (req, res) => {
+  try {
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings || !settings.sizes) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Get all enabled sizes
+    const enabledSizes = settings.sizes
+      .filter(s => s.isEnabled)
+      .sort((a, b) => a.displayOrder - b.displayOrder)
+      .map(s => s.name);
+
+    if (enabledSizes.length === 0) {
+      return res.status(400).json({ message: 'No enabled sizes found' });
+    }
+
+    const Product = require('../models/Product');
+    const products = await Product.find({ organizationId: req.organizationId });
+
+    let updatedCount = 0;
+    let addedSizesCount = 0;
+    let removedSizesCount = 0;
+
+    for (const product of products) {
+      let productModified = false;
+
+      for (const color of product.colors) {
+        const existingSizes = color.sizes.map(s => s.size);
+        
+        // Add missing enabled sizes
+        const missingSizes = enabledSizes.filter(size => !existingSizes.includes(size));
+
+        if (missingSizes.length > 0) {
+          missingSizes.forEach(size => {
+            color.sizes.push({
+              size: size,
+              currentStock: 0,
+              lockedStock: 0,
+              reservedStock: 0,
+              reorderPoint: 20,
+              reservedAllocations: []
+            });
+            addedSizesCount++;
+          });
+          productModified = true;
+        }
+
+        // Optional: Remove disabled sizes (commented out to preserve historical data)
+        // const disabledSizes = existingSizes.filter(size => !enabledSizes.includes(size));
+        // if (disabledSizes.length > 0) {
+        //   color.sizes = color.sizes.filter(s => enabledSizes.includes(s.size));
+        //   removedSizesCount += disabledSizes.length;
+        //   productModified = true;
+        // }
+      }
+
+      if (productModified) {
+        await product.save();
+        updatedCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully synced ${updatedCount} products with current size configuration`,
+      stats: {
+        totalProducts: products.length,
+        productsUpdated: updatedCount,
+        sizesAdded: addedSizesCount,
+        sizesRemoved: removedSizesCount,
+        enabledSizes: enabledSizes
+      }
+    });
+  } catch (error) {
+    console.error('Sync products with sizes error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
+  }
+};
+
+// ✅ NEW: Reorder sizes
+// @route PUT /api/settings/sizes/reorder
+// @access Private (Admin only)
+const reorderSizes = async (req, res) => {
+  try {
+    const { sizes } = req.body; // Array of {name, displayOrder}
+
+    if (!Array.isArray(sizes) || sizes.length === 0) {
+      return res.status(400).json({ message: 'Sizes array is required' });
+    }
+
+    let settings = await Settings.findOne({ organizationId: req.organizationId });
+    
+    if (!settings || !settings.sizes) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Update displayOrder for each size
+    sizes.forEach(({ name, displayOrder }) => {
+      const size = settings.sizes.find(s => s.name.toUpperCase() === name.toUpperCase());
+      if (size) {
+        size.displayOrder = displayOrder;
+      }
+    });
+
+    await settings.save();
+
+    res.json({
+      message: 'Sizes reordered successfully',
+      sizes: settings.sizes.sort((a, b) => a.displayOrder - b.displayOrder)
+    });
+  } catch (error) {
+    console.error('Reorder sizes error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   getSettings,
   updateSettings,
-  reduceStockLock, // 🔒 NEW
+  reduceStockLock, 
   addMarketplaceAccount,
   updateMarketplaceAccount,
   deleteMarketplaceAccount,
@@ -1528,8 +1979,8 @@ module.exports = {
   updateGST,
   updateEnabledSizes,
   updatePermissions,
-  toggleStockLock,          // ✅ NEW
-  setVariantLockAmount,     // ✅ NEW
+  toggleStockLock,          
+  setVariantLockAmount,     
   refillLockedStock,
   getStockLockSettings,
   distributeStockLock,
@@ -1543,5 +1994,12 @@ module.exports = {
   updateCompany,
   deleteCompany,
   toggleCompanyActive,
-  setDefaultCompany
+  setDefaultCompany,
+  updateAccountFlipkart,
+  getAllSizes,
+  getEnabledSizes,
+  addSize,
+  toggleSize,
+  reorderSizes,
+  syncProductsWithSizes
 };

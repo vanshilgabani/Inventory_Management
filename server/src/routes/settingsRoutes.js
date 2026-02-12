@@ -28,7 +28,16 @@ router.get('/color-palette', protect, settingsController.getColorPalette);
 router.post('/color-palette', protect, isAdmin, settingsController.addColorToPalette);
 router.put('/color-palette/reorder', protect, isAdmin, settingsController.reorderColors);
 router.put('/color-palette/:colorId', protect, isAdmin, settingsController.updateColorInPalette);
+router.put('/marketplace-accounts/:accountId/flipkart', protect, settingsController.updateAccountFlipkart);
 router.delete('/color-palette/:colorId', protect, isAdmin, settingsController.deleteColorFromPalette);
+
+// Add these routes to your settings router (e.g., routes/settings.js)
+router.post('/sizes/sync-products', protect, settingsController.syncProductsWithSizes);
+router.get('/sizes', protect, settingsController.getAllSizes);
+router.get('/sizes/enabled', protect, settingsController.getEnabledSizes);
+router.post('/sizes', protect, settingsController.addSize);
+router.put('/sizes/:sizeName/toggle', protect, settingsController.toggleSize);
+router.put('/sizes/reorder', protect, settingsController.reorderSizes);
 
 // Stock threshold routes
 router.get('/stock-thresholds', protect, settingsController.getStockThresholds);

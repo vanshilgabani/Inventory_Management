@@ -30,6 +30,7 @@ import { format } from 'date-fns';
 import {useColorPalette} from '../hooks/useColorPalette';
 import { useNavigate } from 'react-router-dom';
 import ScrollToTop from '../components/common/ScrollToTop';
+import FlipkartSyncButton from '../components/sync/FlipkartSyncButton';
 
 // Helper: Sort sizes in correct order
 const sortSizesByOrder = (sizes) => {
@@ -764,6 +765,7 @@ const handleViewHistory = async (design) => {
               >
                 <FiDownload /> Export
               </button>
+              <FlipkartSyncButton />
             </div>
           </div>
 
@@ -909,51 +911,62 @@ const handleViewHistory = async (design) => {
                             </div>
                           </div>
 
-                          {/* Sizes - Inline with color-coded backgrounds */}
-                          <div className="flex flex-wrap gap-2">
-                          {color.sizes.map((size, sIdx) => {
-                            // ✅ FIXED: Get original size data from product
-                            const originalProduct = products.find(p => p._id === group.productId);
-                            const originalColor = originalProduct?.colors?.find(c => c.color === color.color);
-                            const originalSize = originalColor?.sizes?.find(s => s.size === size.size);
-                            
-                            const currentStock = originalSize?.currentStock || 0;
-                            const lockedStock = originalSize?.lockedStock || 0;
-                            const availableStock = currentStock - lockedStock;
-                            
-                            // ✅ ALWAYS use availableStock for color (not currentStock)
-                            let badgeColor;
-                            if (availableStock === 0) {
-                              badgeColor = 'bg-red-500 text-white'; // Red for 0 available
-                            } else if (availableStock < 5) {
-                              badgeColor = 'bg-orange-500 text-white'; // Orange below 5 available
-                            } else if (availableStock < globalThreshold) {
-                              badgeColor = 'bg-yellow-500 text-white'; // Yellow below threshold
-                            } else {
-                              badgeColor = 'bg-green-500 text-white'; // Green for good available stock
-                            }
-                            
-                            // Format display text based on view mode
-                            let displayText;
+                          {/* Sizes - Show ALL enabled sizes with warnings for unsynced */}
+<div className="flex flex-wrap gap-2">
+  {enabledSizes.map((enabledSize) => {
+    // Find size data from product
+    const sizeData = color.sizes.find(s => s.size === enabledSize);
+    
+    if (!sizeData) {
+      // ⚠️ NEW SIZE NOT YET SYNCED - Show warning
+      return (
+        <span
+          key={enabledSize}
+          className="px-3 py-1 rounded-full text-sm font-semibold bg-yellow-500 text-white border-2 border-yellow-600 animate-pulse"
+          title="⚠️ Size not synced to this product yet. Go to Settings → Size Configuration → Click 'Sync Products'"
+        >
+          {enabledSize} - ⚠️
+        </span>
+      );
+    }
 
-                              displayText = `${size.size} - ${size.stock}`;
-                            
-                            
-                            return (
-                              <span
-                                key={sIdx}
-                                className={`px-3 py-1 rounded-full text-sm font-semibold ${badgeColor}`}
-                                title={
-                                  stockLockInfo.enabled && lockedStock > 0
-                                    ? `Total: ${currentStock}, Locked: ${lockedStock}, Available: ${availableStock}`
-                                    : `Stock: ${currentStock}`
-                                }
-                              >
-                                {displayText}
-                              </span>
-                            );
-                          })}
-                          </div>
+    // Normal rendering for synced sizes
+    const originalProduct = products.find(p => p._id === group.productId);
+    const originalColor = originalProduct?.colors?.find(c => c.color === color.color);
+    const originalSize = originalColor?.sizes?.find(s => s.size === sizeData.size);
+    
+    const currentStock = originalSize?.currentStock || 0;
+    const lockedStock = originalSize?.lockedStock || 0;
+    const availableStock = currentStock - lockedStock;
+    
+    let badgeColor;
+    if (availableStock === 0) {
+      badgeColor = 'bg-red-500 text-white';
+    } else if (availableStock < 5) {
+      badgeColor = 'bg-orange-500 text-white';
+    } else if (availableStock < globalThreshold) {
+      badgeColor = 'bg-yellow-500 text-white';
+    } else {
+      badgeColor = 'bg-green-500 text-white';
+    }
+    
+    const displayText = `${sizeData.size} - ${sizeData.stock}`;
+    
+    return (
+      <span
+        key={enabledSize}
+        className={`px-3 py-1 rounded-full text-sm font-semibold ${badgeColor}`}
+        title={
+          stockLockInfo.enabled && lockedStock > 0
+            ? `Total: ${currentStock}, Locked: ${lockedStock}, Available: ${availableStock}`
+            : `Stock: ${currentStock}`
+        }
+      >
+        {displayText}
+      </span>
+    );
+  })}
+</div>
                         </div>
                       );
                     })}

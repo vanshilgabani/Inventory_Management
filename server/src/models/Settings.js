@@ -3,7 +3,29 @@ const mongoose = require('mongoose');
 const marketplaceAccountSchema = new mongoose.Schema({
   accountName: { type: String, required: true },
   isDefault: { type: Boolean, default: false },
-  isActive: { type: Boolean, default: true }
+  isActive: { type: Boolean, default: true },
+
+  flipkart: {
+    enabled: { type: Boolean, default: false },
+    appId: { type: String, default: null },
+    appSecret: { type: String, default: null },
+    locationId: { type: String, default: null },
+    syncTime: { type: String, default: '14:00' },
+    syncFrequency: { 
+      type: String, 
+      enum: ['daily', 'twice_daily'],
+      default: 'daily' 
+    },
+    secondSyncTime: { type: String, default: '20:00' },
+    autoSyncEnabled: { type: Boolean, default: false },
+    lastSyncAt: { type: Date, default: null },
+    lastSyncStatus: { 
+      type: String, 
+      enum: ['success', 'failed', null],
+      default: null 
+    },
+    lastSyncError: { type: String, default: null }
+  }
 });
 
 const stockThresholdsSchema = new mongoose.Schema({
@@ -19,6 +41,20 @@ const colorPaletteSchema = new mongoose.Schema({
   colorCode: { type: String, required: true, trim: true },
   availableForDesigns: [{ type: String, trim: true }],
   isActive: { type: Boolean, default: true },
+  displayOrder: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ✅ NEW: Size Configuration Schema
+const sizeSchema = new mongoose.Schema({
+  name: { 
+    type: String, 
+    required: true, 
+    trim: true,
+    uppercase: true,
+    maxlength: 10
+  },
+  isEnabled: { type: Boolean, default: true },
   displayOrder: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
 });
@@ -124,6 +160,19 @@ const settingsSchema = new mongoose.Schema({
 
   // Global settings
   gstPercentage: { type: Number, default: 5, min: 0, max: 100 },
+
+  // ✅ NEW: Dynamic size configuration (replaces enabledSizes)
+  sizes: {
+    type: [sizeSchema],
+    default: [
+      { name: 'S', isEnabled: true, displayOrder: 1 },
+      { name: 'M', isEnabled: true, displayOrder: 2 },
+      { name: 'L', isEnabled: true, displayOrder: 3 },
+      { name: 'XL', isEnabled: true, displayOrder: 4 },
+      { name: 'XXL', isEnabled: true, displayOrder: 5 }
+    ]
+  },
+
   enabledSizes: {
     type: [String],
     enum: ['S', 'M', 'L', 'XL', 'XXL'],
@@ -184,8 +233,40 @@ const settingsSchema = new mongoose.Schema({
     currentFinancialYear: { type: Number, default: null },
     currentSequence: { type: Number, default: 0 },
     lastResetDate: { type: Date, default: null },
-  }
+  },
 
+  // Flipkart Integration Settings
+  flipkartSettings: {
+    enabled: { type: Boolean, default: false },
+    appId: { type: String, default: null },
+    appSecret: { type: String, default: null },
+    locationId: { type: String, default: null },
+    
+    // ✅ CHANGED: Time-based sync instead of interval
+    autoSyncEnabled: { type: Boolean, default: false },
+    syncTime: { type: String, default: '14:00' }, // Format: "HH:MM" (24-hour)
+    syncFrequency: { 
+      type: String, 
+      enum: ['daily', 'twice_daily', 'custom_interval'],
+      default: 'daily' 
+    },
+    secondSyncTime: { type: String, default: '20:00' }, // For twice daily option
+    
+    lastSyncAt: { type: Date, default: null },
+    lastSyncResult: {
+      success: { type: Boolean, default: null },
+      totalProducts: { type: Number, default: 0 },
+      successCount: { type: Number, default: 0 },
+      failedCount: { type: Number, default: 0 },
+      message: { type: String, default: null }
+    },
+    
+    // Access token management
+    accessToken: { type: String, default: null },
+    tokenExpiresAt: { type: Date, default: null },
+    refreshToken: { type: String, default: null },
+    refreshTokenExpiresAt: { type: Date, default: null },
+  },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Settings', settingsSchema);
