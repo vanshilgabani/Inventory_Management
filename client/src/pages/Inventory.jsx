@@ -30,7 +30,7 @@ import { format } from 'date-fns';
 import {useColorPalette} from '../hooks/useColorPalette';
 import { useNavigate } from 'react-router-dom';
 import ScrollToTop from '../components/common/ScrollToTop';
-import FlipkartSyncButton from '../components/sync/FlipkartSyncButton';
+//import FlipkartSyncButton from '../components/sync/FlipkartSyncButton';
 
 // Helper: Sort sizes in correct order
 const sortSizesByOrder = (sizes) => {
@@ -765,7 +765,7 @@ const handleViewHistory = async (design) => {
               >
                 <FiDownload /> Export
               </button>
-              <FlipkartSyncButton />
+              
             </div>
           </div>
 
