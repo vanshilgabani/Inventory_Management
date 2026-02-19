@@ -6,6 +6,7 @@ const { protect } = require('../middleware/auth');
 // Section 1: Wholesale & Direct Analytics
 router.get('/wholesale/top-buyers', protect, analyticsController.getTopWholesaleBuyers);
 router.get('/wholesale/buyer-products', protect, analyticsController.getTopProductsPerBuyer);
+router.get('/wholesale/buyer-design-drilldown', protect, analyticsController.getBuyerDesignDrilldown);
 router.get('/wholesale/revenue-trends', protect, analyticsController.getWholesaleRevenueTrends);
 router.get('/direct/sales-amount', protect, analyticsController.getDirectSalesAmount);
 router.get('/sales-velocity', protect, analyticsController.getSalesVelocityByProduct);

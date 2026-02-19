@@ -30,17 +30,18 @@ export const analyticsService = {
     return response.data;
   },
 
-  async getTopProductsPerBuyer(buyerId) {
-    const response = await api.get('/analytics/wholesale/buyer-products', { 
-      params: { buyerId } 
-    });
+  async getTopProductsPerBuyer(params = {}) {
+    const response = await api.get('/analytics/wholesale/buyer-products', { params });
     return response.data;
   },
 
-  async getWholesaleRevenueTrends(period = 'month') {
-    const response = await api.get('/analytics/wholesale/revenue-trends', { 
-      params: { period } 
-    });
+  async getBuyerDesignDrilldown(params = {}) {
+    const response = await api.get('/analytics/wholesale/buyer-design-drilldown', { params });
+    return response.data;
+  },
+
+  async getWholesaleRevenueTrends(params = {}) {
+    const response = await api.get('/analytics/wholesale/revenue-trends', { params });
     return response.data;
   },
 
@@ -49,10 +50,8 @@ export const analyticsService = {
     return response.data;
   },
 
-  async getSalesVelocityByProduct(days = 30) {
-    const response = await api.get('/analytics/sales-velocity', { 
-      params: { days } 
-    });
+  async getSalesVelocityByProduct(params = {}) {
+    const response = await api.get('/analytics/sales-velocity', { params });
     return response.data;
   },
 
@@ -64,10 +63,8 @@ export const analyticsService = {
     return response.data;
   },
 
-  async getReturnRateByProduct(accountName = null) {
-    const response = await api.get('/analytics/marketplace/return-rate', { 
-      params: accountName ? { accountName } : {} 
-    });
+  async getReturnRateByProduct(params = {}) {
+    const response = await api.get('/analytics/marketplace/return-rate', { params });
     return response.data;
   },
 
@@ -76,10 +73,8 @@ export const analyticsService = {
     return response.data;
   },
 
-  async getStockRecommendations(days = 30) {
-    const response = await api.get('/analytics/marketplace/stock-recommendations', { 
-      params: { days } 
-    });
+  async getStockRecommendations(params = {}) {
+    const response = await api.get('/analytics/marketplace/stock-recommendations', { params });
     return response.data;
   },
 
@@ -91,10 +86,8 @@ export const analyticsService = {
     return response.data;
   },
 
-  async getStockTurnoverRate(days = 90) {
-    const response = await api.get('/analytics/inventory/turnover-rate', { 
-      params: { days } 
-    });
+  async getStockTurnoverRate(params = {}) {
+    const response = await api.get('/analytics/inventory/turnover-rate', { params });
     return response.data;
   },
 
@@ -108,10 +101,8 @@ export const analyticsService = {
     return response.data;
   },
 
-  async getColorSizeDistribution(days = 90) {
-    const response = await api.get('/analytics/inventory/color-size-distribution', { 
-      params: { days } 
-    });
+  async getColorSizeDistribution(params = {}) {
+    const response = await api.get('/analytics/inventory/color-size-distribution', { params });
     return response.data;
   },
 

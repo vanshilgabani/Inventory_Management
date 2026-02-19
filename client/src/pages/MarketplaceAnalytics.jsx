@@ -19,7 +19,22 @@ import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Toolti
 
 const MarketplaceAnalytics = () => {
   const [loading, setLoading] = useState(true);
-  const [dateRange, setDateRange] = useState({});
+  const getDefaultRange = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const pad = (n) => String(n).padStart(2, '0');
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    return {
+      startDate: `${year}-${pad(month + 1)}-01`,
+      endDate: `${year}-${pad(month + 1)}-${pad(lastDay)}`,
+      filterType: 'month'
+    };
+  };
+
+  const [activeColor, setActiveColor] = useState(0);
+
+  const [dateRange, setDateRange] = useState(getDefaultRange());
   const [activeTab, setActiveTab] = useState('overview');
 
   // Data States
@@ -34,21 +49,77 @@ const MarketplaceAnalytics = () => {
   const [stockValue, setStockValue] = useState({ main: {}, reserved: {}, total: {} });
   const [reorderPoints, setReorderPoints] = useState([]);
   const [growthMetrics, setGrowthMetrics] = useState(null);
+  const [distributionDesigns, setDistributionDesigns] = useState([]);
+  const [selectedDistributionDesign, setSelectedDistributionDesign] = useState('');
 
-  // Filters
+  // Selector controller state — lives in parent so it survives re-renders
+  const now = new Date();
+  const [selectorMode, setSelectorMode] = useState('month');
+  const [selectorMonth, setSelectorMonth] = useState(String(now.getMonth()));
+  const [selectorYear, setSelectorYear] = useState(String(now.getFullYear()));
   const [selectedAccount, setSelectedAccount] = useState(null);
+  const [bestSellingAccount, setBestSellingAccount] = useState('');
 
-  useEffect(() => {
+  const [returnAccounts, setReturnAccounts] = useState([]);
+  const [selectedReturnAccount, setSelectedReturnAccount] = useState(null);
+  const [returnSortBy, setReturnSortBy] = useState('totalOrders'); // 'returnRate' | 'totalOrders' | 'returnedCount'
+
+useEffect(() => {
+  const { filterType, startDate, endDate } = dateRange;
+  if (filterType === 'alltime') {
     fetchAllData();
-  }, [dateRange]);
+  } else if (filterType && startDate && endDate) {
+    fetchAllData();
+  }
+}, [dateRange.filterType, dateRange.startDate, dateRange.endDate]);
+
+const getFilterLabel = () => {
+  if (dateRange.filterType === 'alltime') return 'All Time';
+  if (dateRange.startDate && dateRange.endDate) {
+    return `${dateRange.startDate.split('-').reverse().join('-')} — ${dateRange.endDate.split('-').reverse().join('-')}`;
+  }
+  return '';
+};
+
+const fetchBestSellingByAccount = async (account) => {
+  try {
+    const params = dateRange.filterType === 'alltime'
+      ? {}
+      : { startDate: dateRange.startDate, endDate: dateRange.endDate };
+
+    if (account) params.accountName = account;
+
+    const res = await analyticsService.getBestSellingMarketplaceProducts(params);
+    setBestSelling(res.data || []);
+  } catch (error) {
+    toast.error('Failed to filter best selling products');
+  }
+};
+
+const fetchReturnRateByAccount = async (account) => {
+  try {
+    const params = dateRange.filterType === 'alltime'
+      ? {}
+      : { startDate: dateRange.startDate, endDate: dateRange.endDate };
+
+    if (account) params.accountName = account;
+
+    const res = await analyticsService.getReturnRateByProduct(params);
+    setReturnRateData(res.data || []);
+  } catch (error) {
+    toast.error('Failed to filter return data');
+  }
+};
 
   const fetchAllData = async () => {
     setLoading(true);
     try {
-      const params = {
-        startDate: dateRange.startDate,
-        endDate: dateRange.endDate
-      };
+      const params = dateRange.filterType === 'alltime'
+        ? {}  // no date filter = backend returns all records
+        : {
+            startDate: dateRange.startDate,
+            endDate: dateRange.endDate
+          };
 
       const [
         accountData,
@@ -63,23 +134,39 @@ const MarketplaceAnalytics = () => {
         growthData
       ] = await Promise.all([
         analyticsService.getMarketplaceAccountStats(params),
-        analyticsService.getReturnRateByProduct(),
+        analyticsService.getReturnRateByProduct(params),
         analyticsService.getBestSellingMarketplaceProducts({ ...params, limit: 20 }),
-        analyticsService.getStockRecommendations(30),
-        analyticsService.getColorSizeDistribution(90),
-        analyticsService.getCurrentStockLevels({ lowStockOnly: false }),
-        analyticsService.getStockTurnoverRate(90),
-        analyticsService.getStockValueByType(),
-        analyticsService.getOptimalReorderPoints({ days: 60, leadTime: 7 }),
-        analyticsService.getGrowthMetrics()
+        analyticsService.getStockRecommendations(params),
+        analyticsService.getColorSizeDistribution(params),
+        analyticsService.getCurrentStockLevels({ lowStockOnly: false }),       // snapshot — no date
+        analyticsService.getStockTurnoverRate(params),
+        analyticsService.getStockValueByType(),                                  // snapshot — no date
+        analyticsService.getOptimalReorderPoints({ ...params, leadTime: 7 }),
+        analyticsService.getGrowthMetrics(params)
       ]);
 
       setAccountStats(accountData.data || []);
-      setReturnRateData(returnData.data || []);
+      const accounts = returnData.accounts || [];
+      setReturnAccounts(accounts);
+      const allReturnData = returnData.data || [];
+
+      setSelectedReturnAccount(prev => {
+        if (prev === null && accounts.length > 0) {
+          const flipkart = accounts.find(a => a.toLowerCase().includes('flipkart'));
+          const defaultAccount = flipkart || accounts[0];
+          // ✅ Filter data immediately for default account
+          setReturnRateData(allReturnData.filter(item => item.accountName === defaultAccount));
+          return defaultAccount;
+        }
+        // User already selected — don't override their data
+        return prev ?? '';
+      });
       setBestSelling(bestSellingData.data || []);
       setStockRecommendations(recommendationsData.data || []);
       setColorDistribution(colorSizeData.data?.colorDistribution || []);
       setSizeDistribution(colorSizeData.data?.sizeDistribution || []);
+      setDistributionDesigns(colorSizeData.data?.designs || []);
+      setSelectedDistributionDesign(''); // reset on date change
       setStockLevels(stockLevelsData.data || []);
       setTurnoverRate(turnoverData.data || []);
       setStockValue(stockValueData.data || { main: {}, reserved: {}, total: {} });
@@ -92,6 +179,23 @@ const MarketplaceAnalytics = () => {
       setLoading(false);
     }
   };
+
+  const fetchColorSizeByDesign = async (design) => {
+  try {
+    const params = dateRange.filterType === 'alltime'
+      ? {}
+      : { startDate: dateRange.startDate, endDate: dateRange.endDate };
+
+    if (design) params.design = design;
+
+    const res = await analyticsService.getColorSizeDistribution(params);
+    setColorDistribution(res.data?.colorDistribution || []);
+    setSizeDistribution(res.data?.sizeDistribution || []);
+    setActiveColor(0); // reset active tab
+  } catch (error) {
+    toast.error('Failed to filter by design');
+  }
+};
 
   const formatCurrency = (value) => {
     return `₹${Number(value || 0).toLocaleString('en-IN')}`;
@@ -117,7 +221,15 @@ const MarketplaceAnalytics = () => {
 
       {/* Controls */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
-        <TimeRangeSelector onRangeChange={setDateRange} />
+        <TimeRangeSelector
+          mode={selectorMode}
+          selectedMonth={selectorMonth}
+          selectedYear={selectorYear}
+          onRangeChange={setDateRange}       // or handleDateRangeChange for Wholesale
+          onModeChange={setSelectorMode}
+          onMonthChange={setSelectorMonth}
+          onYearChange={setSelectorYear}
+        />
         <div className="flex items-center gap-3">
           <button
             onClick={fetchAllData}
@@ -128,6 +240,19 @@ const MarketplaceAnalytics = () => {
           </button>
         </div>
       </div>
+
+      {dateRange.startDate && dateRange.endDate && (
+        <div className="mb-4 px-4 py-3 bg-indigo-50 border border-indigo-200 rounded-lg">
+          <div className="flex items-center gap-4">
+            <span className="text-sm font-medium text-indigo-900">
+              {dateRange.filterType === 'month' ? 'Monthly View' : 'Custom Range'}
+            </span>
+            <span className="text-sm text-indigo-700">
+              {dateRange.startDate.split('-').reverse().join('-')} — {dateRange.endDate.split('-').reverse().join('-')}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-gray-200 overflow-x-auto">
@@ -225,33 +350,71 @@ const MarketplaceAnalytics = () => {
                       <div className="flex items-center gap-2">
                         <FiXCircle className="text-gray-500" />
                         <span className="text-sm text-gray-700">
-                          Cancelled: <span className="font-semibold">{account.cancelledCount}</span>
+                          RTO: <span className="font-semibold">{account.RTOCount}</span>
                         </span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Return Rate Indicator */}
-                  <div className="pt-3 border-t border-gray-100">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm text-gray-600">Issue Rate</span>
-                      <span className="text-sm font-semibold text-gray-700">
-                        {(((account.returnedCount + account.wrongReturnCount + account.cancelledCount) / account.orderCount) * 100).toFixed(1)}%
-                      </span>
+                  {/* ✅ NEW - 2 separate rate indicators */}
+                  <div className="pt-3 border-t border-gray-100 space-y-3">
+
+                    {/* Rate 1: Return Rate = returned + wrongreturn */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm text-gray-600">Return Rate</span>
+                        <span className="text-sm font-semibold text-gray-700">
+                          {account.orderCount > 0
+                            ? (((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100).toFixed(1)
+                            : 0}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full ${
+                            ((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100 < 10
+                              ? 'bg-green-500'
+                              : ((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100 < 20
+                              ? 'bg-yellow-500'
+                              : 'bg-red-500'
+                          }`}
+                          style={{
+                            width: `${Math.min(
+                              ((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100,
+                              100
+                            )}%`
+                          }}
+                        ></div>
+                      </div>
                     </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div 
-                        className={`h-2 rounded-full ${
-                          (((account.returnedCount + account.wrongReturnCount + account.cancelledCount) / account.orderCount) * 100) < 10 
-                            ? 'bg-green-500' 
-                            : (((account.returnedCount + account.wrongReturnCount + account.cancelledCount) / account.orderCount) * 100) < 20
-                            ? 'bg-yellow-500'
-                            : 'bg-red-500'
-                        }`}
-                        style={{ 
-                          width: `${(((account.returnedCount + account.wrongReturnCount + account.cancelledCount) / account.orderCount) * 100)}%` 
-                        }}
-                      ></div>
+
+                    {/* Rate 2: RTO Rate = RTO only */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm text-gray-600">RTO Rate</span>
+                        <span className="text-sm font-semibold text-gray-700">
+                          {account.orderCount > 0
+                            ? ((account.RTOCount / account.orderCount) * 100).toFixed(1)
+                            : 0}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full ${
+                            (account.RTOCount / account.orderCount) * 100 < 5
+                              ? 'bg-green-500'
+                              : (account.RTOCount / account.orderCount) * 100 < 15
+                              ? 'bg-yellow-500'
+                              : 'bg-red-500'
+                          }`}
+                          style={{
+                            width: `${Math.min(
+                              (account.RTOCount / account.orderCount) * 100,
+                              100
+                            )}%`
+                          }}
+                        ></div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -261,12 +424,63 @@ const MarketplaceAnalytics = () => {
 
           {/* Return Rate by Product */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">Return Rate by Product & Account</h2>
-                <p className="text-sm text-gray-600">Includes returns, wrong returns, and cancellations</p>
+                <p className="text-sm text-gray-600">All channels — includes returns, wrong returns, RTO</p>
               </div>
               <ExportButton data={returnRateData} filename="return_rates" title="Return Rate Analysis" />
+            </div>
+
+            {/* Controls row */}
+            <div className="flex items-center gap-3 flex-wrap mb-5 pb-4 border-b border-gray-100">
+
+              {/* Account selector */}
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-semibold text-gray-600 whitespace-nowrap">Account:</label>
+                <select
+                  value={selectedReturnAccount}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedReturnAccount(val);
+                    fetchReturnRateByAccount(val);
+                  }}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white cursor-pointer min-w-40"
+                >
+                  <option value="">All Accounts</option>
+                  {returnAccounts.map((a) => (
+                    <option key={a} value={a}>{a}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Sort selector */}
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-semibold text-gray-600 whitespace-nowrap">Sort by:</label>
+                <select
+                  value={returnSortBy}
+                  onChange={(e) => setReturnSortBy(e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white cursor-pointer"
+                >
+                  <option value="returnRate">Return Rate (High → Low)</option>
+                  <option value="totalOrders">Total Orders (High → Low)</option>
+                  <option value="returnedCount">Returned Orders (High → Low)</option>
+                  <option value="RTOCount">RTO Count (High → Low)</option>
+                  {/*<option value="totalIssueRate">Total Issue Rate (High → Low)</option>*/}
+                </select>
+              </div>
+
+              {/* Stats summary */}
+              <div className="ml-auto flex items-center gap-3">
+                <span className="text-xs text-gray-500 bg-gray-100 px-3 py-1.5 rounded-full">
+                  {returnRateData.length} products
+                </span>
+                {selectedReturnAccount && (
+                  <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-full font-medium">
+                    {selectedReturnAccount}
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="overflow-x-auto">
@@ -275,63 +489,97 @@ const MarketplaceAnalytics = () => {
                   <tr className="border-b border-gray-200">
                     <th className="text-left py-3 px-4 font-semibold text-gray-700">Product</th>
                     <th className="text-left py-3 px-4 font-semibold text-gray-700">Color</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Account</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Size</th>
+                    {/*{!selectedReturnAccount && (
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700">Account</th>
+                    )}*/}
                     <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Orders</th>
                     <th className="text-center py-3 px-4 font-semibold text-gray-700">Successful</th>
                     <th className="text-center py-3 px-4 font-semibold text-gray-700">Returned</th>
                     <th className="text-center py-3 px-4 font-semibold text-gray-700">Wrong Return</th>
-                    <th className="text-center py-3 px-4 font-semibold text-gray-700">Cancelled</th>
-                    <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Issue Rate</th>
+                    <th className="text-center py-3 px-4 font-semibold text-gray-700">RTO</th>
+                    <th className="text-center py-3 px-4 font-semibold text-red-700 bg-red-50">
+                      Return Rate
+                      <div className="text-xs font-normal text-gray-400">Returned + Wrong</div>
+                    </th>
+                    <th className="text-center py-3 px-4 font-semibold text-gray-700 bg-gray-50">
+                      RTO Rate
+                      <div className="text-xs font-normal text-gray-400">RTO Only</div>
+                    </th>
+                    {/*<th className="text-center py-3 px-4 font-semibold text-orange-700 bg-orange-50">
+                      Total Issue Rate
+                    </th>*/}
                   </tr>
                 </thead>
                 <tbody>
-                  {returnRateData.slice(0, 20).map((item, index) => (
-                    <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                      <td className="py-4 px-4 font-medium text-gray-900">{item.design}</td>
-                      <td className="py-4 px-4">
-                        <span className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm">
-                          {item.color}
-                        </span>
-                      </td>
-                      <td className="py-4 px-4 text-gray-700">{item.accountName}</td>
-                      <td className="py-4 px-4 text-center font-semibold text-gray-900">{item.totalOrders}</td>
-                      <td className="py-4 px-4 text-center">
-                        <span className="text-green-600 font-medium">{item.successfulCount}</span>
-                      </td>
-                      <td className="py-4 px-4 text-center">
-                        <div className="flex flex-col items-center">
-                          <span className="text-red-600 font-medium">{item.returnedCount}</span>
-                          <span className="text-xs text-gray-500">({item.returnRate}%)</span>
-                        </div>
-                      </td>
-                      <td className="py-4 px-4 text-center">
-                        <div className="flex flex-col items-center">
-                          <span className="text-orange-600 font-medium">{item.wrongReturnCount}</span>
-                          <span className="text-xs text-gray-500">({item.wrongReturnRate}%)</span>
-                        </div>
-                      </td>
-                      <td className="py-4 px-4 text-center">
-                        <div className="flex flex-col items-center">
-                          <span className="text-gray-600 font-medium">{item.cancelledCount}</span>
-                          <span className="text-xs text-gray-500">({item.cancellationRate}%)</span>
-                        </div>
-                      </td>
-                      <td className="py-4 px-4 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          <span className={`text-lg font-bold ${
-                            item.totalIssueRate < 10 ? 'text-green-600' :
-                            item.totalIssueRate < 20 ? 'text-yellow-600' :
-                            'text-red-600'
+                  {[...returnRateData]
+                    .sort((a, b) => b[returnSortBy] - a[returnSortBy])
+                    .map((item, index) => (
+                      <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                        <td className="py-3.5 px-4 font-medium text-gray-900">{item.design}</td>
+                        <td className="py-3.5 px-4">
+                          <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded-full text-sm">{item.color}</span>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="px-2 py-1 bg-indigo-50 text-indigo-700 rounded-full text-sm font-semibold">{item.size}</span>
+                        </td>
+                        {/*{!selectedReturnAccount && (
+                          <td className="py-3.5 px-4 text-gray-700 text-sm">{item.accountName}</td>
+                        )}*/}
+                        <td className="py-3.5 px-4 text-center font-bold text-gray-900">{item.totalOrders}</td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className="text-green-600 font-semibold">{item.successfulCount}</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className="text-red-600 font-semibold">{item.returnedCount}</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className="text-orange-600 font-semibold">{item.wrongReturnCount}</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className="text-gray-700 font-semibold">{item.RTOCount}</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center bg-red-50">
+                          <span className={`text-base font-bold ${
+                            item.returnRate < 10 ? 'text-green-600'
+                            : item.returnRate < 20 ? 'text-yellow-600'
+                            : 'text-red-600'
                           }`}>
-                            {item.totalIssueRate}%
+                            {item.returnRate}%
                           </span>
-                          {item.totalIssueRate >= 20 && <FiAlertTriangle className="text-red-500" />}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="py-3.5 px-4 text-center bg-gray-50">
+                          <span className={`text-base font-bold ${
+                            item.rtoRate < 5 ? 'text-green-600'
+                            : item.rtoRate < 15 ? 'text-yellow-600'
+                            : 'text-red-600'
+                          }`}>
+                            {item.rtoRate}%
+                          </span>
+                        </td>
+                        {/*<td className="py-3.5 px-4 text-center bg-orange-50">
+                          <div className="flex items-center justify-center gap-1">
+                            <span className={`text-base font-bold ${
+                              item.totalIssueRate < 10 ? 'text-green-600'
+                              : item.totalIssueRate < 20 ? 'text-yellow-600'
+                              : 'text-red-600'
+                            }`}>
+                              {item.totalIssueRate}%
+                            </span>
+                            {item.totalIssueRate > 20 && <FiAlertTriangle className="text-red-500" size={14} />}
+                          </div>
+                        </td>*/}
+                      </tr>
+                    ))}
                 </tbody>
               </table>
+
+              {returnRateData.length === 0 && (
+                <div className="text-center py-12 text-gray-400">
+                  <FiPackage size={36} className="mx-auto mb-3 opacity-20" />
+                  <p className="text-sm">No return data for selected filters</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -342,7 +590,7 @@ const MarketplaceAnalytics = () => {
         <div className="space-y-6 animate-fadeIn">
           {/* Best Selling Products */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">Best Selling Products (Top 20)</h2>
                 <p className="text-sm text-gray-600">Ranked by total quantity sold</p>
@@ -350,8 +598,49 @@ const MarketplaceAnalytics = () => {
               <ExportButton data={bestSelling} filename="best_selling_marketplace" title="Best Selling Products" />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-              {bestSelling.slice(0, 8).map((product, index) => (
+            {/* Account Filter */}
+            <div className="flex items-center gap-3 mb-5 pb-4 border-b border-gray-100">
+              <label className="text-sm font-semibold text-gray-600 whitespace-nowrap">Account:</label>
+              <select
+                value={bestSellingAccount}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setBestSellingAccount(val);
+                  fetchBestSellingByAccount(val);
+                }}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white cursor-pointer min-w-40"
+              >
+                <option value="">All Accounts</option>
+                {returnAccounts.map((a) => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
+
+              {bestSellingAccount && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBestSellingAccount('');
+                      fetchBestSellingByAccount('');
+                    }}
+                    className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors"
+                  >
+                    ✕ Clear
+                  </button>
+                  <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-full font-medium">
+                    {bestSellingAccount}
+                  </span>
+                </>
+              )}
+
+              <span className="ml-auto text-xs text-gray-400 bg-gray-100 px-3 py-1.5 rounded-full">
+                {bestSelling.length} products
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+              {bestSelling.slice(0, 10).map((product, index) => (
                 <div key={index} className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-lg p-4 border border-indigo-100">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-semibold text-indigo-600">#{index + 1}</span>
@@ -386,8 +675,8 @@ const MarketplaceAnalytics = () => {
                     <th className="text-left py-3 px-4 font-semibold text-gray-700">Color</th>
                     <th className="text-left py-3 px-4 font-semibold text-gray-700">Size</th>
                     <th className="text-right py-3 px-4 font-semibold text-gray-700">Total Quantity</th>
-                    <th className="text-right py-3 px-4 font-semibold text-gray-700">Order Count</th>
-                    <th className="text-right py-3 px-4 font-semibold text-gray-700">Avg per Order</th>
+                    {/*<th className="text-right py-3 px-4 font-semibold text-gray-700">Order Count</th>
+                    <th className="text-right py-3 px-4 font-semibold text-gray-700">Avg per Order</th>*/}
                   </tr>
                 </thead>
                 <tbody>
@@ -414,12 +703,12 @@ const MarketplaceAnalytics = () => {
                       <td className="py-4 px-4 text-right">
                         <span className="text-lg font-bold text-indigo-600">{product.totalQuantity}</span>
                       </td>
-                      <td className="py-4 px-4 text-right font-medium text-gray-700">
+                      {/*<td className="py-4 px-4 text-right font-medium text-gray-700">
                         {product.orderCount}
                       </td>
                       <td className="py-4 px-4 text-right text-gray-700">
                         {(product.totalQuantity / product.orderCount).toFixed(1)}
-                      </td>
+                      </td>*/}
                     </tr>
                   ))}
                 </tbody>
@@ -586,74 +875,176 @@ const MarketplaceAnalytics = () => {
             </div>
           </div>
 
-          {/* Color & Size Distribution */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Color Distribution */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-              <h2 className="text-xl font-bold text-gray-900 mb-6">Color Distribution (Last 90 days)</h2>
-              <div className="h-80">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={colorDistribution}
-                      cx="50%"
-                      cy="50%"
-                      labelLine={false}
-                      label={({ color, percentage }) => `${color} (${percentage}%)`}
-                      outerRadius={100}
-                      fill="#8884d8"
-                      dataKey="quantity"
-                    >
-                      {colorDistribution.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip formatter={(value) => `${value} units`} />
-                  </PieChart>
-                </ResponsiveContainer>
+          {/* Color Distribution with per-size breakdown */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Color & Size Distribution</h2>
+                <p className="text-sm text-gray-600">
+                  Sales breakdown by color and size — {getFilterLabel()}
+                </p>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                {colorDistribution.map((item, index) => (
-                  <div key={index} className="flex items-center gap-2">
-                    <div 
-                      className="w-4 h-4 rounded-full" 
-                      style={{ backgroundColor: COLORS[index % COLORS.length] }}
-                    ></div>
-                    <span className="text-sm text-gray-700">
-                      {item.color}: <span className="font-semibold">{item.quantity}</span> ({item.percentage}%)
-                    </span>
-                  </div>
-                ))}
-              </div>
+              <ExportButton data={colorDistribution} filename="color_size_distribution" title="Color Size Distribution" />
             </div>
 
-            {/* Size Distribution */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-              <h2 className="text-xl font-bold text-gray-900 mb-6">Size Distribution (Last 90 days)</h2>
-              <div className="h-80">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={sizeDistribution}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis dataKey="size" stroke="#6b7280" />
-                    <YAxis stroke="#6b7280" />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px' }}
-                      formatter={(value) => `${value} units`}
-                    />
-                    <Bar dataKey="quantity" fill="#6366f1" radius={[8, 8, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                {sizeDistribution.map((item, index) => (
-                  <div key={index} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                    <span className="text-sm font-medium text-gray-700">{item.size}</span>
-                    <span className="text-sm text-gray-600">
-                      {item.quantity} <span className="text-xs">({item.percentage}%)</span>
-                    </span>
-                  </div>
+            {/* Design Filter */}
+            <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-100">
+              <label className="text-sm font-semibold text-gray-600 whitespace-nowrap">Filter by Design:</label>
+              <select
+                value={selectedDistributionDesign}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSelectedDistributionDesign(val);
+                  fetchColorSizeByDesign(val);
+                }}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white cursor-pointer min-w-48"
+              >
+                <option value="">All Designs</option>
+                {distributionDesigns.map((d) => (
+                  <option key={d} value={d}>{d}</option>
                 ))}
+              </select>
+
+              {selectedDistributionDesign && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedDistributionDesign('');
+                    fetchColorSizeByDesign('');
+                  }}
+                  className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  ✕ Clear
+                </button>
+              )}
+
+              {selectedDistributionDesign && (
+                <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-full font-medium">
+                  Showing: {selectedDistributionDesign}
+                </span>
+              )}
+
+              <span className="text-xs text-gray-400 ml-auto">
+                {distributionDesigns.length} designs in period
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+              {/* LEFT — Overall Size Distribution bar chart */}
+              <div>
+                <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wide mb-3">
+                  Overall Size Distribution
+                </h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={sizeDistribution} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                      <XAxis type="number" stroke="#6b7280" style={{ fontSize: '12px' }} />
+                      <YAxis type="category" dataKey="size" stroke="#6b7280" style={{ fontSize: '12px' }} width={36} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px' }}
+                        formatter={(value, name, props) => [`${value} units (${props.payload.percentage}%)`, 'Quantity']}
+                      />
+                      <Bar dataKey="quantity" fill="#6366f1" radius={[0, 6, 6, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
+
+              {/* RIGHT — Color tabs with size breakdown */}
+              <div>
+                <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wide mb-3">
+                  Per Color — Size Breakdown
+                </h3>
+
+                {/* Color tab pills */}
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {colorDistribution.map((colorItem, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setActiveColor(idx)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
+                        activeColor === idx
+                          ? 'text-white shadow-md scale-105'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}
+                      style={activeColor === idx ? { backgroundColor: COLORS[idx % COLORS.length] } : {}}
+                    >
+                      <span
+                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: COLORS[idx % COLORS.length] }}
+                      />
+                      {colorItem.color}
+                      <span className={`text-xs ${activeColor === idx ? 'text-white/80' : 'text-gray-400'}`}>
+                        {colorItem.quantity}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Active color detail */}
+                {colorDistribution[activeColor] && (
+                  <div className="border border-gray-100 rounded-xl p-4 bg-gray-50">
+                    {/* Color summary */}
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: COLORS[activeColor % COLORS.length] }}
+                        />
+                        <span className="font-bold text-gray-900">
+                          {colorDistribution[activeColor].color}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-lg font-bold text-gray-900">
+                          {colorDistribution[activeColor].quantity}
+                        </span>
+                        <span className="text-sm text-gray-500 ml-1">
+                          units ({colorDistribution[activeColor].percentage}% of total)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Overall color bar */}
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 mb-4">
+                      <div
+                        className="h-1.5 rounded-full transition-all"
+                        style={{
+                          width: `${colorDistribution[activeColor].percentage}%`,
+                          backgroundColor: COLORS[activeColor % COLORS.length]
+                        }}
+                      />
+                    </div>
+
+                    {/* Size cards grid */}
+                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                      {colorDistribution[activeColor].sizes?.map((sizeItem, sizeIdx) => (
+                        <div
+                          key={sizeIdx}
+                          className="bg-white rounded-lg p-3 text-center border border-gray-200 hover:border-indigo-300 transition-colors"
+                        >
+                          <div className="text-xs font-semibold text-gray-500 mb-1">{sizeItem.size}</div>
+                          <div className="text-xl font-bold text-gray-900">{sizeItem.quantity}</div>
+                          <div className="text-xs text-gray-400 mb-1">{sizeItem.percentage}%</div>
+                          <div className="w-full bg-gray-100 rounded-full h-1">
+                            <div
+                              className="h-1 rounded-full"
+                              style={{
+                                width: `${sizeItem.percentage}%`,
+                                backgroundColor: COLORS[activeColor % COLORS.length]
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
             </div>
           </div>
 
@@ -662,7 +1053,9 @@ const MarketplaceAnalytics = () => {
             <div className="flex items-center justify-between mb-6">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">Stock Turnover Rate</h2>
-                <p className="text-sm text-gray-600">How quickly products are selling (Last 90 days)</p>
+                <p className="text-sm text-gray-600">
+                  How quickly products are selling ({getFilterLabel()})
+                </p>
               </div>
               <ExportButton data={turnoverRate} filename="stock_turnover" title="Stock Turnover Rate" />
             </div>

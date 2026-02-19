@@ -100,20 +100,28 @@ const getTopWholesaleBuyers = async (req, res) => {
   }
 };
 
-// Get top 5 products per buyer
 const getTopProductsPerBuyer = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    const { buyerId } = req.query;
+    const { buyerId, startDate, endDate, limit = 10 } = req.query;
 
     if (!buyerId) {
       return res.status(400).json({ success: false, message: 'Buyer ID required' });
     }
 
+    let dateFilter = {};
+    if (startDate && endDate) {
+      dateFilter = {
+        $gte: new Date(startDate),
+        $lte: new Date(new Date(endDate).setHours(23, 59, 59, 999))
+      };
+    }
+
     const orders = await WholesaleOrder.find({
       buyerId,
       organizationId,
-      deletedAt: null
+      deletedAt: null,
+      ...(dateFilter.$gte && { orderDate: dateFilter })
     }).select('items');
 
     const productStats = {};
@@ -139,14 +147,111 @@ const getTopProductsPerBuyer = async (req, res) => {
 
     const topProducts = Object.values(productStats)
       .sort((a, b) => b.totalRevenue - a.totalRevenue)
-      .slice(0, 5);
+      .slice(0, parseInt(limit));
+
+    res.json({ success: true, data: topProducts });
+  } catch (error) {
+    console.error('getTopProductsPerBuyer error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const getBuyerDesignDrilldown = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { buyerId, design, startDate, endDate } = req.query;
+
+    if (!buyerId) {
+      return res.status(400).json({ success: false, message: 'Buyer ID required' });
+    }
+
+    let dateFilter = {};
+    if (startDate && endDate) {
+      dateFilter = {
+        $gte: new Date(startDate),
+        $lte: new Date(new Date(endDate).setHours(23, 59, 59, 999))
+      };
+    }
+
+    const orders = await WholesaleOrder.find({
+      buyerId,
+      organizationId,
+      deletedAt: null,
+      ...(dateFilter.$gte && { orderDate: dateFilter })
+    })
+      .select('challanNumber orderDate items paymentStatus')
+      .sort({ orderDate: -1 });
+
+    // Always build designs list
+    const designSet = new Set();
+    orders.forEach(order => {
+      order.items.forEach(item => {
+        if (item.design) designSet.add(item.design);
+      });
+    });
+    const designs = Array.from(designSet).sort();
+
+    // If no design selected, just return designs list
+    if (!design) {
+      return res.json({ success: true, data: { designs, sizeBreakdown: [], orderHistory: [] } });
+    }
+
+    // Build size breakdown + order history for selected design
+    const colorMap = {};
+    const sizeSet = new Set();
+    const orderHistory = [];
+
+    orders.forEach(order => {
+      const designItems = order.items.filter(item => item.design === design);
+      if (designItems.length === 0) return;
+
+      let orderQty = 0;
+      let orderRevenue = 0;
+
+      designItems.forEach(item => {
+        const color = item.color || 'Unknown';
+        const size = item.size || 'Unknown';
+        sizeSet.add(size);
+
+        if (!colorMap[color]) {
+          colorMap[color] = { color, quantities: {}, totalQuantity: 0, revenue: 0 };
+        }
+        colorMap[color].quantities[size] = (colorMap[color].quantities[size] || 0) + item.quantity;
+        colorMap[color].totalQuantity += item.quantity;
+        colorMap[color].revenue += item.quantity * item.pricePerUnit;
+        orderQty += item.quantity;
+        orderRevenue += item.quantity * item.pricePerUnit;
+      });
+
+      orderHistory.push({
+        challanNumber: order.challanNumber,
+        orderDate: order.orderDate,
+        quantity: orderQty,
+        revenue: orderRevenue,
+        paymentStatus: order.paymentStatus,
+        items: designItems.map(item => ({
+          size: item.size,
+          color: item.color,
+          quantity: item.quantity,
+          pricePerUnit: item.pricePerUnit,
+          subtotal: item.quantity * item.pricePerUnit
+        }))
+      });
+    });
+
+    // Sort sizes in standard order
+    const SIZE_ORDER = ['S', 'M', 'L', 'XL', 'XXL'];
+    const sizes = SIZE_ORDER.filter(s => sizeSet.has(s));
+
+    const colorMatrix = Object.values(colorMap)
+    .sort((a, b) => b.totalQuantity - a.totalQuantity);
 
     res.json({
       success: true,
-      data: topProducts
+      data: { designs, colorMatrix, sizes, orderHistory }
     });
   } catch (error) {
-    console.error('getTopProductsPerBuyer error:', error);
+    console.error('getBuyerDesignDrilldown error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -251,24 +356,37 @@ const getDirectSalesAmount = async (req, res) => {
   }
 };
 
-// Get sales velocity by product
 const getSalesVelocityByProduct = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    const { days = 30 } = req.query;
+    const { startDate, endDate } = req.query;
 
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
+    // Build date filter
+    let dateFilter = {};
+    let days = 30; // default fallback for velocity calculation
 
-    // Aggregate from all channels
+    if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(new Date(endDate).setHours(23, 59, 59, 999));
+      dateFilter = { $gte: start, $lte: end };
+      // Calculate actual number of days in range for velocity
+      days = Math.max(1, Math.ceil((end - start) / (1000 * 60 * 60 * 24)));
+    } else {
+      // alltime — no date filter, use total days from beginning
+      // velocity will be calculated but may not be meaningful for alltime
+      days = 1;
+    }
+
+    const matchDate = (field) => dateFilter.$gte ? { [field]: dateFilter } : {};
+
     const [marketplace, wholesale, direct] = await Promise.all([
       MarketplaceSale.aggregate([
         {
           $match: {
             organizationId: new mongoose.Types.ObjectId(organizationId),
-            saleDate: { $gte: startDate },
+            ...matchDate('saleDate'),
             deletedAt: null,
-            status: { $nin: ['cancelled', 'returned'] }
+            status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
           }
         },
         {
@@ -282,17 +400,17 @@ const getSalesVelocityByProduct = async (req, res) => {
         {
           $match: {
             organizationId: new mongoose.Types.ObjectId(organizationId),
-            orderDate: { $gte: startDate },
+            ...matchDate('orderDate'),
             deletedAt: null
           }
         },
         { $unwind: '$items' },
         {
           $group: {
-            _id: { 
-              design: '$items.design', 
-              color: '$items.color', 
-              size: '$items.size' 
+            _id: {
+              design: '$items.design',
+              color: '$items.color',
+              size: '$items.size'
             },
             totalQuantity: { $sum: '$items.quantity' }
           }
@@ -302,17 +420,17 @@ const getSalesVelocityByProduct = async (req, res) => {
         {
           $match: {
             organizationId: new mongoose.Types.ObjectId(organizationId),
-            saleDate: { $gte: startDate },
+            ...matchDate('saleDate'),
             deletedAt: null
           }
         },
         { $unwind: '$items' },
         {
           $group: {
-            _id: { 
-              design: '$items.design', 
-              color: '$items.color', 
-              size: '$items.size' 
+            _id: {
+              design: '$items.design',
+              color: '$items.color',
+              size: '$items.size'
             },
             totalQuantity: { $sum: '$items.quantity' }
           }
@@ -320,9 +438,8 @@ const getSalesVelocityByProduct = async (req, res) => {
       ])
     ]);
 
-    // Combine all channels
     const velocityMap = {};
-    
+
     [...marketplace, ...wholesale, ...direct].forEach(item => {
       const key = `${item._id.design}-${item._id.color}-${item._id.size}`;
       if (!velocityMap[key]) {
@@ -330,23 +447,23 @@ const getSalesVelocityByProduct = async (req, res) => {
           design: item._id.design,
           color: item._id.color,
           size: item._id.size,
-          totalQuantity: 0,
-          velocityPerDay: 0
+          totalQuantity: 0
         };
       }
       velocityMap[key].totalQuantity += item.totalQuantity;
     });
 
-    // Calculate velocity per day
-    const velocity = Object.values(velocityMap).map(item => ({
-      ...item,
-      velocityPerDay: (item.totalQuantity / parseInt(days)).toFixed(2)
-    })).sort((a, b) => b.velocityPerDay - a.velocityPerDay);
+    const velocity = Object.values(velocityMap)
+      .map(item => ({
+        ...item,
+        velocityPerDay: (item.totalQuantity / days).toFixed(2)
+      }))
+      .sort((a, b) => b.totalQuantity - a.totalQuantity);
 
     res.json({
       success: true,
       data: velocity,
-      period: `${days} days`
+      days
     });
   } catch (error) {
     console.error('getSalesVelocityByProduct error:', error);
@@ -397,9 +514,9 @@ const getMarketplaceAccountStats = async (req, res) => {
             wrongReturnCount: {
               $sum: { $cond: [{ $eq: ['$status', 'wrongreturn'] }, 1, 0] }
             },
-            cancelledCount: {
-              $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] }
-            }
+            RTOCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'RTO'] }, 1, 0] }
+            },
           }
         }
       ]),
@@ -425,7 +542,7 @@ const getMarketplaceAccountStats = async (req, res) => {
         dispatchedCount: stat.dispatchedCount,
         returnedCount: stat.returnedCount,
         wrongReturnCount: stat.wrongReturnCount,
-        cancelledCount: stat.cancelledCount,
+        RTOCount: stat.RTOCount,
         totalSettlement: 0,
         settlementCount: 0
       };
@@ -461,19 +578,23 @@ const getMarketplaceAccountStats = async (req, res) => {
   }
 };
 
-// Get return rate by product and account
 const getReturnRateByProduct = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    const { accountName } = req.query;
+    const { accountName, startDate, endDate } = req.query;
 
     const matchFilter = {
       organizationId: new mongoose.Types.ObjectId(organizationId),
       deletedAt: null
     };
 
-    if (accountName) {
-      matchFilter.accountName = accountName;
+    if (accountName) matchFilter.accountName = accountName;
+
+    if (startDate && endDate) {
+      matchFilter.saleDate = {
+        $gte: new Date(startDate),
+        $lte: new Date(new Date(endDate).setHours(23, 59, 59, 999))
+      };
     }
 
     const stats = await MarketplaceSale.aggregate([
@@ -483,78 +604,114 @@ const getReturnRateByProduct = async (req, res) => {
           _id: {
             design: '$design',
             color: '$color',
+            size: '$size',         // ✅ added size
             accountName: '$accountName'
           },
           totalOrders: { $sum: 1 },
+          successfulCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'dispatched'] }, 1, 0] }
+          },
           returnedCount: {
             $sum: { $cond: [{ $eq: ['$status', 'returned'] }, 1, 0] }
           },
           wrongReturnCount: {
             $sum: { $cond: [{ $eq: ['$status', 'wrongreturn'] }, 1, 0] }
           },
+          RTOCount: {                // ✅ was missing entirely
+            $sum: { $cond: [{ $eq: ['$status', 'RTO'] }, 1, 0] }
+          },
           cancelledCount: {
             $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] }
-          },
-          successfulCount: {
-            $sum: { $cond: [{ $eq: ['$status', 'dispatched'] }, 1, 0] }
           }
         }
       },
       {
         $addFields: {
           returnRate: {
-            $multiply: [
-              { $divide: ['$returnedCount', '$totalOrders'] },
-              100
-            ]
+            $round: [{
+              $cond: [
+                { $gt: ['$totalOrders', 0] },
+                {
+                  $multiply: [
+                    { $divide: [{ $add: ['$returnedCount', '$wrongReturnCount'] }, '$totalOrders'] },
+                    100
+                  ]
+                },
+                0
+              ]
+            }, 2]
+          },
+          rtoRate: {
+            $round: [{
+              $cond: [
+                { $gt: ['$totalOrders', 0] },
+                { $multiply: [{ $divide: ['$RTOCount', '$totalOrders'] }, 100] },
+                0
+              ]
+            }, 2]
           },
           wrongReturnRate: {
-            $multiply: [
-              { $divide: ['$wrongReturnCount', '$totalOrders'] },
-              100
-            ]
-          },
-          cancellationRate: {
-            $multiply: [
-              { $divide: ['$cancelledCount', '$totalOrders'] },
-              100
-            ]
+            $round: [{
+              $cond: [
+                { $gt: ['$totalOrders', 0] },
+                { $multiply: [{ $divide: ['$wrongReturnCount', '$totalOrders'] }, 100] },
+                0
+              ]
+            }, 2]
           },
           totalIssueRate: {
-            $multiply: [
-              {
-                $divide: [
-                  { $add: ['$returnedCount', '$wrongReturnCount', '$cancelledCount'] },
-                  '$totalOrders'
-                ]
-              },
-              100
-            ]
+            $round: [{
+              $cond: [
+                { $gt: ['$totalOrders', 0] },
+                {
+                  $multiply: [
+                    {
+                      $divide: [
+                        { $add: ['$returnedCount', '$wrongReturnCount', '$RTOCount', '$cancelledCount'] },
+                        '$totalOrders'
+                      ]
+                    },
+                    100
+                  ]
+                },
+                0
+              ]
+            }, 2]
           }
         }
       },
       {
         $project: {
+          _id: 0,
           design: '$_id.design',
           color: '$_id.color',
+          size: '$_id.size',
           accountName: '$_id.accountName',
           totalOrders: 1,
+          successfulCount: 1,
           returnedCount: 1,
           wrongReturnCount: 1,
+          RTOCount: 1,
           cancelledCount: 1,
-          successfulCount: 1,
-          returnRate: { $round: ['$returnRate', 2] },
-          wrongReturnRate: { $round: ['$wrongReturnRate', 2] },
-          cancellationRate: { $round: ['$cancellationRate', 2] },
-          totalIssueRate: { $round: ['$totalIssueRate', 2] }
+          returnRate: 1,
+          rtoRate: 1,
+          wrongReturnRate: 1,
+          totalIssueRate: 1
         }
       },
-      { $sort: { totalIssueRate: -1 } }
+      { $sort: { returnRate: -1 } }  // default sort by returnRate desc
     ]);
+
+    // Also return distinct accounts for dropdown
+    const accounts = await MarketplaceSale.distinct('accountName', {
+      organizationId: new mongoose.Types.ObjectId(organizationId),
+      deletedAt: null
+    });
 
     res.json({
       success: true,
-      data: stats
+      data: stats,
+      accounts: accounts.filter(Boolean).sort()
     });
   } catch (error) {
     console.error('getReturnRateByProduct error:', error);
@@ -566,7 +723,7 @@ const getReturnRateByProduct = async (req, res) => {
 const getBestSellingMarketplaceProducts = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    const { startDate, endDate, limit = 20 } = req.query;
+    const { startDate, endDate, limit = 20, accountName } = req.query;
 
     const dateFilter = {};
     if (startDate) dateFilter.$gte = new Date(startDate);
@@ -575,7 +732,8 @@ const getBestSellingMarketplaceProducts = async (req, res) => {
     const matchFilter = {
       organizationId: new mongoose.Types.ObjectId(organizationId),
       deletedAt: null,
-      status: { $nin: ['cancelled', 'returned'] }
+      status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] },
+      ...(accountName && { accountName })
     };
     
     if (startDate || endDate) {
@@ -630,7 +788,7 @@ const getStockRecommendations = async (req, res) => {
           organizationId: new mongoose.Types.ObjectId(organizationId),
           saleDate: { $gte: startDate },
           deletedAt: null,
-          status: { $nin: ['cancelled', 'returned'] }
+          status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
         }
       },
       {
@@ -754,24 +912,31 @@ const getCurrentStockLevels = async (req, res) => {
   }
 };
 
-// Get stock turnover rate
 const getStockTurnoverRate = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    const { days = 90 } = req.query;
+    const { startDate, endDate } = req.query;
 
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
+    let dateFilter = {};
+    let days = 90;
 
-    // Get total sales for the period
+    if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(new Date(endDate).setHours(23, 59, 59, 999));
+      dateFilter = { $gte: start, $lte: end };
+      days = Math.max(1, Math.ceil((end - start) / (1000 * 60 * 60 * 24)));
+    }
+
+    const matchDate = (field) => dateFilter.$gte ? { [field]: dateFilter } : {};
+
     const [marketplace, wholesale, direct] = await Promise.all([
       MarketplaceSale.aggregate([
         {
           $match: {
             organizationId: new mongoose.Types.ObjectId(organizationId),
-            saleDate: { $gte: startDate },
+            ...matchDate('saleDate'),
             deletedAt: null,
-            status: { $nin: ['cancelled', 'returned'] }
+            status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
           }
         },
         {
@@ -785,7 +950,7 @@ const getStockTurnoverRate = async (req, res) => {
         {
           $match: {
             organizationId: new mongoose.Types.ObjectId(organizationId),
-            orderDate: { $gte: startDate },
+            ...matchDate('orderDate'),
             deletedAt: null
           }
         },
@@ -805,7 +970,7 @@ const getStockTurnoverRate = async (req, res) => {
         {
           $match: {
             organizationId: new mongoose.Types.ObjectId(organizationId),
-            saleDate: { $gte: startDate },
+            ...matchDate('saleDate'),
             deletedAt: null
           }
         },
@@ -823,35 +988,35 @@ const getStockTurnoverRate = async (req, res) => {
       ])
     ]);
 
-    // Get current stock
     const products = await Product.find({ organizationId }).lean();
 
-    const turnoverData = [];
     const salesMap = {};
-
     [...marketplace, ...wholesale, ...direct].forEach(item => {
       const key = `${item._id.design}-${item._id.color}-${item._id.size}`;
       salesMap[key] = (salesMap[key] || 0) + item.quantitySold;
     });
+
+    const turnoverData = [];
 
     products.forEach(product => {
       product.colors.forEach(colorVariant => {
         colorVariant.sizes.forEach(sizeVariant => {
           const key = `${product.design}-${colorVariant.color}-${sizeVariant.size}`;
           const quantitySold = salesMap[key] || 0;
-          const avgStock = ((sizeVariant.currentStock || 0) + (sizeVariant.reservedStock || 0));
-          
-          const turnoverRate = avgStock > 0 ? (quantitySold / avgStock).toFixed(2) : 0;
-          const daysToSell = quantitySold > 0 ? Math.ceil((avgStock * parseInt(days)) / quantitySold) : Infinity;
+          const totalStock = (sizeVariant.currentStock || 0) + (sizeVariant.reservedStock || 0);
+          const turnoverRate = totalStock > 0 ? (quantitySold / totalStock).toFixed(2) : 0;
+          const daysToSell = quantitySold > 0
+            ? Math.ceil((totalStock * days) / quantitySold)
+            : 0;
 
           turnoverData.push({
             design: product.design,
             color: colorVariant.color,
             size: sizeVariant.size,
             quantitySold,
-            currentStock: avgStock,
+            currentStock: totalStock,
             turnoverRate: parseFloat(turnoverRate),
-            daysToSell: daysToSell === Infinity ? 0 : daysToSell,
+            daysToSell,
             status: turnoverRate > 2 ? 'Fast Moving' : turnoverRate > 0.5 ? 'Average' : 'Slow Moving'
           });
         });
@@ -860,8 +1025,7 @@ const getStockTurnoverRate = async (req, res) => {
 
     res.json({
       success: true,
-      data: turnoverData.sort((a, b) => b.turnoverRate - a.turnoverRate),
-      period: `${days} days`
+      data: turnoverData.sort((a, b) => b.turnoverRate - a.turnoverRate)
     });
   } catch (error) {
     console.error('getStockTurnoverRate error:', error);
@@ -883,7 +1047,7 @@ const getStockValueByType = async (req, res) => {
 
     products.forEach(product => {
       product.colors.forEach(colorVariant => {
-        const costPrice = colorVariant.costPrice || 0;
+        const costPrice = colorVariant.wholesalePrice || colorVariant.retailPrice || 0;
         colorVariant.sizes.forEach(sizeVariant => {
           const mainStock = sizeVariant.currentStock || 0;
           const reservedStock = sizeVariant.reservedStock || 0;
@@ -936,7 +1100,7 @@ const getOptimalReorderPoints = async (req, res) => {
             organizationId: new mongoose.Types.ObjectId(organizationId),
             saleDate: { $gte: startDate },
             deletedAt: null,
-            status: { $nin: ['cancelled', 'returned'] }
+            status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
           }
         },
         {
@@ -1037,28 +1201,38 @@ const getOptimalReorderPoints = async (req, res) => {
   }
 };
 
-// Get color/size distribution
 const getColorSizeDistribution = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    const { days = 90 } = req.query;
+    const { startDate, endDate, design } = req.query;
 
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
+    let dateFilter = {};
+    if (startDate && endDate) {
+      dateFilter = {
+        $gte: new Date(startDate),
+        $lte: new Date(new Date(endDate).setHours(23, 59, 59, 999))
+      };
+    }
+
+    const matchDate = (field) => dateFilter.$gte ? { [field]: dateFilter } : {};
+
+    // Design filter — applied to all aggregations if provided
+    const designFilter = (field) => design ? { [field]: design } : {};
 
     const [marketplace, wholesale, direct] = await Promise.all([
       MarketplaceSale.aggregate([
         {
           $match: {
             organizationId: new mongoose.Types.ObjectId(organizationId),
-            saleDate: { $gte: startDate },
+            ...matchDate('saleDate'),
+            ...designFilter('design'),
             deletedAt: null,
-            status: { $nin: ['cancelled', 'returned'] }
+            status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
           }
         },
         {
           $group: {
-            _id: { color: '$color', size: '$size' },
+            _id: { design: '$design', color: '$color', size: '$size' },
             quantity: { $sum: '$quantity' }
           }
         }
@@ -1067,14 +1241,19 @@ const getColorSizeDistribution = async (req, res) => {
         {
           $match: {
             organizationId: new mongoose.Types.ObjectId(organizationId),
-            orderDate: { $gte: startDate },
+            ...matchDate('orderDate'),
             deletedAt: null
           }
         },
         { $unwind: '$items' },
         {
+          $match: {
+            ...designFilter('items.design')
+          }
+        },
+        {
           $group: {
-            _id: { color: '$items.color', size: '$items.size' },
+            _id: { design: '$items.design', color: '$items.color', size: '$items.size' },
             quantity: { $sum: '$items.quantity' }
           }
         }
@@ -1083,46 +1262,118 @@ const getColorSizeDistribution = async (req, res) => {
         {
           $match: {
             organizationId: new mongoose.Types.ObjectId(organizationId),
-            saleDate: { $gte: startDate },
+            ...matchDate('saleDate'),
             deletedAt: null
           }
         },
         { $unwind: '$items' },
         {
+          $match: {
+            ...designFilter('items.design')
+          }
+        },
+        {
           $group: {
-            _id: { color: '$items.color', size: '$items.size' },
+            _id: { design: '$items.design', color: '$items.color', size: '$items.size' },
             quantity: { $sum: '$items.quantity' }
           }
         }
       ])
     ]);
 
-    const distributionMap = {};
-    const colorTotals = {};
-    const sizeTotals = {};
+    // Collect all unique designs from this period (unfiltered)
+    // We need designs list regardless of design filter for the dropdown
+    let allDesigns = [];
+    if (!design) {
+      const designSet = new Set();
+      [...marketplace, ...wholesale, ...direct].forEach(item => {
+        if (item._id.design) designSet.add(item._id.design);
+      });
+      allDesigns = Array.from(designSet).sort();
+    } else {
+      // Still fetch designs list separately for dropdown (without design filter)
+      const [mpDesigns, wsDesigns, dsDesigns] = await Promise.all([
+        MarketplaceSale.distinct('design', {
+          organizationId: new mongoose.Types.ObjectId(organizationId),
+          ...matchDate('saleDate'),
+          deletedAt: null,
+          status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
+        }),
+        WholesaleOrder.aggregate([
+          {
+            $match: {
+              organizationId: new mongoose.Types.ObjectId(organizationId),
+              ...matchDate('orderDate'),
+              deletedAt: null
+            }
+          },
+          { $unwind: '$items' },
+          { $group: { _id: '$items.design' } }
+        ]),
+        DirectSale.aggregate([
+          {
+            $match: {
+              organizationId: new mongoose.Types.ObjectId(organizationId),
+              ...matchDate('saleDate'),
+              deletedAt: null
+            }
+          },
+          { $unwind: '$items' },
+          { $group: { _id: '$items.design' } }
+        ])
+      ]);
+
+      const designSet = new Set([
+        ...mpDesigns,
+        ...wsDesigns.map(d => d._id),
+        ...dsDesigns.map(d => d._id)
+      ]);
+      allDesigns = Array.from(designSet).filter(Boolean).sort();
+    }
+
+    // Build colorSizeMap
+    const colorSizeMap = {};
     let grandTotal = 0;
 
     [...marketplace, ...wholesale, ...direct].forEach(item => {
-      const key = `${item._id.color}-${item._id.size}`;
-      distributionMap[key] = (distributionMap[key] || 0) + item.quantity;
-      colorTotals[item._id.color] = (colorTotals[item._id.color] || 0) + item.quantity;
-      sizeTotals[item._id.size] = (sizeTotals[item._id.size] || 0) + item.quantity;
-      grandTotal += item.quantity;
+      const color = item._id.color || 'Unknown';
+      const size = item._id.size || 'Unknown';
+      const qty = item.quantity;
+
+      if (!colorSizeMap[color]) colorSizeMap[color] = {};
+      colorSizeMap[color][size] = (colorSizeMap[color][size] || 0) + qty;
+      grandTotal += qty;
     });
 
-    const colorDistribution = Object.entries(colorTotals)
-      .map(([color, quantity]) => ({
-        color,
-        quantity,
-        percentage: ((quantity / grandTotal) * 100).toFixed(2)
-      }))
+    const colorDistribution = Object.entries(colorSizeMap)
+      .map(([color, sizes]) => {
+        const colorTotal = Object.values(sizes).reduce((sum, q) => sum + q, 0);
+        return {
+          color,
+          quantity: colorTotal,
+          percentage: grandTotal > 0 ? ((colorTotal / grandTotal) * 100).toFixed(1) : '0',
+          sizes: Object.entries(sizes)
+            .map(([size, quantity]) => ({
+              size,
+              quantity,
+              percentage: colorTotal > 0 ? ((quantity / colorTotal) * 100).toFixed(1) : '0'
+            }))
+            .sort((a, b) => b.quantity - a.quantity)
+        };
+      })
       .sort((a, b) => b.quantity - a.quantity);
+
+    const sizeTotals = {};
+    [...marketplace, ...wholesale, ...direct].forEach(item => {
+      const size = item._id.size || 'Unknown';
+      sizeTotals[size] = (sizeTotals[size] || 0) + item.quantity;
+    });
 
     const sizeDistribution = Object.entries(sizeTotals)
       .map(([size, quantity]) => ({
         size,
         quantity,
-        percentage: ((quantity / grandTotal) * 100).toFixed(2)
+        percentage: grandTotal > 0 ? ((quantity / grandTotal) * 100).toFixed(1) : '0'
       }))
       .sort((a, b) => b.quantity - a.quantity);
 
@@ -1131,9 +1382,9 @@ const getColorSizeDistribution = async (req, res) => {
       data: {
         colorDistribution,
         sizeDistribution,
-        totalSold: grandTotal
-      },
-      period: `${days} days`
+        totalSold: grandTotal,
+        designs: allDesigns  // ✅ always return designs for dropdown
+      }
     });
   } catch (error) {
     console.error('getColorSizeDistribution error:', error);
@@ -1277,6 +1528,7 @@ module.exports = {
   // Section 1: Wholesale & Direct
   getTopWholesaleBuyers,
   getTopProductsPerBuyer,
+  getBuyerDesignDrilldown,
   getWholesaleRevenueTrends,
   getDirectSalesAmount,
   getSalesVelocityByProduct,

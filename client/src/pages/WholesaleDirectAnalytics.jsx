@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { analyticsService } from '../services/analyticsService';
 import TimeRangeSelector from '../components/Analytics/TimeRangeSelector';
 import ExportButton from '../components/Analytics/ExportButton';
+import BuyerProductsModal from '../components/Analytics/BuyerProductsModal';
 import toast from 'react-hot-toast';
 import {
   FiTrendingUp,
@@ -18,21 +19,31 @@ import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, L
 
 const WholesaleDirectAnalytics = () => {
   const [loading, setLoading] = useState(true);
-  const [dateRange, setDateRange] = useState({
-    startDate: null,
-    endDate: null,
-    compareEnabled: false,
-    compareWith: 'Previous Period',
-    rangeName: 'This Month'
-    });
+  const getDefaultRange = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const pad = (n) => String(n).padStart(2, '0');
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    return {
+      startDate: `${year}-${pad(month + 1)}-01`,
+      endDate: `${year}-${pad(month + 1)}-${pad(lastDay)}`,
+      filterType: 'month'
+    };
+  };
 
-  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [dateRange, setDateRange] = useState(getDefaultRange());
   const [activeTab, setActiveTab] = useState('wholesale');
 
+  // Selector controller state — lives in parent so it survives re-renders
+  const now = new Date();
+  const [selectorMode, setSelectorMode] = useState('month');
+  const [selectorMonth, setSelectorMonth] = useState(String(now.getMonth()));
+  const [selectorYear, setSelectorYear] = useState(String(now.getFullYear()));
+  
   // Wholesale Data
   const [topBuyers, setTopBuyers] = useState([]);
-  const [selectedBuyer, setSelectedBuyer] = useState(null);
-  const [buyerProducts, setBuyerProducts] = useState([]);
+  const [modalBuyer, setModalBuyer] = useState(null);
   const [wholesaleTrends, setWholesaleTrends] = useState([]);
   
   // Direct Sales Data
@@ -42,32 +53,35 @@ const WholesaleDirectAnalytics = () => {
   const [salesVelocity, setSalesVelocity] = useState([]);
 
 useEffect(() => {
-  if (isInitialLoad) {
+  const { filterType, startDate, endDate } = dateRange;
+  if (filterType === 'alltime') {
     fetchAllData();
-    setIsInitialLoad(false);
-  }
-}, []);
-
-useEffect(() => {
-  if (!isInitialLoad && dateRange.startDate && dateRange.endDate) {
-    console.log('📅 Fetching with new date range:', dateRange);
+  } else if (filterType && startDate && endDate) {
     fetchAllData();
   }
-}, [dateRange.startDate, dateRange.endDate, dateRange.compareEnabled, dateRange.compareWith]);
+}, [dateRange.filterType, dateRange.startDate, dateRange.endDate]);
 
 const handleDateRangeChange = (newRange) => {
-  console.log('📅 Date Range Changed:', newRange);
   setDateRange(newRange);
+};
+
+const getFilterLabel = () => {
+  if (dateRange.filterType === 'alltime') return 'All Time';
+  if (dateRange.startDate && dateRange.endDate) {
+    return `${dateRange.startDate.split('-').reverse().join('-')} — ${dateRange.endDate.split('-').reverse().join('-')}`;
+  }
+  return '';
 };
 
   const fetchAllData = async () => {
     setLoading(true);
     try {
-      const params = {
-        startDate: dateRange.startDate,
-        endDate: dateRange.endDate,
-        limit: 10
-      };
+      const params = dateRange.filterType === 'alltime'
+        ? {}  // no date filter = backend returns all records
+        : {
+            startDate: dateRange.startDate,
+            endDate: dateRange.endDate
+          };
 
       const [
         buyersData,
@@ -77,8 +91,8 @@ const handleDateRangeChange = (newRange) => {
       ] = await Promise.all([
         analyticsService.getTopWholesaleBuyers(params),
         analyticsService.getDirectSalesAmount(params),
-        analyticsService.getSalesVelocityByProduct(30),
-        analyticsService.getWholesaleRevenueTrends('month')
+        analyticsService.getSalesVelocityByProduct(params),
+        analyticsService.getWholesaleRevenueTrends(params)
       ]);
 
       setTopBuyers(buyersData.data || []);
@@ -93,19 +107,8 @@ const handleDateRangeChange = (newRange) => {
     }
   };
 
-  const fetchBuyerProducts = async (buyerId) => {
-    try {
-      const response = await analyticsService.getTopProductsPerBuyer(buyerId);
-      setBuyerProducts(response.data || []);
-    } catch (error) {
-      console.error('Error fetching buyer products:', error);
-      toast.error('Failed to load buyer products');
-    }
-  };
-
   const handleBuyerClick = (buyer) => {
-    setSelectedBuyer(buyer);
-    fetchBuyerProducts(buyer.buyerId);
+    setModalBuyer(buyer);
   };
 
   const formatCurrency = (value) => {
@@ -132,7 +135,15 @@ const handleDateRangeChange = (newRange) => {
 
       {/* Controls */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
-        <TimeRangeSelector onRangeChange={handleDateRangeChange} showComparison={true} />
+        <TimeRangeSelector
+          mode={selectorMode}
+          selectedMonth={selectorMonth}
+          selectedYear={selectorYear}
+          onRangeChange={setDateRange}       // or handleDateRangeChange for Wholesale
+          onModeChange={setSelectorMode}
+          onMonthChange={setSelectorMonth}
+          onYearChange={setSelectorYear}
+        />
         <div className="flex items-center gap-3">
           <button
             onClick={fetchAllData}
@@ -145,25 +156,18 @@ const handleDateRangeChange = (newRange) => {
       </div>
 
     {/* Date Range Display */}
-{dateRange.startDate && dateRange.endDate && (
-  <div className="mb-4 px-4 py-3 bg-indigo-50 border border-indigo-200 rounded-lg">
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-4">
-        <span className="text-sm font-medium text-indigo-900">
-          Showing: {dateRange.rangeName || 'Custom Range'}
-        </span>
-        <span className="text-sm text-indigo-700">
-          {new Date(dateRange.startDate).toLocaleDateString('en-IN')} - {new Date(dateRange.endDate).toLocaleDateString('en-IN')}
-        </span>
+    {dateRange.startDate && dateRange.endDate && (
+      <div className="mb-4 px-4 py-3 bg-indigo-50 border border-indigo-200 rounded-lg">
+        <div className="flex items-center gap-4">
+          <span className="text-sm font-medium text-indigo-900">
+            {dateRange.filterType === 'month' ? 'Monthly View' : 'Custom Range'}
+          </span>
+          <span className="text-sm text-indigo-700">
+            {dateRange.startDate.split('-').reverse().join('-')} — {dateRange.endDate.split('-').reverse().join('-')}
+          </span>
+        </div>
       </div>
-      {dateRange.compareEnabled && (
-        <span className="text-sm text-indigo-700">
-          📊 Comparing with: {dateRange.compareWith}
-        </span>
-      )}
-    </div>
-  </div>
-)}
+    )}
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-gray-200">
@@ -348,48 +352,6 @@ const handleDateRangeChange = (newRange) => {
               </table>
             </div>
           </div>
-
-          {/* Buyer's Top Products Modal/Section */}
-          {selectedBuyer && buyerProducts.length > 0 && (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 animate-fadeIn">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h2 className="text-xl font-bold text-gray-900">
-                    Top 5 Products for {selectedBuyer.buyerName}
-                  </h2>
-                  <p className="text-sm text-gray-600">Most purchased items by this buyer</p>
-                </div>
-                <button
-                  onClick={() => setSelectedBuyer(null)}
-                  className="text-gray-500 hover:text-gray-700"
-                >
-                  <span className="text-xl">×</span>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                {buyerProducts.map((product, index) => (
-                  <div key={index} className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-lg p-4 border border-indigo-100">
-                    <div className="text-sm text-gray-600 mb-1">#{index + 1}</div>
-                    <div className="font-bold text-gray-900 mb-1">
-                      {product.design} - {product.color}
-                    </div>
-                    <div className="text-sm text-gray-700 mb-2">Size: {product.size}</div>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-xs text-gray-600">Quantity</div>
-                        <div className="font-bold text-indigo-600">{product.totalQuantity}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-xs text-gray-600">Revenue</div>
-                        <div className="font-bold text-green-600">{formatCurrency(product.totalRevenue)}</div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
 
@@ -439,7 +401,9 @@ const handleDateRangeChange = (newRange) => {
             <div className="flex items-center justify-between mb-6">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">Sales Velocity by Product</h2>
-                <p className="text-sm text-gray-600">Units sold per day across all channels (Last 30 days)</p>
+                <p className="text-sm text-gray-600">
+                  Units sold per day across all channels ({getFilterLabel()})
+                </p>
               </div>
               <ExportButton data={salesVelocity} filename="sales_velocity" title="Sales Velocity" />
             </div>
@@ -452,7 +416,7 @@ const handleDateRangeChange = (newRange) => {
                     <th className="text-left py-3 px-4 font-semibold text-gray-700">Product</th>
                     <th className="text-left py-3 px-4 font-semibold text-gray-700">Color</th>
                     <th className="text-left py-3 px-4 font-semibold text-gray-700">Size</th>
-                    <th className="text-right py-3 px-4 font-semibold text-gray-700">Total Sold (30d)</th>
+                    <th className="text-right py-3 px-4 font-semibold text-gray-700">Total Sold</th>
                     <th className="text-right py-3 px-4 font-semibold text-gray-700">Velocity/Day</th>
                     <th className="text-center py-3 px-4 font-semibold text-gray-700">Performance</th>
                   </tr>
@@ -507,6 +471,14 @@ const handleDateRangeChange = (newRange) => {
             </div>
           </div>
         </div>
+      )}
+      {/* Buyer Products Modal */}
+      {modalBuyer && (
+        <BuyerProductsModal
+          buyer={modalBuyer}
+          dateRange={dateRange}
+          onClose={() => setModalBuyer(null)}
+        />
       )}
     </div>
   );

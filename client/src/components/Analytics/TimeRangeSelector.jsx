@@ -1,280 +1,319 @@
-import { useState } from 'react';
-import { FiCalendar, FiChevronDown } from 'react-icons/fi';
+import { FiCalendar, FiEdit2, FiClock } from 'react-icons/fi';
+import { useState, useMemo, useRef } from 'react';
 
-const TimeRangeSelector = ({ onRangeChange, showComparison = true }) => {
-  const [selectedRange, setSelectedRange] = useState('This Month');
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [customDates, setCustomDates] = useState({ start: '', end: '' });
-  const [showCustom, setShowCustom] = useState(false);
-  const [compareEnabled, setCompareEnabled] = useState(false);
-  const [compareWith, setCompareWith] = useState('Previous Period');
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
 
-  const predefinedRanges = [
-    'Today',
-    'Yesterday',
-    'This Week',
-    'Last Week',
-    'This Month',
-    'Last Month',
-    'This Quarter',
-    'Last Quarter',
-    'This Year',
-    'Last Year',
-    'Custom Range'
-  ];
+const getYearOptions = () => {
+  const current = new Date().getFullYear();
+  const years = [];
+  for (let y = current; y >= current - 1; y--) years.push(String(y));
+  return years;
+};
 
-  const compareOptions = [
-    'Previous Period',
-    'Same Period Last Year'
-  ];
+export const getMonthDateRange = (monthStr, yearStr) => {
+  const m = Number(monthStr);
+  const y = Number(yearStr);
+  const end = new Date(y, m + 1, 0);
+  const pad = (n) => String(n).padStart(2, '0');
+  return {
+    startDate: `${y}-${pad(m + 1)}-01`,
+    endDate: `${y}-${pad(m + 1)}-${pad(end.getDate())}`
+  };
+};
 
-  const calculateDateRange = (range) => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    let startDate, endDate;
+// Auto-inserts hyphens as user types: "10" → "10-", "1011" → "10-11-", "10112025" → "10-11-2025"
+const formatDateInput = (value, prev) => {
+  // Allow backspace — if deleting, don't auto-add hyphen
+  const isDeleting = value.length < prev.length;
+  if (isDeleting) return value;
 
-    switch (range) {
-      case 'Today':
-        startDate = new Date(today);
-        endDate = new Date(today);
-        break;
-        
-      case 'Yesterday':
-        startDate = new Date(today);
-        startDate.setDate(today.getDate() - 1);
-        endDate = new Date(startDate);
-        break;
-        
-      case 'This Week':
-        startDate = new Date(today);
-        startDate.setDate(today.getDate() - today.getDay()); // Sunday
-        endDate = new Date(today);
-        break;
-        
-      case 'Last Week':
-        startDate = new Date(today);
-        startDate.setDate(today.getDate() - today.getDay() - 7);
-        endDate = new Date(startDate);
-        endDate.setDate(endDate.getDate() + 6);
-        break;
-        
-      case 'This Month':
-        startDate = new Date(today.getFullYear(), today.getMonth(), 1);
-        endDate = new Date(today);
-        break;
-        
-      case 'Last Month':
-        startDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-        endDate = new Date(today.getFullYear(), today.getMonth(), 0);
-        break;
-        
-      case 'This Quarter':
-        const currentQuarter = Math.floor(today.getMonth() / 3);
-        startDate = new Date(today.getFullYear(), currentQuarter * 3, 1);
-        endDate = new Date(today);
-        break;
-        
-      case 'Last Quarter':
-        const lastQuarter = Math.floor(today.getMonth() / 3) - 1;
-        const year = lastQuarter < 0 ? today.getFullYear() - 1 : today.getFullYear();
-        const quarter = lastQuarter < 0 ? 3 : lastQuarter;
-        startDate = new Date(year, quarter * 3, 1);
-        endDate = new Date(year, quarter * 3 + 3, 0);
-        break;
-        
-      case 'This Year':
-        startDate = new Date(today.getFullYear(), 0, 1);
-        endDate = new Date(today);
-        break;
-        
-      case 'Last Year':
-        startDate = new Date(today.getFullYear() - 1, 0, 1);
-        endDate = new Date(today.getFullYear() - 1, 11, 31);
-        break;
-        
-      default:
-        return null;
-    }
+  // Strip all non-digits first
+  const digits = value.replace(/\D/g, '');
 
-    return {
-      startDate: startDate.toISOString().split('T')[0],
-      endDate: endDate.toISOString().split('T')[0]
-    };
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}-${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}-${digits.slice(2, 4)}-${digits.slice(4, 8)}`;
+};
+
+const validateDate = (val) => {
+  if (!val) return 'Required';
+  if (!/^\d{2}-\d{2}-\d{4}$/.test(val)) return 'Use DD-MM-YYYY format';
+  const [d, m, y] = val.split('-').map(Number);
+  if (m < 1 || m > 12) return 'Invalid month';
+  if (d < 1 || d > 31) return 'Invalid day';
+  return '';
+};
+
+const toISODate = (displayDate) => {
+  if (!displayDate) return '';
+  const parts = displayDate.split('-');
+  if (parts.length !== 3 || parts[2].length !== 4) return '';
+  return `${parts[2]}-${parts[1]}-${parts[0]}`;
+};
+
+// Props: mode, selectedMonth, selectedYear, onRangeChange, onModeChange, onMonthChange, onYearChange
+const TimeRangeSelector = ({
+  mode,
+  selectedMonth,
+  selectedYear,
+  onRangeChange,
+  onModeChange,
+  onMonthChange,
+  onYearChange
+}) => {
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [customStartError, setCustomStartError] = useState('');
+  const [customEndError, setCustomEndError] = useState('');
+
+  const startPickerRef = useRef(null);
+  const endPickerRef = useRef(null);
+
+  const yearOptions = useMemo(() => getYearOptions(), []);
+
+  const handleMonthChange = (e) => {
+    const month = e.target.value;
+    onMonthChange(month);
+    const range = getMonthDateRange(month, selectedYear);
+    onRangeChange({ ...range, filterType: 'month' });
   };
 
-  const handleRangeSelect = (range) => {
-    setSelectedRange(range);
-    setShowDropdown(false);
-    
-    if (range === 'Custom Range') {
-      setShowCustom(true);
-      return;
-    }
+  const handleYearChange = (e) => {
+    const year = e.target.value;
+    onYearChange(year);
+    const range = getMonthDateRange(selectedMonth, year);
+    onRangeChange({ ...range, filterType: 'month' });
+  };
 
-    setShowCustom(false);
-    const dates = calculateDateRange(range);
-    if (dates && onRangeChange) {
-      onRangeChange({ 
-        ...dates, 
-        compareEnabled, 
-        compareWith,
-        rangeName: range 
-      });
-    }
+  const handleSwitchToCustom = () => {
+    onModeChange('custom');
+    setCustomStart('');
+    setCustomEnd('');
+    setCustomStartError('');
+    setCustomEndError('');
+  };
+
+  const handleSwitchToAllTime = () => {
+    onModeChange('alltime');
+    onRangeChange({ startDate: null, endDate: null, filterType: 'alltime' });
+  };
+
+  const handleSwitchToMonth = () => {
+    onModeChange('month');
+    const range = getMonthDateRange(selectedMonth, selectedYear);
+    onRangeChange({ ...range, filterType: 'month' });
   };
 
   const handleCustomApply = () => {
-    if (customDates.start && customDates.end && onRangeChange) {
-      onRangeChange({
-        startDate: customDates.start,
-        endDate: customDates.end,
-        compareEnabled,
-        compareWith,
-        rangeName: 'Custom Range'
-      });
-      setShowCustom(false);
-    }
-  };
+    const startErr = validateDate(customStart);
+    const endErr = validateDate(customEnd);
+    setCustomStartError(startErr);
+    setCustomEndError(endErr);
+    if (startErr || endErr) return;
 
-  const handleCompareToggle = () => {
-    const newValue = !compareEnabled;
-    setCompareEnabled(newValue);
-    
-    const dates = selectedRange === 'Custom Range' 
-      ? { startDate: customDates.start, endDate: customDates.end }
-      : calculateDateRange(selectedRange);
-    
-    if (dates && onRangeChange) {
-      onRangeChange({ 
-        ...dates, 
-        compareEnabled: newValue, 
-        compareWith,
-        rangeName: selectedRange 
-      });
-    }
-  };
+    const isoStart = toISODate(customStart);
+    const isoEnd = toISODate(customEnd);
+    if (!isoStart || !isoEnd) return;
 
-  const handleCompareWithChange = (value) => {
-    setCompareWith(value);
-    
-    const dates = selectedRange === 'Custom Range' 
-      ? { startDate: customDates.start, endDate: customDates.end }
-      : calculateDateRange(selectedRange);
-    
-    if (dates && onRangeChange) {
-      onRangeChange({ 
-        ...dates, 
-        compareEnabled, 
-        compareWith: value,
-        rangeName: selectedRange 
-      });
+    if (new Date(isoStart) > new Date(isoEnd)) {
+      setCustomEndError('End date must be after start date');
+      return;
     }
+
+    onRangeChange({ startDate: isoStart, endDate: isoEnd, filterType: 'custom' });
   };
 
   return (
     <div className="flex items-center gap-3 flex-wrap">
-      {/* Time Range Selector */}
-      <div className="relative">
-        <button
-        type='button'
-          onClick={() => setShowDropdown(!showDropdown)}
-          className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
-        >
-          <FiCalendar className="text-gray-500" />
-          <span className="font-medium text-gray-700">{selectedRange}</span>
-          <FiChevronDown className={`text-gray-500 transition-transform ${showDropdown ? 'rotate-180' : ''}`} />
-        </button>
 
-        {showDropdown && (
-          <>
-            <div 
-              className="fixed inset-0 z-40" 
-              onClick={() => setShowDropdown(false)}
-            />
-            <div className="absolute top-full left-0 mt-2 w-56 bg-white border border-gray-200 rounded-lg shadow-xl z-50 animate-fadeIn max-h-96 overflow-y-auto">
-              {predefinedRanges.map((range) => (
-                <button
-                type='button'
-                  key={range}
-                  onClick={() => handleRangeSelect(range)}
-                  className={`w-full text-left px-4 py-2.5 hover:bg-indigo-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${
-                    selectedRange === range ? 'bg-indigo-50 text-indigo-600 font-medium' : 'text-gray-700'
-                  }`}
-                >
-                  {range}
-                </button>
+      {/* ── MODE: MONTH + YEAR ── */}
+      {mode === 'month' && (
+        <>
+          <div className="flex items-center gap-2">
+            <FiCalendar className="text-gray-500" />
+            <select
+              value={selectedMonth}
+              onChange={handleMonthChange}
+              className="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 focus:ring-2 focus:ring-indigo-500 focus:border-transparent shadow-sm cursor-pointer"
+            >
+              {MONTHS.map((name, idx) => (
+                <option key={idx} value={String(idx)}>{name}</option>
               ))}
-            </div>
-          </>
-        )}
-      </div>
+            </select>
+          </div>
 
-      {/* Custom Date Picker */}
-      {showCustom && (
-        <div className="flex items-center gap-2 animate-fadeIn">
-          <input
-            type="date"
-            value={customDates.start}
-            onChange={(e) => setCustomDates({ ...customDates, start: e.target.value })}
-            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
-          />
-          <span className="text-gray-500 font-medium">to</span>
-          <input
-            type="date"
-            value={customDates.end}
-            onChange={(e) => setCustomDates({ ...customDates, end: e.target.value })}
-            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
-          />
+          <select
+            value={selectedYear}
+            onChange={handleYearChange}
+            className="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 focus:ring-2 focus:ring-indigo-500 focus:border-transparent shadow-sm cursor-pointer"
+          >
+            {yearOptions.map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+
           <button
-          type='button'
+            type="button"
+            onClick={handleSwitchToCustom}
+            className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 hover:text-indigo-600 transition-colors shadow-sm"
+          >
+            <FiEdit2 size={14} />
+            Custom Range
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSwitchToAllTime}
+            className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 hover:text-indigo-600 transition-colors shadow-sm"
+          >
+            <FiClock size={14} />
+            All Time
+          </button>
+        </>
+      )}
+
+      {/* ── MODE: CUSTOM RANGE ── */}
+      {mode === 'custom' && (
+        <>
+          {/* Start Date */}
+          <div className="flex flex-col">
+            <div className="flex items-center gap-1">
+              <FiCalendar className="text-gray-500" />
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="DD-MM-YYYY"
+                  value={customStart}
+                  maxLength={10}
+                  onChange={(e) => {
+                    const formatted = formatDateInput(e.target.value, customStart);
+                    setCustomStart(formatted);
+                    setCustomStartError('');
+                  }}
+                  className={`w-36 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm pr-9 ${
+                    customStartError ? 'border-red-400' : 'border-gray-300'
+                  }`}
+                />
+
+                {/* Hidden native date picker */}
+                <input
+                  type="date"
+                  ref={startPickerRef}
+                  className="absolute opacity-0 w-0 h-0 top-0 left-0 pointer-events-none"
+                  onChange={(e) => {
+                    if (!e.target.value) return;
+                    const [y, m, d] = e.target.value.split('-');
+                    setCustomStart(`${d}-${m}-${y}`);
+                    setCustomStartError('');
+                  }}
+                />
+
+                {/* Calendar icon button */}
+                <button
+                  type="button"
+                  onClick={() => startPickerRef.current?.showPicker()}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-indigo-500 transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            {customStartError && (
+              <span className="text-xs text-red-500 mt-1 ml-6">{customStartError}</span>
+            )}
+          </div>
+
+          <span className="text-gray-500 font-medium text-sm">to</span>
+
+          {/* End Date */}
+          <div className="flex flex-col">
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="DD-MM-YYYY"
+                value={customEnd}
+                maxLength={10}
+                onChange={(e) => {
+                  const formatted = formatDateInput(e.target.value, customEnd);
+                  setCustomEnd(formatted);
+                  setCustomEndError('');
+                }}
+                className={`w-36 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm pr-9 ${
+                  customEndError ? 'border-red-400' : 'border-gray-300'
+                }`}
+              />
+
+              {/* Hidden native date picker */}
+              <input
+                type="date"
+                ref={endPickerRef}
+                className="absolute opacity-0 w-0 h-0 top-0 left-0 pointer-events-none"
+                onChange={(e) => {
+                  if (!e.target.value) return;
+                  const [y, m, d] = e.target.value.split('-');
+                  setCustomEnd(`${d}-${m}-${y}`);
+                  setCustomEndError('');
+                }}
+              />
+
+              {/* Calendar icon button */}
+              <button
+                type="button"
+                onClick={() => endPickerRef.current?.showPicker()}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-indigo-500 transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+              </button>
+            </div>
+            {customEndError && (
+              <span className="text-xs text-red-500 mt-1">{customEndError}</span>
+            )}
+          </div>
+
+          <button
+            type="button"
             onClick={handleCustomApply}
-            disabled={!customDates.start || !customDates.end}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+            disabled={!customStart || !customEnd}
+            className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
           >
             Apply
           </button>
+
           <button
-          type='button'
-            onClick={() => {
-              setShowCustom(false);
-              setSelectedRange('This Month');
-            }}
-            className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+            type="button"
+            onClick={handleSwitchToMonth}
+            className="px-3 py-2 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200 transition-colors"
           >
-            Cancel
+            ← Month View
           </button>
-        </div>
+        </>
       )}
 
-      {/* Comparison Toggle */}
-      {showComparison && !showCustom && (
-        <div className="flex items-center gap-3 ml-4 pl-4 border-l border-gray-300">
-          <label className="flex items-center gap-2 cursor-pointer group">
-            <input
-              type="checkbox"
-              checked={compareEnabled}
-              onChange={handleCompareToggle}
-              className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-            />
-            <span className="text-sm font-medium text-gray-700 group-hover:text-indigo-600 transition-colors">
-              Compare with
-            </span>
-          </label>
-          
-          {compareEnabled && (
-            <select
-              value={compareWith}
-              onChange={(e) => handleCompareWithChange(e.target.value)}
-              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white"
-            >
-              {compareOptions.map((option) => (
-                <option key={option} value={option}>{option}</option>
-              ))}
-            </select>
-          )}
-        </div>
+      {/* ── MODE: ALL TIME ── */}
+      {mode === 'alltime' && (
+        <>
+          <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 border border-indigo-200 rounded-lg">
+            <FiClock className="text-indigo-600" />
+            <span className="text-sm font-medium text-indigo-700">All Time</span>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSwitchToMonth}
+            className="px-3 py-2 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200 transition-colors"
+          >
+            ← Month View
+          </button>
+        </>
       )}
+
     </div>
   );
 };
