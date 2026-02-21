@@ -14,7 +14,7 @@ const mongoose = require('mongoose');
 const getTopWholesaleBuyers = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    const { startDate, endDate, limit = 10 } = req.query;
+    const { startDate, endDate, limit = 100 } = req.query;
 
     const dateFilter = {};
     if (startDate) dateFilter.$gte = new Date(startDate);
@@ -1204,7 +1204,7 @@ const getOptimalReorderPoints = async (req, res) => {
 const getColorSizeDistribution = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    const { startDate, endDate, design } = req.query;
+    const { startDate, endDate, design, channel = 'all' } = req.query;
 
     let dateFilter = {};
     if (startDate && endDate) {
@@ -1220,65 +1220,68 @@ const getColorSizeDistribution = async (req, res) => {
     const designFilter = (field) => design ? { [field]: design } : {};
 
     const [marketplace, wholesale, direct] = await Promise.all([
-      MarketplaceSale.aggregate([
-        {
-          $match: {
-            organizationId: new mongoose.Types.ObjectId(organizationId),
-            ...matchDate('saleDate'),
-            ...designFilter('design'),
-            deletedAt: null,
-            status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
-          }
-        },
-        {
-          $group: {
-            _id: { design: '$design', color: '$color', size: '$size' },
-            quantity: { $sum: '$quantity' }
-          }
-        }
-      ]),
-      WholesaleOrder.aggregate([
-        {
-          $match: {
-            organizationId: new mongoose.Types.ObjectId(organizationId),
-            ...matchDate('orderDate'),
-            deletedAt: null
-          }
-        },
-        { $unwind: '$items' },
-        {
-          $match: {
-            ...designFilter('items.design')
-          }
-        },
-        {
-          $group: {
-            _id: { design: '$items.design', color: '$items.color', size: '$items.size' },
-            quantity: { $sum: '$items.quantity' }
-          }
-        }
-      ]),
-      DirectSale.aggregate([
-        {
-          $match: {
-            organizationId: new mongoose.Types.ObjectId(organizationId),
-            ...matchDate('saleDate'),
-            deletedAt: null
-          }
-        },
-        { $unwind: '$items' },
-        {
-          $match: {
-            ...designFilter('items.design')
-          }
-        },
-        {
-          $group: {
-            _id: { design: '$items.design', color: '$items.color', size: '$items.size' },
-            quantity: { $sum: '$items.quantity' }
-          }
-        }
-      ])
+      // ✅ Only query marketplace if channel is 'marketplace' or 'all'
+      ['marketplace', 'all'].includes(channel)
+        ? MarketplaceSale.aggregate([
+            {
+              $match: {
+                organizationId: new mongoose.Types.ObjectId(organizationId),
+                ...matchDate('saleDate'),
+                ...designFilter('design'),
+                deletedAt: null,
+                status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
+              }
+            },
+            {
+              $group: {
+                _id: { design: '$design', color: '$color', size: '$size' },
+                quantity: { $sum: '$quantity' }
+              }
+            }
+          ])
+        : Promise.resolve([]),
+
+      // ✅ Only query wholesale if channel is 'wholesale_direct' or 'all'
+      ['wholesale_direct', 'all'].includes(channel)
+        ? WholesaleOrder.aggregate([
+            {
+              $match: {
+                organizationId: new mongoose.Types.ObjectId(organizationId),
+                ...matchDate('orderDate'),
+                deletedAt: null
+              }
+            },
+            { $unwind: '$items' },
+            { $match: { ...designFilter('items.design') } },
+            {
+              $group: {
+                _id: { design: '$items.design', color: '$items.color', size: '$items.size' },
+                quantity: { $sum: '$items.quantity' }
+              }
+            }
+          ])
+        : Promise.resolve([]),
+
+      // ✅ Only query direct if channel is 'wholesale_direct' or 'all'
+      ['wholesale_direct', 'all'].includes(channel)
+        ? DirectSale.aggregate([
+            {
+              $match: {
+                organizationId: new mongoose.Types.ObjectId(organizationId),
+                ...matchDate('saleDate'),
+                deletedAt: null
+              }
+            },
+            { $unwind: '$items' },
+            { $match: { ...designFilter('items.design') } },
+            {
+              $group: {
+                _id: { design: '$items.design', color: '$items.color', size: '$items.size' },
+                quantity: { $sum: '$items.quantity' }
+              }
+            }
+          ])
+        : Promise.resolve([])
     ]);
 
     // Collect all unique designs from this period (unfiltered)
@@ -1293,34 +1296,28 @@ const getColorSizeDistribution = async (req, res) => {
     } else {
       // Still fetch designs list separately for dropdown (without design filter)
       const [mpDesigns, wsDesigns, dsDesigns] = await Promise.all([
-        MarketplaceSale.distinct('design', {
-          organizationId: new mongoose.Types.ObjectId(organizationId),
-          ...matchDate('saleDate'),
-          deletedAt: null,
-          status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
-        }),
-        WholesaleOrder.aggregate([
-          {
-            $match: {
-              organizationId: new mongoose.Types.ObjectId(organizationId),
-              ...matchDate('orderDate'),
-              deletedAt: null
-            }
-          },
-          { $unwind: '$items' },
-          { $group: { _id: '$items.design' } }
-        ]),
-        DirectSale.aggregate([
-          {
-            $match: {
+        ['marketplace', 'all'].includes(channel)
+          ? MarketplaceSale.distinct('design', {
               organizationId: new mongoose.Types.ObjectId(organizationId),
               ...matchDate('saleDate'),
-              deletedAt: null
-            }
-          },
-          { $unwind: '$items' },
-          { $group: { _id: '$items.design' } }
-        ])
+              deletedAt: null,
+              status: { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] }
+            })
+          : Promise.resolve([]),
+        ['wholesale_direct', 'all'].includes(channel)
+          ? WholesaleOrder.aggregate([
+              { $match: { organizationId: new mongoose.Types.ObjectId(organizationId), ...matchDate('orderDate'), deletedAt: null } },
+              { $unwind: '$items' },
+              { $group: { _id: '$items.design' } }
+            ])
+          : Promise.resolve([]),
+        ['wholesale_direct', 'all'].includes(channel)
+          ? DirectSale.aggregate([
+              { $match: { organizationId: new mongoose.Types.ObjectId(organizationId), ...matchDate('saleDate'), deletedAt: null } },
+              { $unwind: '$items' },
+              { $group: { _id: '$items.design' } }
+            ])
+          : Promise.resolve([])
       ]);
 
       const designSet = new Set([

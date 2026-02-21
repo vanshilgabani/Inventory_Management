@@ -59,6 +59,7 @@ const MarketplaceAnalytics = () => {
   const [selectorYear, setSelectorYear] = useState(String(now.getFullYear()));
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [bestSellingAccount, setBestSellingAccount] = useState('');
+  const [distributionChannel, setDistributionChannel] = useState('marketplace');
 
   const [returnAccounts, setReturnAccounts] = useState([]);
   const [selectedReturnAccount, setSelectedReturnAccount] = useState(null);
@@ -146,22 +147,39 @@ const fetchReturnRateByAccount = async (account) => {
       ]);
 
       setAccountStats(accountData.data || []);
+
       const accounts = returnData.accounts || [];
       setReturnAccounts(accounts);
       const allReturnData = returnData.data || [];
 
+      // Handle return rate account filter
       setSelectedReturnAccount(prev => {
-        if (prev === null && accounts.length > 0) {
+        let activeAccount = prev;
+
+        // First load — auto-select flipkart
+        if (prev === null) {
           const flipkart = accounts.find(a => a.toLowerCase().includes('flipkart'));
-          const defaultAccount = flipkart || accounts[0];
-          // ✅ Filter data immediately for default account
-          setReturnRateData(allReturnData.filter(item => item.accountName === defaultAccount));
-          return defaultAccount;
+          activeAccount = flipkart || accounts[0] || '';
         }
-        // User already selected — don't override their data
-        return prev ?? '';
+
+        // Apply filter based on active account
+        if (activeAccount) {
+          setReturnRateData(allReturnData.filter(item => item.accountName === activeAccount));
+        } else {
+          // '' = All Accounts — show everything
+          setReturnRateData(allReturnData);
+        }
+
+        return activeAccount;
       });
-      setBestSelling(bestSellingData.data || []);
+
+      // Handle best selling account filter — respect current selection on re-fetch
+      const allBestSellingData = bestSellingData.data || [];
+      setBestSelling(
+        bestSellingAccount
+          ? allBestSellingData.filter(item => item.accountName === bestSellingAccount)
+          : allBestSellingData
+      );
       setStockRecommendations(recommendationsData.data || []);
       setColorDistribution(colorSizeData.data?.colorDistribution || []);
       setSizeDistribution(colorSizeData.data?.sizeDistribution || []);
@@ -180,22 +198,24 @@ const fetchReturnRateByAccount = async (account) => {
     }
   };
 
-  const fetchColorSizeByDesign = async (design) => {
-  try {
-    const params = dateRange.filterType === 'alltime'
-      ? {}
-      : { startDate: dateRange.startDate, endDate: dateRange.endDate };
+  const fetchColorSizeByDesign = async (design, channel = distributionChannel) => {
+    try {
+      const params = dateRange.filterType === 'alltime'
+        ? {}
+        : { startDate: dateRange.startDate, endDate: dateRange.endDate };
 
-    if (design) params.design = design;
+      if (design) params.design = design;
+      params.channel = channel;
 
-    const res = await analyticsService.getColorSizeDistribution(params);
-    setColorDistribution(res.data?.colorDistribution || []);
-    setSizeDistribution(res.data?.sizeDistribution || []);
-    setActiveColor(0); // reset active tab
-  } catch (error) {
-    toast.error('Failed to filter by design');
-  }
-};
+      const res = await analyticsService.getColorSizeDistribution(params);
+      setColorDistribution(res.data?.colorDistribution || []);
+      setSizeDistribution(res.data?.sizeDistribution || []);
+      if (res.data?.designs) setDistributionDesigns(res.data.designs);
+      setActiveColor(0);
+    } catch (error) {
+      toast.error('Failed to filter distribution data');
+    }
+  };
 
   const formatCurrency = (value) => {
     return `₹${Number(value || 0).toLocaleString('en-IN')}`;
@@ -884,7 +904,33 @@ const fetchReturnRateByAccount = async (account) => {
                   Sales breakdown by color and size — {getFilterLabel()}
                 </p>
               </div>
-              <ExportButton data={colorDistribution} filename="color_size_distribution" title="Color Size Distribution" />
+              <div className="flex items-center gap-3">
+                {/* Channel selector */}
+                <div className="flex items-center bg-gray-100 rounded-lg p-1 gap-1">
+                  {[
+                    { value: 'marketplace', label: 'Marketplace' },
+                    { value: 'wholesale_direct', label: 'Wholesale & Direct' },
+                    { value: 'all', label: 'All Combined' }
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => {
+                        setDistributionChannel(opt.value);
+                        fetchColorSizeByDesign(selectedDistributionDesign, opt.value);
+                      }}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                        distributionChannel === opt.value
+                          ? 'bg-white text-indigo-600 shadow-sm font-semibold'
+                          : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <ExportButton data={colorDistribution} filename="color_size_distribution" title="Color Size Distribution" />
+              </div>
             </div>
 
             {/* Design Filter */}
@@ -1048,7 +1094,7 @@ const fetchReturnRateByAccount = async (account) => {
             </div>
           </div>
 
-          {/* Stock Turnover Rate */}
+          {/* Stock Turnover Rate 
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
             <div className="flex items-center justify-between mb-6">
               <div>
@@ -1111,8 +1157,9 @@ const fetchReturnRateByAccount = async (account) => {
               </table>
             </div>
           </div>
+          */}
 
-          {/* Optimal Reorder Points */}
+          {/* Optimal Reorder Points 
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
             <div className="flex items-center justify-between mb-6">
               <div>
@@ -1181,8 +1228,9 @@ const fetchReturnRateByAccount = async (account) => {
               </table>
             </div>
           </div>
+          */}
 
-          {/* Low Stock Alerts */}
+          {/* Low Stock Alerts 
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
             <div className="flex items-center justify-between mb-6">
               <div>
@@ -1224,6 +1272,7 @@ const fetchReturnRateByAccount = async (account) => {
               ))}
             </div>
           </div>
+          */}
         </div>
       )}
 
