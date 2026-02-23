@@ -14,6 +14,7 @@ const TenantSettings = require('../models/TenantSettings');
 const { syncOrderToTenant } = require('./syncController'); // Add this new controller
 const supplierSyncController = require('./supplierSyncController');
 const User = require('../models/User');
+const { updateChallansAfterPayment } = require('./monthlyBillController');
 
 // ✅ ADD THIS - Global flag to disable locked stock
 const STOCK_LOCK_DISABLED = true;
@@ -1079,111 +1080,81 @@ const getPendingPayments = async (req, res) => {
   }
 };
 
-// ✅ FIXED: Get all buyers with bill-based totals
+// ✅ FIXED: Always show real order-based stats regardless of bill status
 const getAllBuyers = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    
+
     // Fetch all buyers
     const buyers = await WholesaleBuyer.find({ organizationId })
-      .select('name mobile email businessName gstNumber address creditLimit lastOrderDate customerTenantId syncEnabled lastSyncedAt totalOrders totalDue totalPaid totalSpent')
+      .select(
+        'name mobile email businessName gstNumber address creditLimit isTrusted ' +
+        'lastOrderDate customerTenantId syncEnabled lastSyncedAt ' +
+        'totalOrders totalDue totalPaid totalSpent monthlyBills'
+      )
       .lean()
       .sort({ lastOrderDate: -1 });
 
-    // Calculate fresh stats for each buyer
+    // Compute real-time stats from WholesaleOrder — never from bill snapshots
     const enrichedBuyers = await Promise.all(
       buyers.map(async (buyer) => {
-        // Get all active orders
+        // Get all active (non-deleted) orders for this buyer
         const orders = await WholesaleOrder.find({
           buyerId: buyer._id,
           organizationId,
-          deletedAt: null
+          deletedAt: null,
         }).lean();
 
-        // Calculate totals from orders
+        // ✅ ALWAYS use order-based calculations
+        // Bills are for invoicing only — they must not override display metrics
         const totalOrders = orders.length;
-        const totalAmount = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-        const totalPaid = orders.reduce((sum, o) => sum + (o.amountPaid || 0), 0);
-        const totalDue = orders.reduce((sum, o) => sum + (o.amountDue || 0), 0);
+        const totalSpent  = orders.reduce((sum, o) => sum + (o.totalAmount  || 0), 0);
+        const totalPaid   = orders.reduce((sum, o) => sum + (o.amountPaid   || 0), 0);
+        const totalDue    = orders.reduce((sum, o) => sum + (o.amountDue    || 0), 0);
 
-        // Check if bills exist
-        const bills = await MonthlyBill.find({
-          organizationId,
-          'buyer.id': buyer._id
-        }).lean();
+        const finalStats = {
+          totalOrders,
+          totalDue:   parseFloat(totalDue.toFixed(2)),
+          totalPaid:  parseFloat(totalPaid.toFixed(2)),
+          totalSpent: parseFloat(totalSpent.toFixed(2)),
+          // hasBills derived from tracking array on buyer — no extra DB query needed
+          hasBills: (buyer.monthlyBills?.length || 0) > 0,
+        };
 
-        let finalStats;
-        if (bills.length > 0) {
-          // Use bill-based calculations
-          const billTotalDue = bills.reduce((sum, b) => sum + (b.financials?.balanceDue || 0), 0);
-          const billTotalPaid = bills.reduce((sum, b) => sum + (b.financials?.amountPaid || 0), 0);
-          const billTotalSpent = bills.reduce((sum, b) => sum + (b.financials?.totalAmount || 0), 0);
-
-          finalStats = {
-            totalOrders: totalOrders,
-            totalDue: parseFloat(billTotalDue.toFixed(2)),
-            totalPaid: parseFloat(billTotalPaid.toFixed(2)),
-            totalSpent: parseFloat(billTotalSpent.toFixed(2)),
-            hasBills: true
-          };
-        } else {
-          // Use order-based calculations
-          finalStats = {
-            totalOrders: totalOrders,
-            totalDue: parseFloat(totalDue.toFixed(2)),
-            totalPaid: parseFloat(totalPaid.toFixed(2)),
-            totalSpent: parseFloat(totalAmount.toFixed(2)),
-            hasBills: false
-          };
-        }
-
-        // 🔥 AUTO-FIX DATABASE (silently in background)
-        // Only update if values are different
-        const needsUpdate = 
+        // Silently heal stale cached values in DB (fire and forget)
+        const needsUpdate =
           buyer.totalOrders !== finalStats.totalOrders ||
-          Math.abs((buyer.totalDue || 0) - finalStats.totalDue) > 0.01 ||
-          Math.abs((buyer.totalPaid || 0) - finalStats.totalPaid) > 0.01 ||
+          Math.abs((buyer.totalDue   || 0) - finalStats.totalDue)   > 0.01 ||
+          Math.abs((buyer.totalPaid  || 0) - finalStats.totalPaid)  > 0.01 ||
           Math.abs((buyer.totalSpent || 0) - finalStats.totalSpent) > 0.01;
 
         if (needsUpdate) {
-          // Update database silently (fire and forget - no await)
           WholesaleBuyer.findByIdAndUpdate(buyer._id, {
             totalOrders: finalStats.totalOrders,
-            totalDue: finalStats.totalDue,
-            totalPaid: finalStats.totalPaid,
-            totalSpent: finalStats.totalSpent
-          }).catch(err => 
-            logger.error('Failed to auto-update buyer stats:', { 
-              buyerId: buyer._id, 
-              error: err.message 
+            totalDue:    finalStats.totalDue,
+            totalPaid:   finalStats.totalPaid,
+            totalSpent:  finalStats.totalSpent,
+          }).catch((err) =>
+            logger.error('Failed to auto-update buyer stats', {
+              buyerId: buyer._id,
+              error: err.message,
             })
           );
-          
-          logger.info('Auto-fixing buyer stats', {
-            buyerId: buyer._id,
+          logger.info('Auto-fixing stale buyer stats', {
+            buyerId:   buyer._id,
             buyerName: buyer.name,
-            old: {
-              totalOrders: buyer.totalOrders,
-              totalDue: buyer.totalDue
-            },
-            new: {
-              totalOrders: finalStats.totalOrders,
-              totalDue: finalStats.totalDue
-            }
+            old: { totalOrders: buyer.totalOrders, totalDue: buyer.totalDue },
+            new: { totalOrders: finalStats.totalOrders, totalDue: finalStats.totalDue },
           });
         }
 
-        // Return fresh data to frontend
-        return {
-          ...buyer,
-          ...finalStats
-        };
+        return { ...buyer, ...finalStats };
       })
     );
 
     res.json(enrichedBuyers);
   } catch (error) {
-    logger.error('Failed to fetch buyers:', { error: error.message });
+    logger.error('Failed to fetch buyers', { error: error.message });
     res.status(500).json({
       code: 'FETCH_FAILED',
       message: 'Failed to fetch buyers',
@@ -1688,7 +1659,7 @@ const recordSmartPayment = async (req, res) => {
       .session(session);
 
     if (bills.length > 0) {
-      // ✅ Bills exist - allocate payment to bills
+      // Bills exist - allocate payment to bills
       logger.info('Bills found - allocating payment to bills', {
         buyerId: id,
         billsCount: bills.length,
@@ -1716,7 +1687,7 @@ const recordSmartPayment = async (req, res) => {
         bill.paymentHistory.push({
           ...paymentRecord,
           amount: amountToAllocate,
-          notes: notes || `Payment allocation`
+          notes: notes || 'Payment allocation'
         });
 
         await bill.save({ session });
@@ -1749,13 +1720,33 @@ const recordSmartPayment = async (req, res) => {
           allocated: amountToAllocate,
           newBalance: bill.financials.balanceDue
         });
+
+        // 🆕 NEW: UPDATE CHALLANS AFTER EACH BILL PAYMENT
+        try {
+          // Import the function at top of file:
+          // const { updateChallansAfterPayment } = require('./monthlyBillController');
+          // OR define it here as well (copy the helper function)
+          
+          const challanUpdateResult = await updateChallansAfterPayment(bill, session);
+          logger.info('Challans updated for bill', {
+            billNumber: bill.billNumber,
+            ...challanUpdateResult
+          });
+        } catch (challanError) {
+          logger.error('Failed to update challans for bill, continuing', {
+            billNumber: bill.billNumber,
+            error: challanError.message
+          });
+          // Don't fail the payment
+        }
       }
 
       // Update buyer totals
-      buyer.totalDue = buyer.monthlyBills.reduce((sum, b) => sum + b.balanceDue, 0);
-      buyer.totalPaid = buyer.monthlyBills.reduce((sum, b) => sum + b.amountPaid, 0);
+      buyer.totalDue = buyer.monthlyBills.reduce((sum, b) => sum + (b.balanceDue || 0), 0);
+      buyer.totalPaid = buyer.monthlyBills.reduce((sum, b) => sum + (b.amountPaid || 0), 0);
 
       await buyer.save({ session });
+
       await session.commitTransaction();
 
       res.json({
@@ -1764,12 +1755,11 @@ const recordSmartPayment = async (req, res) => {
         data: {
           amountReceived: amount,
           amountAllocated: amount - remainingAmount,
-          remainingAmount,
-          billsAffected,
+          remainingAmount: remainingAmount,
+          billsAffected: billsAffected,
           newTotalDue: buyer.totalDue
         }
       });
-
     } else {
       // ✅ No bills - use old challan-based system
       logger.info('No bills found - using challan-based payment', {
@@ -2279,13 +2269,285 @@ const getBuyerStats = async (req, res) => {
   }
 };
 
-// NEW: Create order borrowing from reserved stock
 const createOrderWithReservedBorrow = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
+    const { orderData, borrowItems } = req.body;
+    const { organizationId, id: userId } = req.user;
+    const AllocationChange = require('../models/AllocationChange');
+
+    logger.info('Creating order with reserved borrow (proportional split)', { 
+      borrowItemsCount: borrowItems?.length,
+      organizationId 
+    });
+
+    // ========================================
+    // STEP 1: Emergency Borrow (Proportional Split)
+    // ========================================
+    const allocationChanges = [];
+    const transferLogs = [];
+
+    if (borrowItems && borrowItems.length > 0) {
+      const settings = await Settings.findOne({ organizationId }).session(session);
+      const defaultAccountName = settings?.marketplaceAccounts?.find(acc => acc.isDefault)?.accountName || 'Flipkart';
+
+      for (const item of borrowItems) {
+        const { design, color, size, quantity: borrowQty } = item;
+
+        const product = await Product.findOne({ design, organizationId }).session(session);
+        if (!product) {
+          await session.abortTransaction();
+          return res.status(404).json({
+            code: 'PRODUCT_NOT_FOUND',
+            message: `Product ${design} not found`
+          });
+        }
+
+        const colorVariant = product.colors.find(c => c.color === color);
+        if (!colorVariant) {
+          await session.abortTransaction();
+          return res.status(404).json({
+            code: 'COLOR_NOT_FOUND',
+            message: `Color ${color} not found`
+          });
+        }
+
+        const sizeIndex = colorVariant.sizes.findIndex(s => s.size === size);
+        if (sizeIndex === -1) {
+          await session.abortTransaction();
+          return res.status(404).json({
+            code: 'SIZE_NOT_FOUND',
+            message: `Size ${size} not found`
+          });
+        }
+
+        const sizeVariant = colorVariant.sizes[sizeIndex];
+
+        // Get allocated accounts
+        const allocatedAccounts = (sizeVariant.reservedAllocations || [])
+          .filter(alloc => alloc.quantity > 0)
+          .map(alloc => ({
+            accountName: alloc.accountName,
+            quantity: alloc.quantity,
+            isDefault: alloc.accountName === defaultAccountName
+          }));
+
+        if (allocatedAccounts.length === 0) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            code: 'NO_ALLOCATED_STOCK',
+            message: `No allocated stock found for ${design}-${color}-${size}`
+          });
+        }
+
+        const totalAllocated = allocatedAccounts.reduce((sum, acc) => sum + acc.quantity, 0);
+
+        if (totalAllocated < borrowQty) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            code: 'INSUFFICIENT_ALLOCATED_STOCK',
+            message: `Insufficient allocated stock. Available: ${totalAllocated}, Need: ${borrowQty}`,
+            available: totalAllocated,
+            needed: borrowQty
+          });
+        }
+
+        // ✅ PROPORTIONAL SPLIT (FIXED)
+        let remainingToBorrow = borrowQty;
+        const borrowBreakdown = [];
+
+        // Calculate initial proportional amounts
+        allocatedAccounts.forEach(account => {
+          if (remainingToBorrow > 0) {
+            const proportion = account.quantity / totalAllocated;
+            // ✅ Use Math.round instead of Math.floor
+            let borrowFromThis = Math.round(borrowQty * proportion);
+            
+            // Make sure we don't exceed available or remaining
+            borrowFromThis = Math.min(borrowFromThis, account.quantity, remainingToBorrow);
+
+            if (borrowFromThis > 0) {
+              borrowBreakdown.push({
+                accountName: account.accountName,
+                borrowAmount: borrowFromThis,
+                isDefault: account.isDefault
+              });
+              remainingToBorrow -= borrowFromThis;
+            }
+          }
+        });
+
+        // ✅ Handle remainder - give to default account first
+        if (remainingToBorrow > 0) {
+          const defaultAccount = borrowBreakdown.find(b => b.isDefault);
+          if (defaultAccount) {
+            const defaultAlloc = allocatedAccounts.find(a => a.accountName === defaultAccount.accountName);
+            const defaultAvailable = defaultAlloc.quantity - defaultAccount.borrowAmount;
+
+            if (defaultAvailable >= remainingToBorrow) {
+              defaultAccount.borrowAmount += remainingToBorrow;
+              remainingToBorrow = 0;
+            }
+          }
+
+          // If still remaining, distribute across all accounts
+          if (remainingToBorrow > 0) {
+            for (const breakdown of borrowBreakdown) {
+              if (remainingToBorrow === 0) break;
+              const account = allocatedAccounts.find(a => a.accountName === breakdown.accountName);
+              const canTakeMore = account.quantity - breakdown.borrowAmount;
+
+              if (canTakeMore > 0) {
+                const takeFromThis = Math.min(canTakeMore, remainingToBorrow);
+                breakdown.borrowAmount += takeFromThis;
+                remainingToBorrow -= takeFromThis;
+              }
+            }
+          }
+        }
+
+        // ✅ FAILSAFE: If STILL remaining, use first available account
+        if (remainingToBorrow > 0) {
+          logger.warn('Remainder still exists after distribution, using failsafe', { 
+            remainingToBorrow,
+            borrowQty,
+            allocatedAccounts: allocatedAccounts.length 
+          });
+          
+          for (const account of allocatedAccounts) {
+            if (remainingToBorrow === 0) break;
+            
+            const existingBorrow = borrowBreakdown.find(b => b.accountName === account.accountName);
+            const alreadyBorrowing = existingBorrow?.borrowAmount || 0;
+            const canTakeMore = account.quantity - alreadyBorrowing;
+            
+            if (canTakeMore > 0) {
+              const takeFromThis = Math.min(canTakeMore, remainingToBorrow);
+              
+              if (existingBorrow) {
+                existingBorrow.borrowAmount += takeFromThis;
+              } else {
+                borrowBreakdown.push({
+                  accountName: account.accountName,
+                  borrowAmount: takeFromThis,
+                  isDefault: account.isDefault
+                });
+              }
+              
+              remainingToBorrow -= takeFromThis;
+            }
+          }
+        }
+
+        // ✅ VALIDATION: Ensure we borrowed everything
+        if (remainingToBorrow > 0) {
+          await session.abortTransaction();
+          return res.status(500).json({
+            code: 'BORROW_ALLOCATION_FAILED',
+            message: `Failed to allocate borrow amount. Still need ${remainingToBorrow} units`,
+            borrowQty,
+            allocated: borrowQty - remainingToBorrow,
+            remaining: remainingToBorrow
+          });
+        }
+
+        logger.info('Borrow breakdown (proportional)', { 
+          design, color, size,
+          breakdown: borrowBreakdown.map(b => `${b.accountName}:${b.borrowAmount}`).join(', ')
+        });
+
+        // ✅ Apply borrowing to each account
+        for (const breakdown of borrowBreakdown) {
+          const allocation = sizeVariant.reservedAllocations.find(
+            a => a.accountName === breakdown.accountName
+          );
+
+          if (!allocation) continue;
+
+          const quantityBefore = allocation.quantity;
+          const quantityAfter = quantityBefore - breakdown.borrowAmount;
+
+          allocation.quantity = quantityAfter;
+          allocation.updatedAt = new Date();
+
+          allocationChanges.push({
+            productId: product._id,
+            design: product.design,
+            color: color,
+            size: size,
+            accountName: breakdown.accountName,
+            quantityBefore: quantityBefore,
+            quantityAfter: quantityAfter,
+            amountChanged: -breakdown.borrowAmount,
+            changeType: 'emergencyborrow',
+            relatedOrderType: 'wholesale',
+            changedBy: userId,
+            notes: `Emergency borrow for wholesale order (${breakdown.borrowAmount} units)`,
+            organizationId: organizationId
+          });
+
+          logger.info('Reduced allocation', {
+            design, color, size,
+            accountName: breakdown.accountName,
+            before: quantityBefore,
+            after: quantityAfter,
+            borrowed: breakdown.borrowAmount
+          });
+        }
+
+        // Update reserved stock total
+        const totalBorrowed = borrowBreakdown.reduce((sum, b) => sum + b.borrowAmount, 0);
+        sizeVariant.reservedStock = Math.max(0, sizeVariant.reservedStock - totalBorrowed);
+
+        // ✅ ADD BORROWED STOCK TO MAIN INVENTORY
+        sizeVariant.currentStock = (sizeVariant.currentStock || 0) + totalBorrowed;
+
+        // Remove allocations with 0 quantity
+        sizeVariant.reservedAllocations = sizeVariant.reservedAllocations.filter(
+          alloc => alloc.quantity > 0
+        );
+
+        product.markModified('colors');
+        await product.save({ session });
+
+        transferLogs.push({
+          design,
+          color,
+          size,
+          quantity: borrowQty,
+          type: 'emergencyborrow',
+          from: 'reserved',
+          to: 'main',
+          mainStockBefore: sizeVariant.currentStock - totalBorrowed,
+          reservedStockBefore: sizeVariant.reservedStock + totalBorrowed,
+          mainStockAfter: sizeVariant.currentStock,
+          reservedStockAfter: sizeVariant.reservedStock,
+          performedBy: userId,
+          notes: `Emergency borrow: ${borrowBreakdown.map(b => `${b.accountName}(${b.borrowAmount})`).join(', ')}`,
+          organizationId: organizationId
+        });
+      }
+
+      // Bulk insert logs
+      if (allocationChanges.length > 0) {
+        await AllocationChange.insertMany(allocationChanges, { session });
+        logger.info('Allocation changes logged', { count: allocationChanges.length });
+      }
+
+      if (transferLogs.length > 0) {
+        await Transfer.insertMany(transferLogs, { session });
+        logger.info('Transfer logs created', { count: transferLogs.length });
+      }
+    }
+
+    // ========================================
+    // STEP 2: Create the Wholesale Order
+    // ========================================
+    
     const {
+      items,
       buyerName,
       buyerContact,
       buyerEmail,
@@ -2293,12 +2555,12 @@ const createOrderWithReservedBorrow = async (req, res) => {
       businessName,
       gstNumber,
       deliveryDate,
-      items,
       subtotalAmount,
       discountType,
       discountValue,
       discountAmount,
       gstEnabled,
+      gstPercentage,
       gstAmount,
       cgst,
       sgst,
@@ -2306,78 +2568,20 @@ const createOrderWithReservedBorrow = async (req, res) => {
       amountPaid,
       paymentMethod,
       notes,
-      fulfillmentType,
-      borrowFromReserved
-    } = req.body;
+      fulfillmentType
+    } = orderData;
 
-    const organizationId = req.user.organizationId;
-
-    // Validate borrowFromReserved flag
-    if (!borrowFromReserved) {
+    // Validation
+    if (!buyerContact || !items || items.length === 0) {
       await session.abortTransaction();
       return res.status(400).json({
-        code: 'INVALID_REQUEST',
-        message: 'This endpoint requires borrowFromReserved flag'
+        code: 'INVALID_DATA',
+        message: 'Buyer contact and items are required'
       });
     }
 
-    // ✅ STEP 1: Fetch GST settings and recalculate (BACKEND SOURCE OF TRUTH)
-    const settings = await Settings.findOne({ organizationId });
-    const gstPercentage = settings?.gstPercentage || 5;
-
-    logger.info('GST Settings fetched', { organizationId, gstPercentage, gstEnabled: gstEnabled !== false });
-
-    // ✅ STEP 2: Recalculate all financial values
-    const calculatedSubtotal = items.reduce((sum, item) => {
-      return sum + (item.quantity * item.pricePerUnit);
-    }, 0);
-
-    // Calculate discount amount
-    let calculatedDiscountAmount = 0;
-    if (discountType === 'percentage') {
-      calculatedDiscountAmount = (calculatedSubtotal * (discountValue || 0)) / 100;
-    } else if (discountType === 'fixed') {
-      calculatedDiscountAmount = discountValue || 0;
-    }
-
-    // Ensure discount doesn't exceed subtotal
-    if (calculatedDiscountAmount > calculatedSubtotal) {
-      calculatedDiscountAmount = calculatedSubtotal;
-    }
-
-    // Calculate taxable amount after discount
-    const taxableAmount = calculatedSubtotal - calculatedDiscountAmount;
-
-    // Calculate GST
-    let calculatedGstAmount = 0;
-    let calculatedCgst = 0;
-    let calculatedSgst = 0;
-
-    if (gstEnabled !== false) {
-      calculatedGstAmount = (taxableAmount * gstPercentage) / 100;
-      calculatedCgst = calculatedGstAmount / 2;
-      calculatedSgst = calculatedGstAmount / 2;
-    }
-
-    // Calculate final total
-    const calculatedTotalAmount = taxableAmount + calculatedGstAmount;
-
-    logger.info('Financial calculations completed', {
-      subtotal: calculatedSubtotal,
-      discountAmount: calculatedDiscountAmount,
-      taxableAmount,
-      gstPercentage,
-      gstAmount: calculatedGstAmount,
-      cgst: calculatedCgst,
-      sgst: calculatedSgst,
-      totalAmount: calculatedTotalAmount
-    });
-
     // Find or create buyer
-    let buyer = await WholesaleBuyer.findOne({
-      mobile: buyerContact,
-      organizationId
-    }).session(session);
+    let buyer = await WholesaleBuyer.findOne({ mobile: buyerContact, organizationId }).session(session);
 
     if (!buyer) {
       buyer = await WholesaleBuyer.create([{
@@ -2393,61 +2597,52 @@ const createOrderWithReservedBorrow = async (req, res) => {
         isTrusted: false
       }], { session });
       buyer = buyer[0];
-      logger.info('New buyer created', { buyerId: buyer._id, name: buyerName });
     }
 
-    // ✅ STEP 3: Deduct stock (main + reserved)
+    // Deduct stock from main inventory (borrowed stock is already there)
     for (const item of items) {
-      const product = await Product.findOne({
-        design: item.design, organizationId: organizationId
-      }).session(session);
+      const product = await Product.findOne({ design: item.design, organizationId }).session(session);
+      if (!product) continue;
 
       const colorVariant = product.colors.find(c => c.color === item.color);
+      if (!colorVariant) continue;
+
       const sizeIndex = colorVariant.sizes.findIndex(s => s.size === item.size);
+      if (sizeIndex === -1) continue;
 
-      const mainStock = colorVariant.sizes[sizeIndex].currentStock;
-      const reservedStock = colorVariant.sizes[sizeIndex].reservedStock || 0;
-
-      if (item.quantity <= mainStock) {
-        // Sufficient in main
-        colorVariant.sizes[sizeIndex].currentStock -= item.quantity;
-      } else {
-        // Need to borrow from reserved
-        const borrowAmount = item.quantity - mainStock;
-        colorVariant.sizes[sizeIndex].currentStock = 0;
-        colorVariant.sizes[sizeIndex].reservedStock -= borrowAmount;
-
-        // Log transfer
-        await Transfer.create([{
-          design: item.design,
-          color: item.color,
-          size: item.size,
-          quantity: borrowAmount,
-          from: 'reserved',
-          to: 'main',
-          type: 'emergency_borrow',
-          mainStockBefore: mainStock,
-          mainStockAfter: 0,
-          reservedStockBefore: reservedStock,
-          reservedStockAfter: reservedStock - borrowAmount,
-          performedBy: req.user._id,
-          notes: `Emergency borrow for Wholesale Order`,
-          organizationId
-        }], { session });
-
-        console.log(`✅ Borrowed ${borrowAmount} from Reserved for ${item.design}-${item.color}-${item.size}`);
-      }
-
+      // Deduct from main stock
+      colorVariant.sizes[sizeIndex].currentStock -= item.quantity;
       await product.save({ session });
     }
 
-    // Generate challan number
-    const challanNumber = await generateChallanNumber(businessName || buyerName, organizationId, session);
+    // Generate challan
+    const cleanBusinessName = (businessName || buyerName)
+      .replace(/[^a-zA-Z0-9 ]/g, '')
+      .replace(/ /g, '_')
+      .toUpperCase();
 
-    const amountDue = calculatedTotalAmount - (amountPaid || 0);
-    const paymentStatus = amountDue === 0 ? 'Paid' : (amountPaid > 0 ? 'Partial' : 'Pending');
+    const existingOrders = await WholesaleOrder.find({
+      businessName: businessName || buyerName,
+      organizationId,
+      deletedAt: null
+    }).select('challanNumber').session(session).lean();
 
-    // ✅ STEP 4: Create order with RECALCULATED values
+    const usedNumbers = existingOrders
+      .map(order => {
+        const match = order.challanNumber.match(/(\d+)/);
+        return match ? parseInt(match[1], 10) : null;
+      })
+      .filter(num => num !== null)
+      .sort((a, b) => a - b);
+
+    const maxSequence = usedNumbers.length > 0 ? Math.max(...usedNumbers) : 0;
+    const orderNumber = maxSequence + 1;
+    const challanNumber = `${cleanBusinessName}${String(orderNumber).padStart(2, '0')}`;
+
+    const amountDue = totalAmount - (amountPaid || 0);
+    const paymentStatus = amountDue === 0 ? 'Paid' : (amountPaid || 0) > 0 ? 'Partial' : 'Pending';
+
+    // Create order
     const order = await WholesaleOrder.create([{
       challanNumber,
       buyerId: buyer._id,
@@ -2459,16 +2654,16 @@ const createOrderWithReservedBorrow = async (req, res) => {
       gstNumber: gstNumber || '',
       deliveryDate: deliveryDate || null,
       items,
-      subtotalAmount: calculatedSubtotal,
+      subtotalAmount,
       discountType: discountType || 'none',
       discountValue: discountValue || 0,
-      discountAmount: calculatedDiscountAmount,
+      discountAmount,
       gstEnabled: gstEnabled !== false,
-      gstPercentage: gstPercentage,           // STORE THE PERCENTAGE USED
-      gstAmount: calculatedGstAmount,         // ✅ BACKEND CALCULATED
-      cgst: calculatedCgst,                   // ✅ BACKEND CALCULATED
-      sgst: calculatedSgst,                   // ✅ BACKEND CALCULATED
-      totalAmount: calculatedTotalAmount,     // ✅ BACKEND CALCULATED
+      gstPercentage: gstPercentage || 5,
+      gstAmount,
+      cgst,
+      sgst,
+      totalAmount,
       amountPaid: amountPaid || 0,
       amountDue,
       paymentStatus,
@@ -2478,14 +2673,14 @@ const createOrderWithReservedBorrow = async (req, res) => {
       fulfillmentType: fulfillmentType || 'warehouse',
       organizationId,
       createdBy: {
-        userId: req.user._id,
+        userId: req.user.id,
         userName: req.user.name || req.user.email,
         userRole: req.user.role
       },
       createdAt: new Date()
     }], { session });
 
-    // Update buyer's total due
+    // Update buyer
     buyer.totalDue = (buyer.totalDue || 0) + amountDue;
     buyer.totalOrders = (buyer.totalOrders || 0) + 1;
     buyer.lastOrderDate = new Date();
@@ -2493,19 +2688,19 @@ const createOrderWithReservedBorrow = async (req, res) => {
 
     await session.commitTransaction();
 
-    logger.info('Wholesale order created with reserved borrow', {
+    logger.info('Order created with proportional emergency borrow', {
       orderId: order[0]._id,
       challanNumber,
-      totalAmount: calculatedTotalAmount,
-      gstPercentage,
-      gstAmount: calculatedGstAmount
+      itemsBorrowed: borrowItems?.length || 0,
+      allocationChanges: allocationChanges.length,
+      transferLogs: transferLogs.length
     });
 
     res.status(201).json(order[0]);
 
   } catch (error) {
     await session.abortTransaction();
-    logger.error('Wholesale order with reserved borrow failed', { error: error.message });
+    logger.error('Order with reserved borrow failed', { error: error.message, stack: error.stack });
     res.status(500).json({
       code: 'ORDER_CREATION_FAILED',
       message: 'Failed to create order',
