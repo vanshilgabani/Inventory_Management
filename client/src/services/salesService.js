@@ -169,11 +169,11 @@ export const salesService = {
   });
   return response.data;
 },
-  // Add this to your salesService.js
-  searchGlobally: async (query) => {
-    const response = await api.get('/sales/search-global', {
-      params: { query }
-    });
+
+  searchGlobally: async (query, statusFilter = null) => {
+    const params = { query };
+    if (statusFilter) params.statusFilter = statusFilter;  // ✅ pass status for status-keyword search
+    const response = await api.get('/sales/search-global', { params });
     return response.data;
   },
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {salesService} from '../services/salesService';
 import {settlementService} from '../services/settlementService';
 import {settingsService} from '../services/settingsService';
@@ -164,6 +164,7 @@ const [stats, setStats] = useState({
   dispatched: 0,
   returned: 0,
   cancelled: 0,
+  RTO: 0,
   wrongreturn: 0
 });
 
@@ -180,6 +181,21 @@ const [stats, setStats] = useState({
 
     // ============ HELPER FUNCTIONS ============
   
+    // ✅ Computed display groups — applies statusFilter when on returns tab
+    const displayDateGroups = useMemo(() => {
+      const source = filteredOrders || dateGroups;
+      if (activeTab === 'returned' && statusFilter !== 'all') {
+        return source
+          .map(group => {
+            const orders = group.orders.filter(o => o.status === statusFilter);
+            if (!orders.length) return null;
+            return { ...group, orders, orderCount: orders.length };
+          })
+          .filter(Boolean);
+      }
+      return source;
+    }, [filteredOrders, dateGroups, activeTab, statusFilter]);
+
   const formatDateCustom = (dateString) => {
     if (!dateString) return '-';
     const date = new Date(dateString);
@@ -195,7 +211,7 @@ const [stats, setStats] = useState({
       dispatched: 'bg-yellow-100 text-yellow-800',
       delivered: 'bg-green-100 text-green-800',
       returned: 'bg-red-100 text-red-800',
-      cancelled: 'bg-gray-100 text-gray-800',
+      RTO: 'bg-gray-100 text-gray-800',
       wrong_return: 'bg-orange-100 text-orange-800'
     };
 
@@ -338,7 +354,7 @@ const fetchDateGroups = async (reset = true) => {
       selectedAccount,
       activeTab === 'dispatched' ? 'dispatched' :
       activeTab === 'delivered' ? 'delivered' :
-      activeTab === 'returned' ? 'returned,cancelled,wrongreturn' :
+      activeTab === 'returned' ? 'returned,cancelled,wrongreturn,RTO' :
       'all',
       start,
       end,
@@ -441,7 +457,7 @@ const handleStatClick = (status) => {
     }
   } else if (status === 'delivered') {
     setActiveTab('delivered');
-  } else if (['returned', 'cancelled', 'wrongreturn'].includes(status)) {
+  } else if (['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(status)) {
     setActiveTab('returned');
   }
 };
@@ -535,6 +551,57 @@ const handleSearch = useCallback(async (searchValue) => {
 
   const query = searchValue.trim();
   setSearchQuery(query);
+
+  // ✅ STATUS KEYWORD SEARCH — must come before date check
+  const STATUS_SEARCH_MAP = {
+    'wrongreturn': 'wrongreturn',
+    'wrong return': 'wrongreturn',
+    'wrong': 'wrongreturn',
+    'wro': 'wrongreturn',
+    'rto': 'RTO',
+    'returned': 'returned',
+    'return': 'returned',
+    'ret': 'returned',
+    'dispatched': 'dispatched',
+    'dispatch': 'dispatched',
+    'dis': 'dispatched',
+    'cancelled': 'cancelled',
+    'cancel': 'cancelled',
+    'delivered': 'delivered',
+  };
+  const queryLower = query.toLowerCase();
+  const matchedStatusKey = Object.keys(STATUS_SEARCH_MAP).find(
+    key => queryLower === key || queryLower.includes(key)
+  );
+  if (matchedStatusKey) {
+    const matchedStatus = STATUS_SEARCH_MAP[matchedStatusKey];
+    setSearchType('order');
+    const allOrders = dateGroups.flatMap(dg => dg.orders);
+    const localResults = allOrders.filter(sale => sale.status === matchedStatus);
+    if (localResults.length > 0) {
+      setModalOrders(localResults);
+      setShowSearchModal(true);
+      toast.success(`Found ${localResults.length} ${matchedStatus} orders`);
+      return;
+    }
+    // Not found locally — backend fallback
+    setIsSearching(true);
+    try {
+      const result = await salesService.searchGlobally(query, matchedStatus);
+      if (result.found && result.orders.length > 0) {
+        setModalOrders(result.orders);
+        setShowSearchModal(true);
+        toast.success(`Found ${result.orders.length} ${matchedStatus} orders`);
+      } else {
+        toast.error(`No ${matchedStatus} orders found`);
+      }
+    } catch (error) {
+      toast.error('Search failed');
+    } finally {
+      setIsSearching(false);
+    }
+    return;
+  }
 
   // Check if input is a date (26/1/2026, 26/01/26, 26-1-2026, etc.)
   const datePatterns = [
@@ -708,7 +775,7 @@ const handleSearchKeyPress = (e) => {
 // Navigate to specific order from search results
 const navigateToOrder = (order) => {
   // Map status to correct tab
-  const tab = (order.status === 'returned' || order.status === 'cancelled' || order.status === 'wrongreturn') 
+  const tab = (order.status === 'returned' || order.status === 'RTO' || order.status === 'wrongreturn') 
     ? 'returned' 
     : order.status;
   
@@ -2084,10 +2151,10 @@ const handleDelete = async (id) => {
         /* ORDERS STATS */
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           {[
-            { id: 'all', label: 'Total Orders', icon: FiShoppingBag, color: 'text-purple-600', bg: 'bg-purple-50', count: stats.dispatched + stats.returned + stats.cancelled + stats.wrongreturn, disabled: true },
+            { id: 'all', label: 'Total Orders', icon: FiShoppingBag, color: 'text-purple-600', bg: 'bg-purple-50', count: stats.dispatched + stats.returned + stats.RTO + stats.wrongreturn, disabled: true },
             { id: 'dispatched', label: 'Dispatched', icon: FiTruck, color: 'text-yellow-600', bg: 'bg-yellow-50', count: stats.dispatched },
             { id: 'returned', label: 'Returns', icon: FiRotateCcw, color: 'text-red-600', bg: 'bg-red-50', count: stats.returned },
-            { id: 'cancelled', label: 'Cancelled', icon: FiXCircle, color: 'text-gray-600', bg: 'bg-gray-100', count: stats.cancelled },
+            { id: 'RTO', label: 'RTO', icon: FiXCircle, color: 'text-gray-600', bg: 'bg-gray-100', count: stats.RTO },
             { id: 'wrongreturn', label: 'Wrong Return', icon: FiAlertTriangle, color: 'text-orange-600', bg: 'bg-orange-50', count: stats.wrongreturn }
           ].map(card => (
             <div
@@ -2119,7 +2186,7 @@ const handleDelete = async (id) => {
       <div className="bg-white rounded-lg p-1 shadow-sm flex space-x-1 overflow-x-auto">
         {[
           { id: 'dispatched', label: 'Dispatched', icon: FiTruck },
-          { id: 'returned', label: 'Returns & Cancelled', icon: FiRotateCcw },
+          { id: 'returned', label: 'Returns', icon: FiRotateCcw },
           ...(showSettlementsTab ? [{ id: 'settlements', label: 'Settlements', icon: FiDollarSign }] : [])
         ].map(tab => (
           <button
@@ -2186,7 +2253,7 @@ const handleDelete = async (id) => {
                   filteredGroupOrders = dateGroup.orders.filter(order => order.status === 'delivered');
                 } else if (activeTab === 'returned') {
                   filteredGroupOrders = dateGroup.orders.filter(order => 
-                    ['returned', 'cancelled', 'wrongreturn'].includes(order.status)
+                    ['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(order.status)
                   );
                 }
                 
@@ -2201,6 +2268,17 @@ const handleDelete = async (id) => {
                   orderCount: filteredGroupOrders.length,
                 };
               }).filter(Boolean); // Remove null groups
+            }
+
+            // ✅ Apply statusFilter for returns tab (stat card click filtering)
+            if (activeTab === 'returned' && statusFilter !== 'all') {
+              displayOrders = displayOrders
+                .map(dateGroup => {
+                  const filtered = dateGroup.orders.filter(order => order.status === statusFilter);
+                  if (filtered.length === 0) return null;
+                  return { ...dateGroup, orders: filtered, orderCount: filtered.length };
+                })
+                .filter(Boolean);
             }
 
             // ✅ Check if no orders
@@ -2478,7 +2556,7 @@ const handleDelete = async (id) => {
                                               </div>
                                             </div>
 
-                                            {['returned', 'cancelled', 'wrongreturn'].includes(sale.status) && (
+                                            {['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(sale.status) && (
                                               <div className="mt-3 pt-3 border-t border-gray-200">
                                                 <div className="flex items-center justify-between text-xs">
                                                   <div className="flex items-center gap-2 text-gray-600">
@@ -2491,7 +2569,7 @@ const handleDelete = async (id) => {
                                                   <div className="flex items-center gap-2 text-red-600">
                                                     <FiRotateCcw />
                                                     <span>
-                                                      {sale.status === 'returned' ? 'Returned' : sale.status === 'cancelled' ? 'Cancelled' : 'Wrong Return'}:
+                                                      {sale.status === 'returned' ? 'Returned' : sale.status === 'RTO' ? 'RTO' : 'Wrong Return'}:
                                                     </span>
                                                     <span className="font-semibold">
                                                       {formatDateCustom(sale.displayDate || sale.saleDate)}
@@ -2748,7 +2826,7 @@ const handleDelete = async (id) => {
                   <option value="dispatched">Dispatched / In Transit</option>
                   <option value="returned">Returned</option>
                   <option value="wrongreturn">Wrong Return</option>
-                  <option value="cancelled">Cancelled</option>
+                  <option value="RTO">RTO</option>
                 </select>
               </div>
               {editingSale && (
@@ -3472,6 +3550,16 @@ const handleDelete = async (id) => {
                         <div className="flex gap-2 ml-4">
                           <button
                             onClick={() => {
+                                setViewingHistory(sale);
+                                setShowSearchModal(false);
+                            }}
+                              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                              title="View History"
+                            >
+                            <FiClock className="text-gray-600" />
+                          </button>
+                          <button
+                            onClick={() => {
                               handleEdit(sale);
                               setShowSearchModal(false);
                             }}
@@ -3568,7 +3656,7 @@ const handleDelete = async (id) => {
                                   order.status === 'dispatched' ? 'bg-yellow-500' :
                                   order.status === 'delivered' ? 'bg-green-500' :
                                   order.status === 'returned' ? 'bg-red-500' :
-                                  order.status === 'cancelled' ? 'bg-gray-500' :
+                                  order.status === 'RTO' ? 'bg-gray-500' :
                                   'bg-orange-500'
                                 }`} />
                                 <h3 className="font-bold text-lg text-gray-900">
@@ -3662,7 +3750,7 @@ const handleDelete = async (id) => {
                             <option value="">-- Select Account --</option>
                             {marketplaceAccounts.map((acc) => (
                               <option key={acc.id} value={acc.accountName}>
-                                {acc.accountName} ({acc.platform})
+                                {acc.accountName}
                               </option>
                             ))}
                           </select>
@@ -3713,7 +3801,7 @@ const handleDelete = async (id) => {
                                 border border-gray-300 rounded-lg"
                             />
                             <p className="text-xs text-gray-500 mt-2">
-                              Download CSV from Flipkart Seller Portal → Orders → Dispatched
+                              Download CSV from Flipkart Seller Portal → Orders → Pending Handover (OR) Dispatched Orders → Download Orders List
                             </p>
                           </div>
                         )}
