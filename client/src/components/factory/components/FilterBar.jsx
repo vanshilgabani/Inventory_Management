@@ -7,35 +7,32 @@ const FilterBar = ({ filters, onFilterChange, showExport, onExport, showStatusFi
   const handleQuickFilter = (type) => {
     const today = new Date();
     let dateFrom = null;
+    let dateTo = null;
 
     switch (type) {
-      case 'today':
-        dateFrom = today.toISOString().split('T')[0];
+      case 'this-month': {
+        // 1st of current month → today
+        const start = new Date(today.getFullYear(), today.getMonth(), 1);
+        dateFrom = start.toISOString().split('T')[0];
+        dateTo = today.toISOString().split('T')[0];
         break;
-      case 'yesterday':
-        const yesterday = new Date(today);
-        yesterday.setDate(yesterday.getDate() - 1);
-        dateFrom = yesterday.toISOString().split('T')[0];
+      }
+      case 'last-month': {
+        // 1st of last month → last day of last month
+        const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const end = new Date(today.getFullYear(), today.getMonth(), 0); // day 0 = last day of prev month
+        dateFrom = start.toISOString().split('T')[0];
+        dateTo = end.toISOString().split('T')[0];
         break;
-      case 'last7':
-        const last7 = new Date(today);
-        last7.setDate(last7.getDate() - 7);
-        dateFrom = last7.toISOString().split('T')[0];
-        break;
-      case 'last30':
-        const last30 = new Date(today);
-        last30.setDate(last30.getDate() - 30);
-        dateFrom = last30.toISOString().split('T')[0];
-        break;
+      }
+      case 'all':
       default:
         dateFrom = null;
+        dateTo = null;
+        break;
     }
 
-    const newFilters = {
-      ...localFilters,
-      dateFrom,
-      dateTo: type !== 'all' ? today.toISOString().split('T')[0] : null,
-    };
+    const newFilters = { ...localFilters, dateFrom, dateTo };
     setLocalFilters(newFilters);
     onFilterChange(newFilters);
   };
@@ -61,28 +58,16 @@ const FilterBar = ({ filters, onFilterChange, showExport, onExport, showStatusFi
       {!showStatusFilter && (
         <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => handleQuickFilter('today')}
+            onClick={() => handleQuickFilter('this-month')}
             className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors"
           >
-            Today
+            This Month
           </button>
           <button
-            onClick={() => handleQuickFilter('yesterday')}
+            onClick={() => handleQuickFilter('last-month')}
             className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors"
           >
-            Yesterday
-          </button>
-          <button
-            onClick={() => handleQuickFilter('last7')}
-            className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors"
-          >
-            Last 7 Days
-          </button>
-          <button
-            onClick={() => handleQuickFilter('last30')}
-            className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors"
-          >
-            Last 30 Days
+            Last Month
           </button>
           <button
             onClick={() => handleQuickFilter('all')}
