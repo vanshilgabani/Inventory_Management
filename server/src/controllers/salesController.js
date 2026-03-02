@@ -2397,8 +2397,10 @@ exports.getOrdersByDate = async (req, res) => {
 exports.searchOrderGlobally = async (req, res) => {
   try {
     const { query, statusFilter } = req.query;
-    const { organizationId } = req.user.organizationId; // ← FIXED: destructure correctly
+    const organizationId = req.organizationId; // ← FIXED: destructure correctly
 
+    console.log('SEARCH orgId:', organizationId, 'user._id:', req.user._id, 'user.orgId:', req.user.organizationId);
+    
     // STATUS-BASED SEARCH (when user types "rto", "returned", etc.)
     if (statusFilter) {
       const orders = await MarketplaceSale.find({
@@ -2467,7 +2469,7 @@ exports.searchOrderGlobally = async (req, res) => {
 exports.searchByDate = async (req, res) => {
   try {
     const { date, accountName, status } = req.query;
-    const { organizationId } = req.user; // ← already correct
+    const organizationId = req.organizationId;  // ← already correct
 
     if (!date) {
       return res.status(400).json({ success: false, message: 'Date parameter is required' });
