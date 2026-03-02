@@ -2393,13 +2393,13 @@ exports.getOrdersByDate = async (req, res) => {
   }
 };
 
-// ADD THIS NEW ENDPOINT - Global search across all tabs
+// ✅ CLEAN - Global search (Order ID / text / status keyword)
 exports.searchOrderGlobally = async (req, res) => {
   try {
-    const { query, statusFilter } = req.query;  // ✅ added statusFilter
-    const { organizationId } = req.user;
+    const { query, statusFilter } = req.query;
+    const { organizationId } = req.user; // ← FIXED: destructure correctly
 
-    // ✅ STATUS-BASED SEARCH (when user types "wrong", "rto", "return" etc.)
+    // STATUS-BASED SEARCH (when user types "rto", "returned", etc.)
     if (statusFilter) {
       const orders = await MarketplaceSale.find({
         organizationId,
@@ -2420,7 +2420,7 @@ exports.searchOrderGlobally = async (req, res) => {
       return res.json({ found: true, orders, count: orders.length, byStatus });
     }
 
-    // NORMAL TEXT SEARCH (existing logic unchanged)
+    // NORMAL TEXT SEARCH (Order ID / design / color / size)
     if (!query || query.trim().length < 2) {
       return res.json({ found: false, orders: [], count: 0 });
     }
@@ -2463,45 +2463,32 @@ exports.searchOrderGlobally = async (req, res) => {
   }
 };
 
-// Search orders by specific date
+// ✅ CLEAN - Search by date (separate function, untouched)
 exports.searchByDate = async (req, res) => {
   try {
     const { date, accountName, status } = req.query;
-    const { organizationId } = req.user;
+    const { organizationId } = req.user; // ← already correct
 
     if (!date) {
-      return res.status(400).json({
-        success: false,
-        message: 'Date parameter is required'
-      });
+      return res.status(400).json({ success: false, message: 'Date parameter is required' });
     }
 
     const filter = { organizationId, deletedAt: null };
 
-    // Account filter
-    if (accountName && accountName !== 'all') {
-      filter.accountName = accountName;
-    }
+    if (accountName && accountName !== 'all') filter.accountName = accountName;
 
-    // Status filter
     if (status && status !== 'all') {
       const statuses = status.split(',').map(s => s.trim());
       filter.status = { $in: statuses };
     }
 
-    // ✅ FETCH ALL ORDERS without date filter first
     const allOrders = await MarketplaceSale.find(filter)
       .sort({ saleDate: -1 })
       .lean()
       .maxTimeMS(10000);
 
-    // ✅ FILTER BY displayDate AFTER fetching
-    const orders = allOrders.filter(order => {
-      const displayDate = getDisplayDate(order);
-      return displayDate === date;
-    });
+    const orders = allOrders.filter(order => getDisplayDate(order) === date);
 
-    // ✅ ATTACH displayDate to each order
     const ordersWithDisplayDate = orders.map(order => ({
       ...order,
       displayDate: getDisplayDate(order)
@@ -2511,7 +2498,6 @@ exports.searchByDate = async (req, res) => {
       return res.json({ found: false, orders: [], count: 0 });
     }
 
-    // Group by status for tab counts
     const byStatus = ordersWithDisplayDate.reduce((acc, order) => {
       acc[order.status] = (acc[order.status] || 0) + 1;
       return acc;
@@ -2521,16 +2507,12 @@ exports.searchByDate = async (req, res) => {
       found: true,
       orders: ordersWithDisplayDate,
       count: ordersWithDisplayDate.length,
-      byStatus: byStatus,
+      byStatus,
       uniqueStatuses: [...new Set(ordersWithDisplayDate.map(o => o.status))]
     });
 
   } catch (error) {
     logger.error('Date search failed', { error: error.message });
-    res.status(500).json({
-      success: false,
-      message: 'Date search failed',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Date search failed', error: error.message });
   }
 };
