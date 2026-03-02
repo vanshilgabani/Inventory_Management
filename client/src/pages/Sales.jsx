@@ -1950,6 +1950,8 @@ const handleDelete = async (id) => {
         toast.success(`Status updated to ${newStatus}`);
       }
 
+      setShowSearchModal(false); 
+      setModalOrders([]);
       fetchStats();
       fetchDateGroups(true);
     } catch (error) {
