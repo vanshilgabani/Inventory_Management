@@ -580,12 +580,7 @@ const handleSearch = useCallback(async (searchValue) => {
     setSearchType('order');
     const allOrders = dateGroups.flatMap(dg => dg.orders);
     const localResults = allOrders.filter(sale => sale.status === matchedStatus);
-    if (localResults.length > 0) {
-      setModalOrders(localResults);
-      setShowSearchModal(true);
-      toast.success(`Found ${localResults.length} ${matchedStatus} orders`);
-      return;
-    }
+
     // Not found locally — backend fallback
     setIsSearching(true);
     try {
@@ -648,14 +643,6 @@ const handleSearch = useCallback(async (searchValue) => {
       return saleDate === searchDate;
     });
 
-    if (localResults.length > 0) {
-      console.log(`Found ${localResults.length} results for date ${searchDate} locally`);
-      const grouped = groupOrdersByDate(localResults);
-      setFilteredOrders(grouped);
-      toast.success(`Found ${localResults.length} order(s) for ${query}`);
-      return;
-    }
-
     // Not found locally - search backend
     console.log('Date not found locally, searching backend...');
     setIsSearching(true);
@@ -692,14 +679,6 @@ const handleSearch = useCallback(async (searchValue) => {
         sale.size?.toLowerCase().includes(q)
       );
     });
-
-    if (localResults.length > 0) {
-      console.log(`Found ${localResults.length} results locally`);
-      setModalOrders(localResults);
-      setShowSearchModal(true);
-      toast.success(`Found ${localResults.length} order(s)`);
-      return;
-    }
 
     // Not found locally - search globally (backend)
     console.log('Not found locally, searching globally...');
