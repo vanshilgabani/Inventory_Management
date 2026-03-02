@@ -2397,7 +2397,7 @@ exports.getOrdersByDate = async (req, res) => {
 exports.searchOrderGlobally = async (req, res) => {
   try {
     const { query, statusFilter } = req.query;  // ✅ added statusFilter
-    const organizationId = req.user;
+    const { organizationId } = req.user;
 
     // ✅ STATUS-BASED SEARCH (when user types "wrong", "rto", "return" etc.)
     if (statusFilter) {
