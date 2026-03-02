@@ -27,14 +27,6 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, []);
 
-  useEffect(() => {
-  const timer = setTimeout(() => {
-    checkAuth();
-  }, 100); // ✅ Small delay to ensure localStorage is ready
-  
-  return () => clearTimeout(timer);
-}, []);
-
   const checkAuth = async () => {
   const token = localStorage.getItem('token');
   const userData = localStorage.getItem('user');
@@ -50,7 +42,7 @@ export const AuthProvider = ({ children }) => {
       
       const parsedUser = JSON.parse(userData);
       setUser(parsedUser);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+
     } catch (error) {
       console.error('Auth check failed:', error);
       // ✅ Clear invalid data
@@ -93,7 +85,6 @@ const login = async (email, password) => {
 
     localStorage.setItem('token', token);
     localStorage.setItem('user', JSON.stringify(userData));
-    axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
 
     setUser(userData);
 
@@ -118,7 +109,6 @@ const login = async (email, password) => {
       
       localStorage.setItem('token', token);
       localStorage.setItem('user', JSON.stringify(newUser));
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       
       setUser(newUser);
       return { success: true };
@@ -133,8 +123,7 @@ const login = async (email, password) => {
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    delete axios.defaults.headers.common['Authorization'];
-    setUser(null);
+    window.location.href = '/login';
   };
 
   // Check if user is admin
