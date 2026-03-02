@@ -540,7 +540,6 @@ const formatDateLabel = (dateString) => {
 };
 
 // Enhanced search with date filtering
-// Enhanced search with date filtering
 const handleSearch = useCallback(async (searchValue) => {
   if (!searchValue || !searchValue.trim()) {
     setSearchQuery('');
@@ -571,17 +570,27 @@ const handleSearch = useCallback(async (searchValue) => {
     'cancel': 'cancelled',
     'delivered': 'delivered',
   };
+
   const queryLower = query.toLowerCase();
   const matchedStatusKey = Object.keys(STATUS_SEARCH_MAP).find(
     key => queryLower === key || queryLower.includes(key)
   );
+
   if (matchedStatusKey) {
     const matchedStatus = STATUS_SEARCH_MAP[matchedStatusKey];
     setSearchType('order');
     const allOrders = dateGroups.flatMap(dg => dg.orders);
-    const localResults = allOrders.filter(sale => sale.status === matchedStatus);
 
-    // Not found locally — backend fallback
+    // ✅ Check locally first (only 5 date groups loaded)
+    const localResults = allOrders.filter(sale => sale.status === matchedStatus);
+    if (localResults.length > 0) {
+      setModalOrders(localResults);
+      setShowSearchModal(true);
+      toast.success(`Found ${localResults.length} ${matchedStatus} orders`);
+      return;
+    }
+
+    // Not found locally — search ALL orders in backend
     setIsSearching(true);
     try {
       const result = await salesService.searchGlobally(query, matchedStatus);
@@ -600,9 +609,9 @@ const handleSearch = useCallback(async (searchValue) => {
     return;
   }
 
-  // Check if input is a date (26/1/2026, 26/01/26, 26-1-2026, etc.)
+  // ✅ DATE PATTERN CHECK
   const datePatterns = [
-    /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/, // 26/1/2026 or 26/01/26 or 26-1-2026
+    /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/,
   ];
 
   let isDateSearch = false;
@@ -613,43 +622,39 @@ const handleSearch = useCallback(async (searchValue) => {
     if (match) {
       isDateSearch = true;
       let [, day, month, year] = match;
-      
-      // Pad single digits
       day = day.padStart(2, '0');
       month = month.padStart(2, '0');
-      
-      // Handle 2-digit year
-      if (year.length === 2) {
-        year = '20' + year;
-      }
-      
-      // Create date in YYYY-MM-DD format
+      if (year.length === 2) year = '20' + year;
       searchDate = `${year}-${month}-${day}`;
       console.log('📅 Date search detected:', searchDate);
       break;
     }
   }
 
-  // STEP 1: Search locally in current loaded orders
   const allOrders = dateGroups.flatMap(dg => dg.orders);
-  
+
   if (isDateSearch && searchDate) {
     // ============ DATE SEARCH ============
     setSearchType('date');
-    
-    // Filter by date (local)
+
+    // ✅ Check locally first
     const localResults = allOrders.filter(sale => {
       const saleDate = new Date(sale.saleDate).toISOString().split('T')[0];
       return saleDate === searchDate;
     });
 
-    // Not found locally - search backend
-    console.log('Date not found locally, searching backend...');
+    if (localResults.length > 0) {
+      const grouped = groupOrdersByDate(localResults);
+      setFilteredOrders(grouped);
+      toast.success(`Found ${localResults.length} order(s) for ${query}`);
+      return;
+    }
+
+    // Not found locally — search backend
+    console.log('📅 Date not found locally, searching backend...');
     setIsSearching(true);
-    
     try {
       const result = await salesService.searchByDate(searchDate, selectedAccount, activeTab);
-      
       if (result.found && result.orders.length > 0) {
         const grouped = groupOrdersByDate(result.orders);
         setFilteredOrders(grouped);
@@ -664,29 +669,34 @@ const handleSearch = useCallback(async (searchValue) => {
     } finally {
       setIsSearching(false);
     }
+
   } else {
     // ============ ORDER ID / ORDER ITEM ID SEARCH ============
     setSearchType('order');
-    
-    // Text search (local) - for Order ID or Order Item ID
-    const localResults = allOrders.filter(sale => {
-      const q = query.toLowerCase();
-      return (
-        sale.orderItemId?.toLowerCase().includes(q) ||
-        sale.marketplaceOrderId?.toLowerCase().includes(q) ||
-        sale.design?.toLowerCase().includes(q) ||
-        sale.color?.toLowerCase().includes(q) ||
-        sale.size?.toLowerCase().includes(q)
-      );
-    });
 
-    // Not found locally - search globally (backend)
-    console.log('Not found locally, searching globally...');
+    const q = query.toLowerCase();
+
+    // ✅ Check locally first (instant, no API call)
+    const localResults = allOrders.filter(sale =>
+      sale.orderItemId?.toLowerCase().includes(q) ||
+      sale.marketplaceOrderId?.toLowerCase().includes(q) ||
+      sale.design?.toLowerCase().includes(q) ||
+      sale.color?.toLowerCase().includes(q) ||
+      sale.size?.toLowerCase().includes(q)
+    );
+
+    if (localResults.length > 0) {
+      setModalOrders(localResults);
+      setShowSearchModal(true);
+      toast.success(`Found ${localResults.length} order(s)`);
+      return; // ✅ Skip backend — already found
+    }
+
+    // Not found in loaded 5 date groups — search ALL orders in backend
+    console.log('🔍 Not found locally, searching globally...');
     setIsSearching(true);
-    
     try {
       const result = await salesService.searchGlobally(query);
-
       if (result.found && result.orders.length > 0) {
         setModalOrders(result.orders);
         setShowSearchModal(true);
