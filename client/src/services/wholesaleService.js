@@ -118,7 +118,7 @@ const previewPaymentAllocation = async (buyerId, amount) => {
 // Get bulk payment history
 const getBulkPaymentHistory = async (buyerId) => {
   const response = await api.get(`/wholesale/buyers/${buyerId}/payment-history`);
-  return response.data.data;
+  return response.data;
 };
 
 // Update bulk payment (Admin only)

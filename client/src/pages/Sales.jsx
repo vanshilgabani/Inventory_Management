@@ -53,6 +53,7 @@ const Sales = () => {
   const [products, setProducts] = useState([]);
   const [marketplaceAccounts, setMarketplaceAccounts] = useState([]);
   const [stockLockSettings, setStockLockSettings] = useState({ enabled: false, lockValue: 0, maxThreshold: 0 });
+  const [quickUpdateLoading, setQuickUpdateLoading] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -119,6 +120,7 @@ const Sales = () => {
     showPanel: false
   });
   const [isSearching, setIsSearching] = useState(false);
+  const [hoveredOrderId, setHoveredOrderId] = useState(null);
 
   // ============ TIMELINE VIEW ============
   const [expandedDate, setExpandedDate] = useState(null);
@@ -785,86 +787,84 @@ const navigateToOrder = (order) => {
   toast.success(`Viewing in ${order.status} tab`, { duration: 2000 });
 };
 
-// ✅ UPDATED SKU PARSER - Handles underscore format
+// ─── SKU PARSER ─── Universal, SaaS-compatible
 const parseFlipkartSKU = (sku) => {
   if (!sku) return { design: null, color: null, size: null };
 
-  // Remove # and commas, trim
-  const cleaned = sku.replace(/#/g, '').replace(/,/g, '').trim();
+  const sizeMap = {
+    '28': 'S', '30': 'M', '32': 'L', '34': 'XL',
+    '36': 'XXL', '38': '3XL', '40': '4XL', '42': '5XL',
+  };
 
-  // ✅ CHECK FOR UNDERSCORE (Color_Size format)
+  const normalizeColor = (c) => c?.replace(/\./g, ' ').replace(/_/g, ' ').trim() || null;
+  const normalizeSize  = (s) => { const t = s?.trim(); return sizeMap[t] || t || null; };
+  const cleaned        = sku.replace(/#/g, '').replace(/,/g, '').trim();
+
+  // ── PRIORITY 1: Mixed prefix + D-NO-{num} + COLOR_SIZE
+  // Handles: MN-D-NO-10-DARKGREY_32, BRAND-D-NO-5-NAVY_34
+  const dnoMatch = cleaned.match(/(?:.*-)?D-NO-(\d+)-([^_]+)_(\w+)$/i);
+  if (dnoMatch) {
+    return {
+      design: `D${dnoMatch[1]}`,
+      color:  normalizeColor(dnoMatch[2]),
+      size:   normalizeSize(dnoMatch[3]),
+    };
+  }
+
+  // ── PRIORITY 2: Underscore = Color_Size at end
+  // Handles: MN-D10-DARKGREY_32, D9-NAVY_30, BRAND-D13-L.GREY_36
   if (cleaned.includes('_')) {
-    // Format: XXX-XXX-XXX-Color_Size
-    const parts = cleaned.split('-');
-    
-    if (parts.length < 2) {
-      return { design: null, color: null, size: null };
-    }
-
-    // Last part contains Color_Size
+    const parts    = cleaned.split('-');
     const lastPart = parts[parts.length - 1];
-    
-    if (lastPart.includes('_')) {
-      const [colorPart, sizePart] = lastPart.split('_');
-      
-      // Design is everything except the last part
-      const design = parts.slice(0, -1).join('-');
-      const color = colorPart.trim();
-      let size = sizePart.trim();
-      
-      // Convert numeric size to letter (30 -> M, 32 -> L, 34 -> XL, 36 -> XXL)
-      const sizeMap = {
-        '28': 'S',
-        '30': 'M',
-        '32': 'L',
-        '34': 'XL',
-        '36': 'XXL',
-        '38': 'XXXL'
-      };
-      
-      size = sizeMap[size] || size;
-      
+
+    if (lastPart.includes('_') && parts.length >= 2) {
+      const uIdx     = lastPart.indexOf('_');
+      const colorRaw = lastPart.slice(0, uIdx);
+      const sizeRaw  = lastPart.slice(uIdx + 1);
+      const prefix   = parts.slice(0, -1).join('-'); // everything before Color_Size
+
+      // Try to extract D{num} design from prefix
+      // e.g. "MN-D10" → D10,  "D13" → D13
+      const dMatch = prefix.match(/(?:^|-)(D\d{1,3})(?:-|$)/i);
+
       return {
-        design: design || null,
-        color: color || null,
-        size: size || null
+        design: dMatch ? dMatch[1].toUpperCase() : (prefix || null),
+        color:  normalizeColor(colorRaw),
+        size:   normalizeSize(sizeRaw),
       };
     }
   }
 
-  // ✅ STANDARD DASH FORMAT (existing logic)
+  // ── PRIORITY 3: Standard dash-only format
   const parts = cleaned.split('-');
-
   if (parts.length < 3) return { design: null, color: null, size: null };
 
   let design, color, size;
 
-  // Pattern 1: D-11-KHAKHI-XL (D and number separate)
   if (parts[0] === 'D' && !isNaN(parts[1])) {
+    // D-11-KHAKHI-XL
     design = 'D' + parts[1];
-    color = parts.slice(2, -1).join('-');
-    size = parts[parts.length - 1];
-  } 
-  // Pattern 2: D9-L.GREY-L (D and number together)
-  else if (parts[0].startsWith('D') && !isNaN(parts[0].substring(1))) {
-    design = parts[0];
-    color = parts.slice(1, -1).join('-');
-    size = parts[parts.length - 1];
-  } 
-  // Pattern 3: Multi-part design
-  else {
-    const lastPart = parts[parts.length - 1];
-    size = lastPart;
-    color = parts[parts.length - 2];
+    color  = parts.slice(2, -1).join('-');
+    size   = parts[parts.length - 1];
+
+  } else if (/^D\d+$/i.test(parts[0])) {
+    // D9-L.GREY-L  or  D13-NAVY-XL
+    design = parts[0].toUpperCase();
+    color  = parts.slice(1, -1).join('-');
+    size   = parts[parts.length - 1];
+
+  } else {
+    // Fallback: last = size, second-last = color, rest = design
+    size   = parts[parts.length - 1];
+    color  = parts[parts.length - 2];
     design = parts.slice(0, -2).join('-');
   }
 
-  // Clean color (remove dots, spaces)
-  if (color) {
-    color = color.replace(/\./g, ' ').trim();
-  }
-
-  return { design, color, size };
+  return {
+    design: design || null,
+    color:  normalizeColor(color),
+    size:   normalizeSize(size),
+  };
 };
 
 const handleCSVUpload = (e) => {
@@ -965,11 +965,12 @@ const handleCSVUpload = (e) => {
         const sku = row['SKU'];
         const { design, color, size } = parseFlipkartSKU(sku);
 
-        if (!design || !color || !size) {
+        // ── If SKU is completely absent, fail it — nothing to work with ──
+        if (!sku || !sku.trim()) {
           preview.failed.push({
             row: rowNumber,
-            reason: 'Unable to parse SKU',
-            sku: sku || 'N/A',
+            reason: 'Missing SKU — no product identifier found',
+            sku: 'NA',
             orderId: row['Order Id']
           });
           return;
@@ -977,16 +978,28 @@ const handleCSVUpload = (e) => {
 
         const quantity = parseInt(row['Quantity']) || 1;
 
-        // Add to success
+        // Add to success — even if design/color/size are null (unmapped SKU will be caught later)
         preview.success.push({
-          design,
-          color,
-          size,
+          design:      design || '',
+          color:       color  || '',
+          size:        size   || '',
           quantity,
-          orderId: row['Order Id'],
-          orderItemId: row['ORDER ITEM ID']?.replace(/'/g, '').trim(),
-          sku
+          orderId:     row['Order Id'],
+          orderItemId: row['ORDER ITEM ID']?.replace(/\s/g, '').trim(),
+          sku,          // ← always include raw SKU so unmapped detection can key on it
         });
+
+        // Product breakdown — only add if fully parsed (for the preview table display)
+        if (design && color && size) {
+          const variantKey = `${design}-${color}-${size}`;
+          if (preview.productBreakdown.has(variantKey)) {
+            const existing = preview.productBreakdown.get(variantKey);
+            existing.quantity += quantity;
+            existing.orderCount += 1;
+          } else {
+            preview.productBreakdown.set(variantKey, { design, color, size, quantity, orderCount: 1 });
+          }
+        }
 
         // ✅ Product breakdown for preview
         const variantKey = `${design}-${color}-${size}`;
@@ -1096,10 +1109,19 @@ const handleImportSubmit = async () => {
 
       console.log(`  Row ${index + 1}: ${design}-${color}-${size} | Exists=${exists}`);
 
-      // If product doesn't exist in inventory AND no mapping exists, mark as unmapped
+      // If product doesnt exist in inventory AND no mapping exists, mark as unmapped
       if (!exists && !(sku && existingMappings[sku])) {
         if (!skuCounts[sku]) {
-          skuCounts[sku] = { sku, count: 0 };
+          skuCounts[sku] = {
+            sku,
+            count: 0,
+            // Pass already-parsed values so BulkSKUMappingModal can auto-fill dropdowns
+            parsed: {
+              design: design || '',
+              color: color || '',
+              size: size || '',
+            }
+          };
         }
         skuCounts[sku].count++;
       }
@@ -1319,7 +1341,7 @@ const detectPattern = () => {
     // Extract numeric size from SKU if present
     const sizeMatch = m.sku.match(/(\d{2})$/);
     if (sizeMatch) {
-      sizeMappings[sizeMatch[1]] = m.size;
+      sizeMappings[sizeMatch[0]] = m.size;
     }
 
     // Replace specific parts with placeholders
@@ -1923,6 +1945,39 @@ const handleDelete = async (id) => {
   const handleCopyOrderId = (orderId) => {
     navigator.clipboard.writeText(orderId);
     toast.success('Order ID copied to clipboard');
+  };
+
+  // Quick status update from search modal (RTO / Returned buttons)
+  const handleQuickStatusUpdate = async (sale, newStatus) => {
+    // Prevent double click — if already loading this order, skip
+    if (quickUpdateLoading) return;
+
+    setQuickUpdateLoading(`${sale._id}-${newStatus}`);
+    try {
+      const response = await salesService.updateSale(sale._id, {
+        status: newStatus,
+        comments: `Quick update to ${newStatus} from search`,
+        changedAt: new Date().toISOString().split('T')[0],
+      });
+
+      // Update badge in modal instantly
+      setModalOrders(prev =>
+        prev.map(o => o._id === sale._id ? { ...o, status: newStatus } : o)
+      );
+
+      if (response.stockRestored > 0) {
+        toast.success(`Marked as ${newStatus} · Stock restored: ${response.stockRestored}`);
+      } else {
+        toast.success(`Status updated to ${newStatus}`);
+      }
+
+      fetchStats();
+      fetchDateGroups(true);
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to update status');
+    } finally {
+      setQuickUpdateLoading(null);
+    }
   };
 
   const allOrders = dateGroups.flatMap(dg => dg.orders || []);
@@ -3493,114 +3548,229 @@ const handleDelete = async (id) => {
 
                 {/* Orders List in Modal */}
                 <div className="max-h-[600px] overflow-y-auto space-y-3">
-                  {modalOrders.map((sale) => (
-                    <div
-                      key={sale._id}
-                      className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-all bg-white"
-                    >
-                      <div className="flex justify-between items-start">
-                        {/* Left Side - Order Details */}
-                        <div className="flex-1 space-y-2">
-                          <div className="flex items-center gap-3">
-                            {getStatusBadge(sale.status)}
-                            <span className="text-xs text-gray-500">
-                              {formatDateCustom(sale.saleDate)}
-                            </span>
-                            <span className="text-xs font-medium text-gray-600">
-                              {sale.accountName}
-                            </span>
+                  {modalOrders.map((sale) => {
+                    const isHovered = hoveredOrderId === sale._id;
+                    const isAlreadyRTO = sale.status === 'RTO';
+                    const isAlreadyReturned = sale.status === 'returned';
+
+                    return (
+                      <div
+                        key={sale._id}
+                        className="border rounded-lg bg-white overflow-hidden"
+                        // Change this style on the outer card div:
+                        style={{
+                          borderColor: isHovered ? '#6366f1' : '#e5e7eb',
+                          boxShadow: isHovered
+                            ? '0 4px 16px rgba(99,102,241,0.12)'
+                            : '0 1px 3px rgba(0,0,0,0.06)',
+                          transform: isHovered ? 'translateY(-1px)' : 'translateY(0)',
+                          transition: 'all 0.12s ease',   // was 0.2s — now snappy
+                        }}
+                        onMouseEnter={() => setHoveredOrderId(sale._id)}
+                        onMouseLeave={() => setHoveredOrderId(null)}
+                      >
+                        {/* ── CARD BODY ── */}
+                        <div className="p-4">
+                          <div className="flex justify-between items-start">
+                            {/* Left Side - Order Details */}
+                            <div className="flex-1 space-y-2">
+                              <div className="flex items-center gap-3">
+                                {getStatusBadge(sale.status)}
+                                <span className="text-xs text-gray-500">
+                                  {formatDateCustom(sale.saleDate)}
+                                </span>
+                                <span className="text-xs font-medium text-gray-600">
+                                  {sale.accountName}
+                                </span>
+                              </div>
+
+                              {/* Highlight matching text */}
+                              <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                                <div>
+                                  <span className="text-gray-500">Order Item ID:</span>
+                                  <p className="font-semibold">
+                                    {sale.orderItemId?.toLowerCase().includes(searchQuery.toLowerCase()) ? (
+                                      <span className="bg-yellow-200 px-1 rounded">{sale.orderItemId}</span>
+                                    ) : (
+                                      sale.orderItemId || '-'
+                                    )}
+                                  </p>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Marketplace Order ID:</span>
+                                  <p className="font-semibold">
+                                    {sale.marketplaceOrderId?.toLowerCase().includes(searchQuery.toLowerCase()) ? (
+                                      <span className="bg-yellow-200 px-1 rounded">{sale.marketplaceOrderId}</span>
+                                    ) : (
+                                      sale.marketplaceOrderId || '-'
+                                    )}
+                                  </p>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Product:</span>
+                                  <p className="font-semibold">
+                                    {sale.design} - {sale.color} - {sale.size}
+                                  </p>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Quantity:</span>
+                                  <p className="font-semibold">{sale.quantity}</p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Right Side - Icon Buttons (always visible) */}
+                            <div className="flex gap-2 ml-4">
+                              <button
+                                onClick={() => {
+                                  setViewingHistory(sale);
+                                  setShowSearchModal(false);
+                                }}
+                                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                                title="View History"
+                              >
+                                <FiClock className="text-gray-600" />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  handleEdit(sale);
+                                  setShowSearchModal(false);
+                                }}
+                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                title="Edit Order"
+                              >
+                                <FiEdit2 />
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  await handleDelete(sale._id);
+                                  setModalOrders(prev => prev.filter(o => o._id !== sale._id));
+                                  if (modalOrders.length === 1) {
+                                    setShowSearchModal(false);
+                                  }
+                                }}
+                                className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                title="Delete Order"
+                              >
+                                <FiTrash2 />
+                              </button>
+                              <button
+                                onClick={() => handleCopyOrderId(sale.orderItemId)}
+                                className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                                title="Copy Order Item ID"
+                              >
+                                <FiFileText />
+                              </button>
+                            </div>
                           </div>
 
-                          {/* Highlight matching text */}
-                          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                            <div>
-                              <span className="text-gray-500">Order Item ID:</span>
-                              <p className="font-semibold">
-                                {sale.orderItemId?.toLowerCase().includes(searchQuery.toLowerCase()) ? (
-                                  <span className="bg-yellow-200 px-1 rounded">{sale.orderItemId}</span>
-                                ) : (
-                                  sale.orderItemId || '-'
-                                )}
-                              </p>
+                          {/* Notes */}
+                          {sale.notes && (
+                            <div className="mt-3 pt-3 border-t border-gray-200">
+                              <p className="text-xs text-gray-500">Notes:</p>
+                              <p className="text-sm text-gray-700">{sale.notes}</p>
                             </div>
-                            <div>
-                              <span className="text-gray-500">Marketplace Order ID:</span>
-                              <p className="font-semibold">
-                                {sale.marketplaceOrderId?.toLowerCase().includes(searchQuery.toLowerCase()) ? (
-                                  <span className="bg-yellow-200 px-1 rounded">{sale.marketplaceOrderId}</span>
-                                ) : (
-                                  sale.marketplaceOrderId || '-'
-                                )}
-                              </p>
-                            </div>
-                            <div>
-                              <span className="text-gray-500">Product:</span>
-                              <p className="font-semibold">
-                                {sale.design} - {sale.color} - {sale.size}
-                              </p>
-                            </div>
-                            <div>
-                              <span className="text-gray-500">Quantity:</span>
-                              <p className="font-semibold">{sale.quantity}</p>
-                            </div>
-                          </div>
+                          )}
                         </div>
 
-                        {/* Right Side - Actions */}
-                        <div className="flex gap-2 ml-4">
-                          <button
-                            onClick={() => {
-                                setViewingHistory(sale);
-                                setShowSearchModal(false);
-                            }}
-                              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                              title="View History"
-                            >
-                            <FiClock className="text-gray-600" />
-                          </button>
-                          <button
-                            onClick={() => {
-                              handleEdit(sale);
-                              setShowSearchModal(false);
-                            }}
-                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                            title="Edit Order"
-                          >
-                            <FiEdit2 />
-                          </button>
-                          <button
-                            onClick={async () => {
-                              await handleDelete(sale._id);
-                              // Remove from modal list
-                              setModalOrders(prev => prev.filter(o => o._id !== sale._id));
-                              if (modalOrders.length === 1) {
-                                setShowSearchModal(false);
-                              }
-                            }}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                            title="Delete Order"
-                          >
-                            <FiTrash2 />
-                          </button>
-                          <button
-                            onClick={() => handleCopyOrderId(sale.orderItemId)}
-                            className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                            title="Copy Order Item ID"
-                          >
-                            <FiFileText />
-                          </button>
+                        {/* ── HOVER ACTION FOOTER ── */}
+                        <div
+                          style={{
+                            maxHeight: isHovered ? '52px' : '0px',
+                            opacity: isHovered ? 1 : 0,
+                            overflow: 'hidden',
+                            transition: 'max-height 0.15s ease, opacity 0.12s ease',
+                          }}
+                        >
+                          <div className="px-3 py-2 border-t border-gray-100 flex items-center justify-between gap-2 bg-white">
+
+                            {/* RTO — left — Orange */}
+                            {(() => {
+                              const isLoadingThis = quickUpdateLoading === `${sale._id}-RTO`;
+                              const isDisabled = isAlreadyRTO || !!quickUpdateLoading;
+                              return (
+                                <button
+                                  onClick={() => handleQuickStatusUpdate(sale, 'RTO')}
+                                  disabled={isDisabled}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold tracking-wide uppercase transition-all duration-100"
+                                  style={{
+                                    background: isAlreadyRTO || (quickUpdateLoading && !isLoadingThis)
+                                      ? '#f3f4f6'
+                                      : isLoadingThis
+                                      ? 'linear-gradient(135deg, #fdba74 0%, #f97316 100%)'
+                                      : 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)',
+                                    color: isAlreadyRTO || (quickUpdateLoading && !isLoadingThis) ? '#d1d5db' : 'white',
+                                    cursor: isDisabled ? 'not-allowed' : 'pointer',
+                                    border: isAlreadyRTO ? '1px solid #e5e7eb' : '1px solid #ea580c',
+                                    boxShadow: isDisabled ? 'none' : '0 1px 4px rgba(249,115,22,0.4)',
+                                    letterSpacing: '0.04em',
+                                    opacity: quickUpdateLoading && !isLoadingThis ? 0.5 : 1,
+                                  }}
+                                >
+                                  {isLoadingThis ? (
+                                    <>
+                                      <svg className="animate-spin" width="11" height="11" viewBox="0 0 24 24" fill="none">
+                                        <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="3" strokeOpacity="0.3" />
+                                        <path d="M12 2a10 10 0 0 1 10 10" stroke="white" strokeWidth="3" strokeLinecap="round" />
+                                      </svg>
+                                      Updating...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <FiRotateCcw size={11} />
+                                      {isAlreadyRTO ? 'Already RTO' : 'RTO'}
+                                    </>
+                                  )}
+                                </button>
+                              );
+                            })()}
+
+                            {/* Returned — right — Red */}
+                            {(() => {
+                              const isLoadingThis = quickUpdateLoading === `${sale._id}-returned`;
+                              const isDisabled = isAlreadyReturned || !!quickUpdateLoading;
+                              return (
+                                <button
+                                  onClick={() => handleQuickStatusUpdate(sale, 'returned')}
+                                  disabled={isDisabled}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold tracking-wide uppercase transition-all duration-100"
+                                  style={{
+                                    background: isAlreadyReturned || (quickUpdateLoading && !isLoadingThis)
+                                      ? '#f3f4f6'
+                                      : isLoadingThis
+                                      ? 'linear-gradient(135deg, #fca5a5 0%, #ef4444 100%)'
+                                      : 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                                    color: isAlreadyReturned || (quickUpdateLoading && !isLoadingThis) ? '#d1d5db' : 'white',
+                                    cursor: isDisabled ? 'not-allowed' : 'pointer',
+                                    border: isAlreadyReturned ? '1px solid #e5e7eb' : '1px solid #dc2626',
+                                    boxShadow: isDisabled ? 'none' : '0 1px 4px rgba(239,68,68,0.4)',
+                                    letterSpacing: '0.04em',
+                                    opacity: quickUpdateLoading && !isLoadingThis ? 0.5 : 1,
+                                  }}
+                                >
+                                  {isLoadingThis ? (
+                                    <>
+                                      <svg className="animate-spin" width="11" height="11" viewBox="0 0 24 24" fill="none">
+                                        <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="3" strokeOpacity="0.3" />
+                                        <path d="M12 2a10 10 0 0 1 10 10" stroke="white" strokeWidth="3" strokeLinecap="round" />
+                                      </svg>
+                                      Updating...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <FiXCircle size={11} />
+                                      {isAlreadyReturned ? 'Returned' : 'Returned'}
+                                    </>
+                                  )}
+                                </button>
+                              );
+                            })()}
+
+                          </div>
                         </div>
                       </div>
-
-                      {/* Notes */}
-                      {sale.notes && (
-                        <div className="mt-3 pt-3 border-t border-gray-200">
-                          <p className="text-xs text-gray-500">Notes:</p>
-                          <p className="text-sm text-gray-700">{sale.notes}</p>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </Modal>

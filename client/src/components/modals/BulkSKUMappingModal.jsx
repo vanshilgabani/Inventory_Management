@@ -28,54 +28,154 @@ const BulkSKUMappingModal = ({
     }
   }, [isOpen, unmappedSKUs]);
 
-  // Initialize mappings with parsed data
   const initializeMappings = () => {
-    const initialMappings = unmappedSKUs.map(skuData => ({
-      sku: skuData.sku,
-      count: skuData.count,
-      design: skuData.parsed?.design || '',
-      color: skuData.parsed?.color || '',
-      size: skuData.parsed?.size || '',
-      isValid: false
-    }));
+    const initialMappings = unmappedSKUs.map(skuData => {
+      const rawDesign = skuData.parsed?.design || '';
+      const rawColor  = skuData.parsed?.color  || '';
+      const rawSize   = skuData.parsed?.size   || '';
+
+      // ── STEP 1: Match Design (case-insensitive exact) ──
+      const matchedDesign =
+        products.find(p => p.design.toLowerCase() === rawDesign.toLowerCase())?.design || rawDesign;
+
+      // ── STEP 2: Fuzzy match Color against this design's inventory colors ──
+      const product = products.find(p => p.design === matchedDesign);
+      const colorVariants = product?.colors || [];
+
+      let matchedColor = '';
+      if (rawColor && colorVariants.length) {
+        const clean = s => s.toLowerCase().replace(/[\.\-_\s]/g, '');
+        const cleanRaw = clean(rawColor);
+
+        // Priority: exact → clean-match → partial-contains → word-overlap
+        const exactMatch   = colorVariants.find(c => c.color.toLowerCase() === rawColor.toLowerCase());
+        const cleanMatch   = colorVariants.find(c => clean(c.color) === cleanRaw);
+        const partialMatch = colorVariants.find(c =>
+          clean(c.color).includes(cleanRaw) || cleanRaw.includes(clean(c.color))
+        );
+        const rawWords = rawColor.toLowerCase().split(/[\s\.\-_]+/).filter(w => w.length > 1);
+        const wordMatch = colorVariants.find(c => {
+          const cWords = c.color.toLowerCase().split(/[\s\.\-_]+/);
+          return rawWords.some(w => cWords.some(cw => cw.includes(w) || w.includes(cw)));
+        });
+
+        matchedColor =
+          exactMatch?.color || cleanMatch?.color || partialMatch?.color || wordMatch?.color || '';
+      }
+
+      // ── STEP 3: Fuzzy match Size ──
+      const colorVariant = colorVariants.find(c => c.color === matchedColor);
+      const sizeVariants = colorVariant?.sizes || [];
+
+      // Also try with the raw color string if matched color failed
+      const fallbackColorVariant = colorVariants.find(c =>
+        c.color.toLowerCase() === rawColor.toLowerCase()
+      );
+      const fallbackSizes = fallbackColorVariant?.sizes || [];
+      const sizesToSearch = sizeVariants.length ? sizeVariants : fallbackSizes;
+
+      let matchedSize = '';
+      if (rawSize && sizesToSearch.length) {
+        // Numeric waist → letter size mapping (common for garments)
+        const sizeNumMap = { '28': 'S', '30': 'M', '32': 'L', '34': 'XL', '36': 'XXL', '38': 'XXXL' };
+        const exactSize  = sizesToSearch.find(s => s.size.toLowerCase() === rawSize.toLowerCase());
+        const numMapped  = sizeNumMap[rawSize]
+          ? sizesToSearch.find(s => s.size === sizeNumMap[rawSize])
+          : null;
+        matchedSize = exactSize?.size || numMapped?.size || '';
+      }
+
+      return {
+        sku:    skuData.sku,
+        count:  skuData.count,
+        design: matchedDesign || '',
+        color:  matchedColor  || '',
+        size:   matchedSize   || '',
+        isValid: false,
+      };
+    });
 
     setMappings(initialMappings);
-
-    // Validate all initial mappings
-    initialMappings.forEach((mapping, index) => {
-      validateMapping(mapping, index);
-    });
+    // Trigger validation on all pre-filled cards immediately
+    initialMappings.forEach((mapping, index) => validateMapping(mapping, index));
   };
 
-  // Detect pattern in SKUs
-  const detectPattern = () => {
-    if (!unmappedSKUs || unmappedSKUs.length === 0) return;
+const detectPattern = () => {
+  if (!unmappedSKUs || unmappedSKUs.length === 0) return;
 
-    const firstSKU = unmappedSKUs[0].sku;
-    let pattern = firstSKU;
+  const allSKUs = unmappedSKUs.map(s => s.sku).filter(Boolean);
+  if (!allSKUs.length) return;
 
-    // Try to detect pattern
-    // Pattern examples: #D-11-KHAKHI-M, D9-L.GREY-L, D13-NAVY-XL
-    
-    if (firstSKU.includes('-')) {
-      const parts = firstSKU.replace('#', '').split('-');
-      
-      if (parts.length >= 3) {
-        // Check if first part is design (D + number)
-        if (parts[0] === 'D' && !isNaN(parts[1])) {
-          pattern = '#D-{NUMBER}-{COLOR}-{SIZE}';
-        } else if (parts[0].match(/^D\d+$/)) {
-          pattern = '#D{NUMBER}-{COLOR}-{SIZE}';
-        }
+  const firstSKU = allSKUs[0];
 
-        setPatternDetected({
-          pattern,
-          description: 'Format: Design-Color-Size',
-          confidence: 'high'
-        });
-      }
+  // ── Detect separator ──
+  const separators = ['-', '_', '/', '.'];
+  let sep = null;
+  for (const s of separators) {
+    if (allSKUs.every(sku => sku.replace(/[#@]/g, '').includes(s))) {
+      sep = s;
+      break;
     }
-  };
+  }
+  if (!sep) return; // Unsupported format — no banner
+
+  const prefix  = firstSKU.startsWith('#') ? '#' : firstSKU.startsWith('@') ? '@' : '';
+  const cleaned = firstSKU.replace(/^[#@]/, '');
+  const parts   = cleaned.split(sep);
+
+  if (parts.length < 3) return;
+
+  let pattern     = null;
+  let description = null;
+  let confidence  = 'medium';
+
+  const p0 = parts[0];
+
+  if (p0 === 'D' && !isNaN(parts[1])) {
+    // D-11-COLOR-SIZE
+    pattern     = `${prefix}D${sep}{NUMBER}${sep}{COLOR}${sep}{SIZE}`;
+    description = `Format: Design-Color-Size`;
+    confidence  = 'high';
+  } else if (p0.match(/^D\d+$/i)) {
+    // D9-COLOR-SIZE  or  #D1-COLOR-SIZE
+    pattern     = `${prefix}{D{NUMBER}}${sep}{COLOR}${sep}{SIZE}`;
+    description = `Format: Design-Color-Size`;
+    confidence  = 'high';
+  } else if (p0.match(/^[A-Z]{1,4}\d+$/i)) {
+    // ITEM123-COLOR-SIZE  or  SKU001-COLOR-SIZE
+    pattern     = `${prefix}{PREFIX+NUMBER}${sep}{COLOR}${sep}{SIZE}`;
+    description = `Format: Code-Color-Size`;
+    confidence  = 'high';
+  } else {
+    // Try to identify positions by matching against inventory
+    const allInventoryDesigns = products.map(p => p.design.toLowerCase());
+    const allInventoryColors  = [...new Set(
+      products.flatMap(p => p.colors.map(c => c.color.toLowerCase()))
+    )];
+    const allInventorySizes   = [...new Set(
+      products.flatMap(p => p.colors.flatMap(c => c.sizes.map(s => s.size.toLowerCase())))
+    )];
+
+    const slots = parts.map((part, idx) => {
+      const clean = part.toLowerCase().replace(/[\.\-_]/g, '');
+      if (allInventoryDesigns.some(d => d.replace(/[\.\-_]/g, '') === clean))  return 'DESIGN';
+      if (allInventorySizes.some(s => s === part.toLowerCase()))                return 'SIZE';
+      if (allInventoryColors.some(c => c.replace(/[\.\-_]/g, '') === clean))   return 'COLOR';
+      if (/^\d+$/.test(part) && part.length <= 2)                               return 'SIZE';
+      return 'UNKNOWN';
+    });
+
+    if (!slots.includes('UNKNOWN') || slots.filter(s => s !== 'UNKNOWN').length >= 2) {
+      pattern     = `${prefix}` + slots.map(s => `{${s}}`).join(sep);
+      description = 'Auto-detected format';
+      confidence  = slots.includes('UNKNOWN') ? 'medium' : 'high';
+    }
+  }
+
+  if (pattern) {
+    setPatternDetected({ pattern, description, confidence });
+  }
+};
 
   // Validate individual mapping
   const validateMapping = (mapping, index) => {
@@ -145,25 +245,74 @@ const BulkSKUMappingModal = ({
     return true;
   };
 
-  // Handle field change
-  const handleFieldChange = (index, field, value) => {
-    const newMappings = [...mappings];
-    newMappings[index][field] = value;
+const handleFieldChange = (index, field, value) => {
+  const newMappings = [...mappings];
+  newMappings[index][field] = value;
 
-    // Auto-fill color and size when design changes
-    if (field === 'design') {
-      const product = products.find(p => p.design === value);
-      if (product && product.colors.length > 0) {
-        newMappings[index].color = product.colors[0].color;
-        if (product.colors[0].sizes.length > 0) {
-          newMappings[index].size = product.colors[0].sizes[0].size;
+  if (field === 'design') {
+    const product = products.find(p => p.design === value);
+    if (product && product.colors.length > 0) {
+      const existingColor = newMappings[index].color;
+      const existingSize  = newMappings[index].size;
+
+      // ── Try to preserve already-parsed color ──
+      // Check if the existing color exists in this design's inventory
+      const clean = s => s?.toLowerCase().replace(/[\.\-_\s]/g, '') || '';
+
+      const colorMatch = product.colors.find(c =>
+        c.color === existingColor ||                           // exact match
+        clean(c.color) === clean(existingColor) ||            // clean match (dots/spaces)
+        clean(c.color).includes(clean(existingColor)) ||      // partial contains
+        clean(existingColor).includes(clean(c.color))
+      );
+
+      if (colorMatch) {
+        // Parsed color is valid for this design — keep it (use inventory's exact casing)
+        newMappings[index].color = colorMatch.color;
+
+        // ── Try to preserve already-parsed size under matched color ──
+        const sizeMatch = colorMatch.sizes.find(s =>
+          s.size === existingSize ||
+          s.size.toLowerCase() === existingSize?.toLowerCase()
+        );
+
+        if (sizeMatch) {
+          // Parsed size is valid — keep it
+          newMappings[index].size = sizeMatch.size;
+        } else {
+          // Parsed size not found under this color — fall back to first size
+          newMappings[index].size = colorMatch.sizes[0]?.size || '';
         }
+
+      } else {
+        // Parsed color not found in this design — fall back to first color + first size
+        newMappings[index].color = product.colors[0].color;
+        newMappings[index].size  = product.colors[0].sizes[0]?.size || '';
       }
     }
+  }
 
-    setMappings(newMappings);
-    validateMapping(newMappings[index], index);
-  };
+  // ── When color changes, try to preserve size ──
+  if (field === 'color') {
+    const product      = products.find(p => p.design === newMappings[index].design);
+    const colorVariant = product?.colors.find(c => c.color === value);
+    const existingSize = newMappings[index].size;
+
+    if (colorVariant) {
+      const sizeMatch = colorVariant.sizes.find(s =>
+        s.size === existingSize ||
+        s.size.toLowerCase() === existingSize?.toLowerCase()
+      );
+      // Only overwrite size if existing size doesn't exist in new color
+      if (!sizeMatch) {
+        newMappings[index].size = colorVariant.sizes[0]?.size || '';
+      }
+    }
+  }
+
+  setMappings(newMappings);
+  validateMapping(newMappings[index], index);
+};
 
   // Get available colors for a design
   const getAvailableColors = (design) => {

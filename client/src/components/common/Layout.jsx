@@ -1,158 +1,144 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import NotificationDropdown from '../NotificationDropdown';
 import SyncRequestModal from '../sync/SyncRequestModal';
+import { useSyncContext } from '../../context/SyncContext';
 import { authService } from '../../services/authService';
-import { FiMenu, FiX, FiPackage, FiMaximize2, FiShield, FiUser } from 'react-icons/fi';
+import { FiMenu, FiX, FiPackage, FiMaximize2, FiShield, FiUser, FiEdit2 } from 'react-icons/fi';
 
 const Layout = () => {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const user = authService.getCurrentUser();
 
-  // 🆕 NEW: Sync request state with localStorage persistence
-  const [pendingSyncRequests, setPendingSyncRequests] = useState([]);
-  const [activeSyncRequest, setActiveSyncRequest] = useState(null);
-  
-  // ✅ Load minimized state from localStorage
-  const [isMinimized, setIsMinimized] = useState(() => {
-    const saved = localStorage.getItem('sync-modal-minimized');
-    return saved === 'true';
-  });
+  // ── All sync state from context ──
+  const {
+    pendingSyncRequests,
+    activeSyncRequest,
+    minimizedIds,
+    acceptSyncRequest,
+    rejectSyncRequest,
+    minimizeSyncRequest,
+    expandSyncRequest
+  } = useSyncContext();
 
-  // 🆕 Fetch pending sync requests on mount and every 30 seconds
-  useEffect(() => {
-    fetchPendingSyncRequests();
-    
-    const interval = setInterval(() => {
-      fetchPendingSyncRequests();
-    }, 30000); // Check every 30 seconds
-
-    return () => clearInterval(interval);
-  }, []);
-
-  const fetchPendingSyncRequests = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('/api/supplier-sync/pending', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      // Check if response is JSON
-      const contentType = response.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        console.warn('Pending sync endpoint returned non-JSON response');
-        return;
-      }
-
-      if (response.ok) {
-        const result = await response.json();
-        const requests = result.data || [];
-        setPendingSyncRequests(requests);
-
-        // Only auto-show if NO active request and NOT previously minimized
-        if (requests.length > 0 && !activeSyncRequest) {
-          setActiveSyncRequest(requests[0]);
-          
-          // Don't auto-show if user previously minimized it
-          const wasMinimized = localStorage.getItem('sync-modal-minimized') === 'true';
-          if (!wasMinimized) {
-            setIsMinimized(false);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Failed to fetch pending sync requests:', error);
-    }
-  };
-
-  const handleAcceptSync = async (syncId) => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/supplier-sync/${syncId}/accept`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (response.ok) {
-        // Remove from pending list
-        setPendingSyncRequests(prev => prev.filter(r => r._id !== syncId));
-        
-        // Show next pending request if available
-        const nextRequest = pendingSyncRequests.find(r => r._id !== syncId);
-        if (nextRequest) {
-          setActiveSyncRequest(nextRequest);
-          setIsMinimized(false);
-          localStorage.setItem('sync-modal-minimized', 'false');
-        } else {
-          setActiveSyncRequest(null);
-          localStorage.removeItem('sync-modal-minimized');
-        }
-
-        // Refresh to get updated data
-        await fetchPendingSyncRequests();
-      }
-    } catch (error) {
-      console.error('Failed to accept sync:', error);
-      throw error;
-    }
-  };
-
-  const handleRejectSync = async (syncId, reason) => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/supplier-sync/${syncId}/reject`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ reason })
-      });
-
-      if (response.ok) {
-        // Remove from pending list
-        setPendingSyncRequests(prev => prev.filter(r => r._id !== syncId));
-        
-        // Show next pending request if available
-        const nextRequest = pendingSyncRequests.find(r => r._id !== syncId);
-        if (nextRequest) {
-          setActiveSyncRequest(nextRequest);
-          setIsMinimized(false);
-          localStorage.setItem('sync-modal-minimized', 'false');
-        } else {
-          setActiveSyncRequest(null);
-          localStorage.removeItem('sync-modal-minimized');
-        }
-
-        await fetchPendingSyncRequests();
-      }
-    } catch (error) {
-      console.error('Failed to reject sync:', error);
-      throw error;
-    }
-  };
-
-  const handleMinimize = () => {
-    setIsMinimized(true);
-    localStorage.setItem('sync-modal-minimized', 'true');
-  };
-
-  const handleMaximize = () => {
-    setIsMinimized(false);
-    localStorage.setItem('sync-modal-minimized', 'false');
-  };
+  // Requests shown as pills in navbar (everything except the active full modal)
+  const trayRequests = pendingSyncRequests.filter(r => r._id !== activeSyncRequest?._id);
+  const isActiveMinimized = activeSyncRequest && minimizedIds.has(activeSyncRequest._id);
 
   const handleLogout = () => {
     authService.logout();
     navigate('/login');
+  };
+
+  // ── Header center content ──
+  // Priority: active minimized pill → tray pills → normal title
+  const renderHeaderCenter = () => {
+    // Case 1: Active request is minimized — show it as the primary pill
+    if (activeSyncRequest && isActiveMinimized) {
+      const isEdit = activeSyncRequest.syncType === 'edit';
+      return (
+        <div className="flex items-center gap-2">
+          {/* Active minimized pill */}
+          <button
+            onClick={() => expandSyncRequest(activeSyncRequest._id)}
+            className={`flex items-center gap-3 px-4 py-2 text-white rounded-lg shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200 ${
+              isEdit
+                ? 'bg-gradient-to-r from-amber-500 to-orange-500'
+                : 'bg-gradient-to-r from-yellow-400 to-orange-500 animate-pulse-gentle'
+            }`}
+          >
+            {isEdit ? <FiEdit2 className="text-xl" /> : <FiPackage className="text-xl" />}
+            <div className="text-left">
+              <div className="text-sm font-bold">
+                {isEdit ? 'Edit Request Pending' : 'Sync Request Pending'}
+              </div>
+              <div className="text-xs opacity-90">
+                {activeSyncRequest.metadata?.orderChallanNumber || 'N/A'} - Click to review
+              </div>
+            </div>
+            <FiMaximize2 className="text-lg ml-2" />
+          </button>
+
+          {/* Additional tray pills beside it */}
+          {trayRequests.map(req => {
+            const isEditReq = req.syncType === 'edit';
+            const isNew = (Date.now() - new Date(req.syncedAt).getTime()) < 5 * 60 * 1000;
+            return (
+              <button
+                key={req._id}
+                onClick={() => expandSyncRequest(req._id)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border transition-all hover:shadow-md ${
+                  isEditReq
+                    ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
+                    : 'bg-blue-50 border-blue-300 text-blue-800 hover:bg-blue-100'
+                }`}
+              >
+                {isNew && (
+                  <span className="relative flex h-2 w-2">
+                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isEditReq ? 'bg-amber-400' : 'bg-blue-400'}`} />
+                    <span className={`relative inline-flex rounded-full h-2 w-2 ${isEditReq ? 'bg-amber-500' : 'bg-blue-500'}`} />
+                  </span>
+                )}
+                {isEditReq ? <FiEdit2 size={13} /> : <FiPackage size={13} />}
+                <span className="max-w-[100px] truncate">
+                  {req.metadata?.orderChallanNumber || req._id.toString().slice(-6)}
+                </span>
+                <span className={`text-xs px-1.5 py-0.5 rounded font-semibold ${
+                  isEditReq ? 'bg-amber-200 text-amber-900' : 'bg-blue-200 text-blue-900'
+                }`}>
+                  {isEditReq ? 'EDIT' : 'NEW'}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // Case 2: No active modal open, but there are other pending pills in tray
+    if (trayRequests.length > 0) {
+      return (
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-bold text-gray-800 mr-2">GarmentFlow System</h1>
+          {trayRequests.map(req => {
+            const isEditReq = req.syncType === 'edit';
+            const isNew = (Date.now() - new Date(req.syncedAt).getTime()) < 5 * 60 * 1000;
+            return (
+              <button
+                key={req._id}
+                onClick={() => expandSyncRequest(req._id)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border transition-all hover:shadow-md ${
+                  isEditReq
+                    ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
+                    : 'bg-blue-50 border-blue-300 text-blue-800 hover:bg-blue-100'
+                }`}
+              >
+                {isNew && (
+                  <span className="relative flex h-2 w-2">
+                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isEditReq ? 'bg-amber-400' : 'bg-blue-400'}`} />
+                    <span className={`relative inline-flex rounded-full h-2 w-2 ${isEditReq ? 'bg-amber-500' : 'bg-blue-500'}`} />
+                  </span>
+                )}
+                {isEditReq ? <FiEdit2 size={13} /> : <FiPackage size={13} />}
+                <span className="max-w-[100px] truncate">
+                  {req.metadata?.orderChallanNumber || req._id.toString().slice(-6)}
+                </span>
+                <span className={`text-xs px-1.5 py-0.5 rounded font-semibold ${
+                  isEditReq ? 'bg-amber-200 text-amber-900' : 'bg-blue-200 text-blue-900'
+                }`}>
+                  {isEditReq ? 'EDIT' : 'NEW'}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // Case 3: Nothing pending — normal title
+    return <h1 className="text-xl font-bold text-gray-800">GarmentFlow System</h1>;
   };
 
   return (
@@ -172,35 +158,20 @@ const Layout = () => {
             >
               {sidebarOpen ? <FiX size={24} /> : <FiMenu size={24} />}
             </button>
-            
-            {/* ✨ NEW: Show minimized sync badge OR regular title */}
-            {activeSyncRequest && isMinimized ? (
-              <button
-                onClick={handleMaximize}
-                className="flex items-center gap-3 px-4 py-2 bg-gradient-to-r from-yellow-400 to-orange-500 text-white rounded-lg shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200 animate-pulse-gentle"
-              >
-                <FiPackage className="text-xl" />
-                <div className="text-left">
-                  <div className="text-sm font-bold">Sync Request Pending</div>
-                  <div className="text-xs opacity-90">{activeSyncRequest.order.challanNumber} - Click to review</div>
-                </div>
-                <FiMaximize2 className="text-lg ml-2" />
-              </button>
-            ) : (
-              <h1 className="text-xl font-bold text-gray-800">Cargo Inventory System</h1>
-            )}
+
+            {/* Dynamic center content */}
+            {renderHeaderCenter()}
           </div>
 
           <div className="flex items-center gap-4">
             {/* Notification Bell */}
             <NotificationDropdown />
-            
+
             {/* User Info with Role */}
             <div className="flex items-center gap-3">
-              {/* Role Icon */}
               <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
-                user?.role === 'admin' 
-                  ? 'bg-gradient-to-br from-purple-500 to-indigo-600' 
+                user?.role === 'admin'
+                  ? 'bg-gradient-to-br from-purple-500 to-indigo-600'
                   : 'bg-gradient-to-br from-blue-500 to-cyan-600'
               }`}>
                 {user?.role === 'admin' ? (
@@ -209,8 +180,6 @@ const Layout = () => {
                   <FiUser className="text-white text-sm" />
                 )}
               </div>
-              
-              {/* Role Display */}
               <div className="text-right">
                 <span className={`inline-block px-3 py-1.5 rounded-lg text-sm font-bold ${
                   user?.role === 'admin'
@@ -238,13 +207,13 @@ const Layout = () => {
         </main>
       </div>
 
-      {/* 🆕 NEW: Global Sync Request Modal (only when NOT minimized) */}
-      {activeSyncRequest && !isMinimized && (
+      {/* Global Sync Request Modal — only shown when active and NOT minimized */}
+      {activeSyncRequest && !minimizedIds.has(activeSyncRequest._id) && (
         <SyncRequestModal
           syncRequest={activeSyncRequest}
-          onAccept={handleAcceptSync}
-          onReject={handleRejectSync}
-          onMinimize={handleMinimize}
+          onAccept={acceptSyncRequest}
+          onReject={rejectSyncRequest}
+          onMinimize={() => minimizeSyncRequest(activeSyncRequest._id)}
         />
       )}
     </div>

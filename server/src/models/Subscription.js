@@ -86,6 +86,10 @@ const subscriptionSchema = new mongoose.Schema({
 
   // Grace period (7 days after expiry)
   gracePeriodEndDate: Date,
+  gracePeriodInvoiceId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Invoice' 
+  },
 
   // Auto-renewal
   autoRenew: { type: Boolean, default: false },
@@ -101,7 +105,10 @@ const subscriptionSchema = new mongoose.Schema({
     expiringIn7Days: { type: Boolean, default: false },
     expiringIn3Days: { type: Boolean, default: false },
     expired: { type: Boolean, default: false },
-    invoiceGenerated: { type: Boolean, default: false }
+    invoiceGenerated: { type: Boolean, default: false },
+    gracePeriodStarted: { type: Boolean, default: false }, // ✅ NEW
+    gracePeriodEnding: { type: Boolean, default: false },  // ✅ NEW
+    gracePeriodExpired: { type: Boolean, default: false }
   },
 
   // Organization
@@ -144,6 +151,13 @@ subscriptionSchema.virtual('trialOrdersLimit').get(function() {
 subscriptionSchema.virtual('trialOrdersRemaining').get(function() {
   const limit = parseInt(process.env.TRIAL_ORDERS_LIMIT || '5000');
   return Math.max(0, limit - (this.trialOrdersUsed || 0));
+});
+
+// ✅ Virtual - Days remaining in grace period
+subscriptionSchema.virtual('gracePeriodDaysRemaining').get(function() {
+  if (this.status !== 'grace-period' || !this.gracePeriodEndDate) return 0;
+  const diff = this.gracePeriodEndDate - new Date();
+  return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
 });
 
 module.exports = mongoose.model('Subscription', subscriptionSchema);

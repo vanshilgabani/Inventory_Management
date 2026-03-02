@@ -58,6 +58,16 @@ export const SubscriptionProvider = ({ children }) => {
     return subscription?.planType === 'trial';
   };
 
+  // ✅ Check if in grace period
+  const isGracePeriod = () => {
+    return subscription?.status === 'grace-period';
+  };
+
+  // ✅ Check if expired
+  const isExpired = () => {
+    return subscription?.status === 'expired';
+  };
+
   // Check if expiring soon
   const isExpiringSoon = () => {
     return usageStats?.isExpiringSoon || false;
@@ -70,28 +80,61 @@ export const SubscriptionProvider = ({ children }) => {
 
   // Get warning message
   const getWarningMessage = () => {
-    if (!subscription || !usageStats) return null;
+    if (!subscription) return null;
 
+    // ✅ Grace period and expired handled by UsageWarningBanner directly
+    if (subscription.status === 'grace-period') return null;
+    if (subscription.status === 'expired') return null;
+
+    // Trial warnings
     if (subscription.planType === 'trial') {
-      if (usageStats.isLimitReached) {
+      if (usageStats?.isLimitReached) {
         return {
           type: 'error',
           message: `Trial order limit reached (${usageStats.ordersUsed}/${usageStats.ordersLimit}). Please upgrade to continue.`,
         };
       }
-      if (usageStats.isExpiringSoon) {
+      
+      if (usageStats?.isExpiringSoon) {
         return {
           type: 'warning',
           message: `Trial expires in ${usageStats.daysRemaining} days. Upgrade now to keep your data.`,
         };
       }
+
+      // ✅ Show info when trial is active but not expiring
+      if (usageStats?.daysRemaining > 3) {
+        return {
+          type: 'info',
+          message: `Trial: ${usageStats.daysRemaining} days remaining, ${usageStats.ordersRemaining} orders left.`,
+        };
+      }
     }
 
-    if (subscription.planType === 'yearly' && usageStats.isExpiringSoon) {
+    // ✅ Yearly plan expiring soon
+    if (subscription.planType === 'yearly' && usageStats?.isExpiringSoon) {
       return {
         type: 'warning',
-        message: `Subscription expires in ${usageStats.daysRemaining} days. Renew to avoid service interruption.`,
+        message: `Yearly subscription expires in ${usageStats.daysRemaining} days. Renew to avoid service interruption.`,
       };
+    }
+
+    // ✅ Monthly plan expiring soon
+    if (subscription.planType === 'monthly' && usageStats?.isExpiringSoon) {
+      return {
+        type: 'warning',
+        message: `Monthly subscription expires in ${usageStats.daysRemaining} days. Renew to avoid service interruption.`,
+      };
+    }
+
+    // ✅ Order-based plan info
+    if (subscription.planType === 'order-based' && subscription.status === 'active') {
+      if (usageStats?.ordersThisMonth > 0) {
+        return {
+          type: 'info',
+          message: `Order-based plan: ${usageStats.ordersThisMonth} orders this month (₹${usageStats.estimatedBill?.toFixed(2) || 0} estimated).`,
+        };
+      }
     }
 
     return null;
@@ -104,6 +147,8 @@ export const SubscriptionProvider = ({ children }) => {
     error,
     isActive,
     isTrial,
+    isGracePeriod, // ✅ Added
+    isExpired, // ✅ Added
     isExpiringSoon,
     isLimitReached,
     getWarningMessage,

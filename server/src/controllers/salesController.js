@@ -1648,58 +1648,66 @@ exports.deleteSale = async (req, res) => {
       });
     }
 
-    // ✅ STEP 1: Restore stock to inventory (with account allocation)
-    const product = await Product.findOne({
-      organizationId,
-      design: sale.design,
-      'colors.color': sale.color
-    }).session(session);
+    // STEP 1: Restore stock to inventory — only if not already restored via status change
+    const product = await Product.findOne(
+      { organizationId, design: sale.design, 'colors.color': sale.color }
+    ).session(session);
 
     if (product) {
       const colorVariant = product.colors.find(c => c.color === sale.color);
       if (colorVariant) {
         const sizeVariant = colorVariant.sizes.find(s => s.size === sale.size);
         if (sizeVariant) {
-          const inventoryMode = sale.inventoryModeUsed || 'reserved';
-          console.log(`🔄 Restoring ${sale.quantity} units to ${inventoryMode} stock for ${sale.design}-${sale.color}-${sale.size}`);
 
-          if (inventoryMode === 'main') {
-            console.log(`📦 Before: Main = ${sizeVariant.currentStock || 0}`);
-            sizeVariant.currentStock = (sizeVariant.currentStock || 0) + sale.quantity;
-            console.log(`📦 After: Main = ${sizeVariant.currentStock}`);
+          // ✅ KEY FIX: Check if stock was already restored when status was changed
+          // stockRestoredAmount > 0 means returned/cancelled/RTO already gave stock back
+          // Restoring again would cause double-restoration (the bug)
+          if (sale.stockRestoredAmount > 0) {
+            console.log(
+              `⏭️  Skipping stock restore on delete — already restored ${sale.stockRestoredAmount} ` +
+              `units when status changed to "${sale.status}" for order ${sale.orderItemId}`
+            );
+            // Do NOT touch inventory at all — just fall through to soft delete
           } else {
-            console.log(`📦 Before: Reserved = ${sizeVariant.reservedStock || 0}`);
-            sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
-            console.log(`📦 After: Reserved = ${sizeVariant.reservedStock}`);
+            // Stock was never restored (order was dispatched/delivered/wrongreturn)
+            // Safe to restore now
+            const inventoryMode = sale.inventoryModeUsed || 'reserved';
+            console.log(`Restoring ${sale.quantity} units to ${inventoryMode} stock for ${sale.design}-${sale.color}-${sale.size}`);
 
-            // ✅✅ NEW: Restore to account allocation
-            const accountName = sale.accountName;
-            let allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
+            if (inventoryMode === 'main') {
+              console.log('Before Main:', sizeVariant.currentStock || 0);
+              sizeVariant.currentStock = (sizeVariant.currentStock || 0) + sale.quantity;
+              console.log('After Main:', sizeVariant.currentStock);
+            } else {
+              console.log('Before Reserved:', sizeVariant.reservedStock || 0);
+              sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+              console.log('After Reserved:', sizeVariant.reservedStock);
 
-            if (!allocation) {
-              if (!sizeVariant.reservedAllocations) {
-                sizeVariant.reservedAllocations = [];
+              // Restore to account allocation
+              const accountName = sale.accountName;
+              let allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
+              if (!allocation) {
+                if (!sizeVariant.reservedAllocations) sizeVariant.reservedAllocations = [];
+                allocation = { accountName, quantity: 0 };
+                sizeVariant.reservedAllocations.push(allocation);
               }
-              allocation = { accountName, quantity: 0 };
-              sizeVariant.reservedAllocations.push(allocation);
+              allocation.quantity += sale.quantity;
+              console.log(`Restored ${sale.quantity} units to ${accountName} account allocation`);
             }
 
-            allocation.quantity += sale.quantity;
-            console.log(`✅ Restored ${sale.quantity} units to ${accountName} account allocation`);
+            // CRITICAL: Mark nested array as modified for Mongoose to save it
+            product.markModified('colors');
+            await product.save({ session });
+            console.log('Stock restored successfully');
           }
-
-          // ✅ CRITICAL: Mark nested array as modified for Mongoose to save it
-          product.markModified('colors');
-          await product.save({ session });
-          console.log(`✅ Stock restored successfully`);
         } else {
-          console.warn(`⚠️ Size ${sale.size} not found in product ${sale.design}-${sale.color}`);
+          console.warn(`Size ${sale.size} not found in product ${sale.design}-${sale.color}`);
         }
       } else {
-        console.warn(`⚠️ Color ${sale.color} not found in product ${sale.design}`);
+        console.warn(`Color ${sale.color} not found in product ${sale.design}`);
       }
     } else {
-      console.warn(`⚠️ Product ${sale.design} not found`);
+      console.warn(`Product ${sale.design} not found`);
     }
 
     // ✅ STEP 2: Soft delete the sale
@@ -1724,12 +1732,8 @@ exports.deleteSale = async (req, res) => {
       accountName: sale.accountName
     });
 
-    res.json({
-      success: true,
-      message: 'Sale deleted successfully',
-      stockRestored: sale.quantity,
-      accountName: sale.accountName
-    });
+    const actualRestored = sale.stockRestoredAmount > 0 ? 0 : sale.quantity;
+    res.json({ success: true, message: 'Sale deleted successfully', stockRestored: actualRestored, accountName: sale.accountName });
 
   } catch (error) {
     await session.abortTransaction();

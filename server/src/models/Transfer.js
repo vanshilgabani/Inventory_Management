@@ -17,14 +17,15 @@ const transferSchema = new mongoose.Schema({
       'manualreturn',        // Reserved → Main (manual)
       'marketplaceorder',    // Reserved stock used for marketplace sale
       'emergencyuse',        // Main → Reserved (auto during marketplace order)
-      'emergencyborrow'      // Reserved → Main (auto during wholesale/direct)
+      'emergencyborrow',     // Reserved → Main (auto during wholesale/direct)
+      'internal_transfer'
     ],
     required: true
   },
   
   // Direction
-  from: { type: String, enum: ['main', 'reserved'], required: true },
-  to: { type: String, enum: ['main', 'reserved', 'sold'], required: true },
+  from: { type: String, required: true },
+  to: { type: String, required: true },
   
   // Stock snapshots before transfer
   mainStockBefore: { type: Number, default: 0 },

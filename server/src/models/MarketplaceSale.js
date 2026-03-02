@@ -4,13 +4,13 @@ const mongoose = require('mongoose');
 const statusHistorySchema = new mongoose.Schema({
   previousStatus: {
     type: String,
-    enum: ['dispatched', 'delivered', 'returned', 'wrongreturn', 'cancelled', null],
+    enum: ['dispatched', 'delivered', 'returned', 'wrongreturn', 'cancelled', 'RTO',null],
     required: false,
     default: null
   },
   newStatus: {
     type: String,
-    enum: ['dispatched','delivered', 'returned', 'wrongreturn', 'cancelled'],
+    enum: ['dispatched','delivered', 'returned', 'wrongreturn', 'cancelled', 'RTO'],
     required: true
   },
   changedBy: {
@@ -83,7 +83,7 @@ const marketplaceSaleSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['dispatched', 'returned', 'wrongreturn', 'cancelled'],
+    enum: ['dispatched', 'returned', 'wrongreturn', 'cancelled', 'RTO'],
     default: 'dispatched'
   },
   stockRestoredAmount: {

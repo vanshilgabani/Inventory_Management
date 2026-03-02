@@ -21,6 +21,7 @@ import CompanyManagement from '../components/settings/CompanyManagement';
 import BuyerGSTManagement from '../components/settings/BuyerGSTManagement';
 import InventoryModeSettings from '../components/settings/InventoryModeSettings';
 import SKUMappings from '../components/settings/SKUMappings';
+import FlipkartSettings from '../components/settings/FlipkartSettings';
 
 const Settings = () => {
   const [searchParams] = useSearchParams();
@@ -319,11 +320,12 @@ const Settings = () => {
   const tabs = [
     { id: 'company', label: 'General', icon: '🏢' },
     { id: 'companies', label: 'Companies', icon: '🏭' },
-    { id: 'buyer-gst', label: 'Buyer GST Profiles', icon: '📋' },
+    { id: 'flipkart', label: 'Flipkart Sync', icon: '🔄' },
     { id: 'sizes-permissions', label: 'Sizes & Permissions', icon: '📏' },
     { id: 'sku-mappings', label: 'SKU Mappings', icon: '🗺️' },
     { id: 'inventory-mode', label: 'Inventory Mode', icon: '📦' },
     { id: 'colors', label: 'Color Palette', icon: '🎨' },
+    { id: 'buyer-gst', label: 'Buyer GST Profiles', icon: '📋' },
     { id: 'thresholds', label: 'Stock Alerts', icon: '🔔' },
     { id: 'accounts', label: 'Marketplace', icon: '🛒' },
     { id: 'notifications', label: 'Notifications', icon: '📧' }
@@ -396,6 +398,8 @@ const Settings = () => {
             />            
           </div>
         )}
+
+        {activeTab === 'flipkart' && <FlipkartSettings />}
 
         {activeTab === 'sku-mappings' && (
           <SKUMappings settings={settings} />

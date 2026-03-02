@@ -127,6 +127,7 @@ router.delete('/delete-all-test-orders', protect, async (req, res) => {
   }
 });
 
+router.post('/generate-invoice', protect, subscriptionController.generateMonthlyInvoice);
 router.get('/invoices', protect, subscriptionController.getInvoices);
 
 // Payment routes
@@ -135,10 +136,10 @@ router.post('/verify-payment', protect, paymentController.verifyPayment);
 router.post('/calculate-upgrade', protect, paymentController.upgradePlanWithProration);
 
 // Plan upgrade (legacy - for order-based without payment)
-router.post('/upgrade', protect, subscriptionController.upgradePlan);
+router.post('/upgrade-plan', protect, subscriptionController.upgradePlan);
 
 // Invoice management
-router.post('/invoices/:invoiceId/mark-paid', protect, subscriptionController.markInvoicePaid);
-router.post('/generate-monthly-invoice', protect, subscriptionController.generateMonthlyInvoice);
+router.post('/invoices/:invoiceId/pay', protect, subscriptionController.markInvoicePaid);
+router.post('/invoices/:invoiceId/pay-request', protect, subscriptionController.submitInvoicePaymentRequest);
 
 module.exports = router;

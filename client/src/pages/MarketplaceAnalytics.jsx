@@ -62,17 +62,19 @@ const MarketplaceAnalytics = () => {
   const [distributionChannel, setDistributionChannel] = useState('marketplace');
 
   const [returnAccounts, setReturnAccounts] = useState([]);
-  const [selectedReturnAccount, setSelectedReturnAccount] = useState(null);
+  const [selectedReturnAccount, setSelectedReturnAccount] = useState('');
   const [returnSortBy, setReturnSortBy] = useState('totalOrders'); // 'returnRate' | 'totalOrders' | 'returnedCount'
 
-useEffect(() => {
-  const { filterType, startDate, endDate } = dateRange;
-  if (filterType === 'alltime') {
-    fetchAllData();
-  } else if (filterType && startDate && endDate) {
-    fetchAllData();
-  }
-}, [dateRange.filterType, dateRange.startDate, dateRange.endDate]);
+  useEffect(() => {
+    const { filterType, startDate, endDate } = dateRange;
+    if (filterType === 'alltime') {
+      fetchAllData();
+      fetchReturnRateByAccount(''); // ✅ ADD
+    } else if (filterType && startDate && endDate) {
+      fetchAllData();
+      fetchReturnRateByAccount(''); // ✅ ADD
+    }
+  }, [dateRange.filterType, dateRange.startDate, dateRange.endDate]);
 
 const getFilterLabel = () => {
   if (dateRange.filterType === 'alltime') return 'All Time';
@@ -138,7 +140,7 @@ const fetchReturnRateByAccount = async (account) => {
         analyticsService.getReturnRateByProduct(params),
         analyticsService.getBestSellingMarketplaceProducts({ ...params, limit: 20 }),
         analyticsService.getStockRecommendations(params),
-        analyticsService.getColorSizeDistribution(params),
+        analyticsService.getColorSizeDistribution({ ...params, channel: distributionChannel }),
         analyticsService.getCurrentStockLevels({ lowStockOnly: false }),       // snapshot — no date
         analyticsService.getStockTurnoverRate(params),
         analyticsService.getStockValueByType(),                                  // snapshot — no date

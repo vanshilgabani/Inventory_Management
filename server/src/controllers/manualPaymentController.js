@@ -1,4 +1,5 @@
 const ManualPaymentRequest = require('../models/ManualPaymentRequest');
+const WholesaleBuyer = require('../models/WholesaleBuyer');
 const Subscription = require('../models/Subscription');
 const Invoice = require('../models/Invoice');
 const User = require('../models/User');
@@ -106,8 +107,21 @@ exports.getMyPaymentRequests = async (req, res) => {
 exports.getAllPaymentRequests = async (req, res) => {
   try {
     const { status = 'pending' } = req.query;
+    const adminId = req.user.id;
 
-    const requests = await ManualPaymentRequest.find({ status })
+    // Step 1: Find all customers linked to this admin via WholesaleBuyer
+    const linkedBuyers = await WholesaleBuyer.find({
+      organizationId: adminId,
+      customerUserId: { $ne: null }
+    }).select('customerUserId').lean();
+
+    const customerIds = linkedBuyers.map(b => b.customerUserId);
+
+    // Step 2: Return only requests from those customers
+    const requests = await ManualPaymentRequest.find({
+      status,
+      userId: { $in: customerIds }
+    })
       .populate('userId', 'name email phone businessName companyName')
       .sort({ createdAt: -1 })
       .limit(50);
@@ -116,7 +130,6 @@ exports.getAllPaymentRequests = async (req, res) => {
       success: true,
       data: { requests }
     });
-
   } catch (error) {
     logger.error('Get all payment requests failed', { error: error.message });
     res.status(500).json({
@@ -125,7 +138,7 @@ exports.getAllPaymentRequests = async (req, res) => {
       error: error.message
     });
   }
-};
+}
 
 // Admin: Approve payment request
 exports.approvePaymentRequest = async (req, res) => {
@@ -154,9 +167,80 @@ exports.approvePaymentRequest = async (req, res) => {
       });
     }
 
-    const { userId, planType, amount, paymentMethod } = paymentRequest;
+    const { userId, planType, amount, paymentMethod, invoiceId } = paymentRequest;
 
-    // Update subscription (same logic as Razorpay success)
+    // 🆕 Handle invoice payment approval
+    if (invoiceId) {
+      const invoice = await Invoice.findById(invoiceId).session(session);
+
+      if (!invoice) {
+        await session.abortTransaction();
+        return res.status(404).json({
+          success: false,
+          message: 'Invoice not found'
+        });
+      }
+
+      // ✅ Update invoice to paid
+      invoice.status = 'paid';
+      invoice.paidAt = new Date();
+      invoice.paymentMethod = paymentMethod === 'upi' ? 'UPI (Manual)' : 'Cash';
+      invoice.paymentTransactionId = `MANUAL-${requestId}`;
+      invoice.notes = `Payment approved by admin via ${paymentMethod}`;
+      await invoice.save({ session });
+
+      // ✅ If this was a grace period invoice, reactivate subscription
+      const subscription = await Subscription.findOne({ userId }).session(session);
+
+      if (subscription && subscription.status === 'grace-period') {
+        if (subscription.gracePeriodInvoiceId?.toString() === invoiceId.toString()) {
+          subscription.status = 'active';
+          subscription.gracePeriodEndDate = null;
+          subscription.gracePeriodInvoiceId = null;
+          
+          // Reset billing cycle for next month
+          const now = new Date();
+          const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+          subscription.currentBillingCycle = {
+            startDate: nextMonthStart,
+            endDate: new Date(nextMonthStart.getFullYear(), nextMonthStart.getMonth() + 1, 0),
+            invoiceGenerated: false,
+            ordersCount: 0,
+            totalAmount: 0
+          };
+          
+          await subscription.save({ session });
+        }
+      }
+
+      // Update payment request
+      paymentRequest.status = 'approved';
+      paymentRequest.reviewedBy = adminId;
+      paymentRequest.reviewedAt = new Date();
+      await paymentRequest.save({ session });
+
+      await session.commitTransaction();
+
+      logger.info('Invoice payment approved', {
+        requestId,
+        userId,
+        invoiceId,
+        amount,
+        adminId,
+        invoiceNumber: invoice.invoiceNumber
+      });
+
+      return res.json({
+        success: true,
+        message: 'Payment approved! Invoice marked as paid.',
+        data: {
+          invoice,
+          subscription: subscription || null
+        }
+      });
+    }
+
+    // 🔽 Handle subscription payment approval (existing logic)
     const subscription = await Subscription.findOne({ userId }).session(session);
 
     if (!subscription) {
@@ -171,28 +255,18 @@ exports.approvePaymentRequest = async (req, res) => {
 
     // ✅ Generate invoice number
     const generateInvoiceNumber = async () => {
-      const date = new Date();
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      
-      // Count invoices this month for user
-      const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-      const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-      
-      const Invoice = require('../models/Invoice');
-      const count = await Invoice.countDocuments({
-        userId,
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-      }).session(session);
-
-      return `INV-${year}${month}-${String(count + 1).padStart(4, '0')}`;
+      const userShortId = userId.toString().slice(-6).toUpperCase();
+      const year = new Date().getFullYear();
+      const count = await Invoice.countDocuments({ userId }).session(session);
+      return `INV-${year}-${userShortId}-${String(count + 1).padStart(3, '0')}`;
     };
 
     const invoiceNumber = await generateInvoiceNumber();
+    const now = new Date();
 
     if (planType === 'yearly') {
-      const startDate = new Date();
-      const endDate = new Date();
+      const startDate = now;
+      const endDate = new Date(now);
       endDate.setFullYear(endDate.getFullYear() + 1);
 
       subscription.planType = 'yearly';
@@ -200,18 +274,16 @@ exports.approvePaymentRequest = async (req, res) => {
       subscription.yearlyStartDate = startDate;
       subscription.yearlyEndDate = endDate;
       subscription.yearlyPrice = amount;
-      subscription.lastPaymentDate = new Date();
+      subscription.lastPaymentDate = now;
       subscription.nextPaymentDue = endDate;
       subscription.notificationsSent = {};
 
       await subscription.save({ session });
 
-      // Create invoice
-      const Invoice = require('../models/Invoice');
-      const invoice = await Invoice.create([{
+      await Invoice.create([{
         userId,
         organizationId: paymentRequest.organizationId,
-        invoiceNumber, // ✅ Added
+        invoiceNumber,
         customerName: user.name,
         customerEmail: user.email,
         customerPhone: user.phone,
@@ -229,17 +301,17 @@ exports.approvePaymentRequest = async (req, res) => {
         sgst: 0,
         totalAmount: amount,
         status: 'paid',
-        paidAt: new Date(),
+        paidAt: now,
         paymentMethod: paymentMethod === 'upi' ? 'UPI (Manual)' : 'Cash',
-        paymentTransactionId: `MANUAL-${requestId}`, // ✅ Added reference
-        paymentDueDate: new Date(),
-        generatedAt: new Date(),
-        sentAt: new Date()
+        paymentTransactionId: `MANUAL-${requestId}`,
+        paymentDueDate: now,
+        generatedAt: now,
+        sentAt: now
       }], { session });
 
     } else if (planType === 'monthly') {
-      const startDate = new Date();
-      const endDate = new Date();
+      const startDate = now;
+      const endDate = new Date(now);
       endDate.setMonth(endDate.getMonth() + 1);
 
       subscription.planType = 'monthly';
@@ -247,18 +319,16 @@ exports.approvePaymentRequest = async (req, res) => {
       subscription.monthlyStartDate = startDate;
       subscription.monthlyEndDate = endDate;
       subscription.monthlyPrice = amount;
-      subscription.lastPaymentDate = new Date();
+      subscription.lastPaymentDate = now;
       subscription.nextPaymentDue = endDate;
       subscription.notificationsSent = {};
 
       await subscription.save({ session });
 
-      // Create invoice
-      const Invoice = require('../models/Invoice');
       await Invoice.create([{
         userId,
         organizationId: paymentRequest.organizationId,
-        invoiceNumber, // ✅ Added
+        invoiceNumber,
         customerName: user.name,
         customerEmail: user.email,
         customerPhone: user.phone,
@@ -276,16 +346,16 @@ exports.approvePaymentRequest = async (req, res) => {
         sgst: 0,
         totalAmount: amount,
         status: 'paid',
-        paidAt: new Date(),
+        paidAt: now,
         paymentMethod: paymentMethod === 'upi' ? 'UPI (Manual)' : 'Cash',
-        paymentTransactionId: `MANUAL-${requestId}`, // ✅ Added reference
-        paymentDueDate: new Date(),
-        generatedAt: new Date(),
-        sentAt: new Date()
+        paymentTransactionId: `MANUAL-${requestId}`,
+        paymentDueDate: now,
+        generatedAt: now,
+        sentAt: now
       }], { session });
 
     } else if (planType === 'order-based') {
-      const startDate = new Date();
+      const startDate = now;
       const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
 
       subscription.planType = 'order-based';
@@ -304,14 +374,12 @@ exports.approvePaymentRequest = async (req, res) => {
       subscription.notificationsSent = {};
 
       await subscription.save({ session });
-      
-      // ✅ No invoice needed for order-based as it's postpaid
     }
 
     // Update payment request status
     paymentRequest.status = 'approved';
     paymentRequest.reviewedBy = adminId;
-    paymentRequest.reviewedAt = new Date();
+    paymentRequest.reviewedAt = now;
     await paymentRequest.save({ session });
 
     await session.commitTransaction();
@@ -326,7 +394,7 @@ exports.approvePaymentRequest = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Payment approved and subscription activated!',
+      message: `Payment approved! ${planType === 'order-based' ? 'Order-based plan' : planType.charAt(0).toUpperCase() + planType.slice(1) + ' subscription'} activated.`,
       data: { paymentRequest, subscription }
     });
 

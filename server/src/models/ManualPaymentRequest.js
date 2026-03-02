@@ -15,7 +15,7 @@ const manualPaymentRequestSchema = new mongoose.Schema({
   // Payment details
   planType: {
     type: String,
-    enum: ['monthly', 'yearly', 'order-based'],
+    enum: ['monthly', 'yearly', 'order-based', 'invoice-payment'], // 🆕 Added invoice-payment
     required: true
   },
   amount: {
@@ -35,6 +35,15 @@ const manualPaymentRequestSchema = new mongoose.Schema({
     type: String,
     enum: ['pending', 'approved', 'rejected'],
     default: 'pending'
+  },
+  
+  // 🆕 Invoice payment tracking
+  invoiceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Invoice'
+  },
+  invoiceNumber: {
+    type: String
   },
   
   // User information at time of request
@@ -60,5 +69,6 @@ const manualPaymentRequestSchema = new mongoose.Schema({
 
 manualPaymentRequestSchema.index({ userId: 1, status: 1 });
 manualPaymentRequestSchema.index({ status: 1, createdAt: -1 });
+manualPaymentRequestSchema.index({ invoiceId: 1 }); // 🆕 Added index
 
 module.exports = mongoose.model('ManualPaymentRequest', manualPaymentRequestSchema);

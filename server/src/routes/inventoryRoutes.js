@@ -10,7 +10,9 @@ const {
   updateStock,
   getStockStatus,
   reduceVariantLock,
-  refillVariantLock
+  refillVariantLock,
+  allocateReservedStock,
+  getReservedStockByAccount,
 } = require('../controllers/inventoryController');
 const { protect } = require('../middleware/auth');
 const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
@@ -20,7 +22,8 @@ router.get('/', protect, getAllProducts);
 router.get('/low-stock', protect, getLowStockItems);
 router.get('/stock-status', protect, getStockStatus);
 router.get('/:id', protect, getProductById);
-
+router.post('/:id/allocate-reserved-stock', protect, allocateReservedStock);
+router.get('/reserved-stock/by-account', protect, getReservedStockByAccount);
 // Create routes (no middleware needed - admin only handled in controller)
 router.post('/', protect, createProduct);
 

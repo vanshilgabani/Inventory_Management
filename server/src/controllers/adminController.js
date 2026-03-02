@@ -13,7 +13,6 @@ exports.getCustomers = async (req, res) => {
   try {
     const { role, id: userId } = req.user;
 
-    // Only admin can access
     if (role !== 'admin') {
       return res.status(403).json({
         success: false,
@@ -21,11 +20,9 @@ exports.getCustomers = async (req, res) => {
       });
     }
 
-    // Find all wholesale buyers that belong to this admin/supplier
-    // and have a linked User account (customerUserId is not null)
     const wholesaleBuyers = await WholesaleBuyer.find({
-      organizationId: userId, // Buyers that belong to this supplier
-      customerUserId: { $ne: null }, // Only buyers who have signed up for User account
+      organizationId: userId,
+      customerUserId: { $ne: null },
       isCustomer: true
     })
     .populate('customerUserId', 'name email phone businessName companyName createdAt syncPreference')
@@ -49,7 +46,6 @@ exports.getCustomers = async (req, res) => {
       });
     }
 
-    // Get detailed stats for each customer
     const customersWithDetails = await Promise.all(
       wholesaleBuyers.map(async (buyer) => {
         const customerUser = buyer.customerUserId;
@@ -57,19 +53,17 @@ exports.getCustomers = async (req, res) => {
           console.warn(`⚠️  Skipping buyer ${buyer.businessName} - customerUserId didn't populate`);
           return null;
         }
-        const customerOrgId = customerUser._id; // Their organization ID
+        const customerOrgId = customerUser._id;
 
-        // Get subscription
+        // ✅ FIX 1: Added currentBillingCycle to select
         const subscription = await Subscription.findOne({
           organizationId: customerOrgId
-        }).select('planType status trialEndDate trialStartDate yearlyEndDate orderBasedStartDate pricePerOrder').lean();
+        }).select('planType status trialEndDate trialStartDate yearlyEndDate orderBasedStartDate pricePerOrder currentBillingCycle gracePeriodEndDate monthlyEndDate').lean();
 
-        // Get current month date range
         const now = new Date();
         const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
         const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-        // Count orders this month (marketplace + direct + wholesale)
         const [marketplaceCount, directCount, wholesaleCount] = await Promise.all([
           MarketplaceSale.countDocuments({
             organizationId: customerOrgId,
@@ -90,78 +84,77 @@ exports.getCustomers = async (req, res) => {
 
         const totalOrdersThisMonth = marketplaceCount + directCount + wholesaleCount;
 
-        // Calculate estimated bill based on subscription plan
         let estimatedBill = 0;
         let pricePerOrder = 0;
 
         if (subscription) {
           if (subscription.planType === 'trial') {
-            // Trial users pay nothing - ZERO revenue
             estimatedBill = 0;
             pricePerOrder = 0;
-            
+
           } else if (subscription.planType === 'order-based') {
-          // Order-based: Only count orders AFTER plan started
-          pricePerOrder = subscription.pricePerOrder || 0.5;
-          
-          // Get when they switched to order-based plan
-          const planStartDate = subscription.orderBasedStartDate;
-          
-          if (planStartDate) {
-            // Count orders created AFTER switching (use createdAt, not saleDate)
-            const [marketplaceAfter, directAfter, wholesaleAfter] = await Promise.all([
-              MarketplaceSale.countDocuments({
-                organizationId: customerOrgId,
-                deletedAt: null,
-                createdAt: { $gte: new Date(planStartDate) }
-              }),
-              DirectSale.countDocuments({
-                organizationId: customerOrgId,
-                deletedAt: null,
-                createdAt: { $gte: new Date(planStartDate) }
-              }),
-              WholesaleOrder.countDocuments({
-                organizationId: customerOrgId,
-                deletedAt: null,
-                createdAt: { $gte: new Date(planStartDate) }
-              })
-            ]);
-            
-            const paidOrders = marketplaceAfter + directAfter + wholesaleAfter;
-            estimatedBill = paidOrders * pricePerOrder;
-          } else {
-            estimatedBill = 0;
-          }
-        }
-        else if (subscription.planType === 'yearly' || subscription.planType === 'monthly') {
-            // Yearly/Monthly - already paid upfront, no per-order charges
+            pricePerOrder = subscription.pricePerOrder || 0.5;
+
+            // ✅ FIX 2: If current cycle invoice already generated/paid → no unbilled amount
+            if (subscription.currentBillingCycle?.invoiceGenerated) {
+              estimatedBill = 0;
+            } else {
+              // ✅ FIX 3: Use currentBillingCycle.startDate, NOT orderBasedStartDate
+              // orderBasedStartDate is the original plan start — it never changes
+              // currentBillingCycle.startDate resets each month after payment
+              const cycleStart = subscription.currentBillingCycle?.startDate
+                || subscription.orderBasedStartDate
+                || firstDayOfMonth;
+              const cycleEnd = subscription.currentBillingCycle?.endDate || lastDayOfMonth;
+
+              const [marketplaceAfter, directAfter, wholesaleAfter] = await Promise.all([
+                MarketplaceSale.countDocuments({
+                  organizationId: customerOrgId,
+                  deletedAt: null,
+                  createdAt: { $gte: new Date(cycleStart), $lte: new Date(cycleEnd) }
+                }),
+                DirectSale.countDocuments({
+                  organizationId: customerOrgId,
+                  deletedAt: null,
+                  createdAt: { $gte: new Date(cycleStart), $lte: new Date(cycleEnd) }
+                }),
+                WholesaleOrder.countDocuments({
+                  organizationId: customerOrgId,
+                  deletedAt: null,
+                  createdAt: { $gte: new Date(cycleStart), $lte: new Date(cycleEnd) }
+                })
+              ]);
+
+              const unbilledOrders = marketplaceAfter + directAfter + wholesaleAfter;
+              estimatedBill = unbilledOrders * pricePerOrder;
+            }
+
+          } else if (subscription.planType === 'yearly' || subscription.planType === 'monthly') {
             estimatedBill = 0;
             pricePerOrder = 0;
           }
         } else {
-          // No subscription
           estimatedBill = 0;
           pricePerOrder = 0;
         }
 
-        // ✅ Calculate breakdown for display
+        // ✅ Breakdown
         let chargeableOrders = 0;
         let unchargeableOrders = 0;
 
         if (subscription?.status === 'trial' || subscription?.planType === 'trial') {
-          // All orders during trial are FREE
           chargeableOrders = 0;
           unchargeableOrders = totalOrdersThisMonth;
         } else if (subscription?.planType === 'order-based') {
-          // Calculate paid orders (after plan started)
-          chargeableOrders = Math.round(estimatedBill / (pricePerOrder || 0.5));
+          // If invoice already generated for this cycle, nothing is chargeable yet
+          const cycleInvoiceGenerated = subscription.currentBillingCycle?.invoiceGenerated;
+          chargeableOrders = cycleInvoiceGenerated ? 0 : Math.round(estimatedBill / (pricePerOrder || 0.5));
           unchargeableOrders = totalOrdersThisMonth - chargeableOrders;
         } else {
           chargeableOrders = 0;
           unchargeableOrders = 0;
         }
 
-        // Get last month's order count
         const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
         const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
 
@@ -185,10 +178,7 @@ exports.getCustomers = async (req, res) => {
 
         const lastMonthOrders = lastMarketplace + lastDirect + lastWholesale;
 
-        // Calculate last month bill from actual invoices
         let lastMonthBill = 0;
-
-        // Get last paid invoice
         const Invoice = require('../models/Invoice');
         const lastInvoice = await Invoice.findOne({
           userId: customerOrgId,
@@ -202,30 +192,22 @@ exports.getCustomers = async (req, res) => {
         if (lastInvoice) {
           lastMonthBill = lastInvoice.totalAmount;
         } else if (subscription && subscription.planType === 'order-based') {
-          // Fallback: Calculate from last month orders for order-based
           lastMonthBill = lastMonthOrders * pricePerOrder;
         }
 
-        // Get tenant settings (for sidebar permissions)
         const tenantSettings = await TenantSettings.findOne({
           organizationId: customerOrgId
         }).select('allowedSidebarItems').lean();
 
-        // Calculate next bill date (1st of next month)
         let nextBillDate;
-
         if (subscription) {
           if (subscription.planType === 'yearly') {
-            // Yearly plan: Next bill is 1 year from start date (renewal date)
             nextBillDate = subscription.yearlyEndDate;
           } else if (subscription.planType === 'order-based') {
-            // Order-based: Monthly billing on 1st of next month
             nextBillDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
           } else if (subscription.planType === 'trial') {
-            // Trial: Next bill is after trial ends (or upgrade)
             nextBillDate = subscription.trialEndDate;
           } else {
-            // Default: 1st of next month
             nextBillDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
           }
         } else {
@@ -242,9 +224,7 @@ exports.getCustomers = async (req, res) => {
             daysRemaining = Math.ceil((trialEnd - now) / (1000 * 60 * 60 * 24));
             statusLabel = `Trial (${daysRemaining} days left)`;
             statusColor = 'blue';
-            
           } else if (subscription.status === 'active') {
-            // ✅ FIXED: Check planType properly
             if (subscription.planType === 'order-based') {
               statusLabel = 'Order-Based';
               statusColor = 'purple';
@@ -255,10 +235,12 @@ exports.getCustomers = async (req, res) => {
               statusLabel = 'Monthly Active';
               statusColor = 'green';
             }
-            
           } else if (subscription.status === 'expired') {
             statusLabel = 'Expired';
             statusColor = 'red';
+          } else if (subscription.status === 'grace-period') {
+            statusLabel = 'Grace Period';
+            statusColor = 'orange';
           }
         }
 
@@ -270,7 +252,7 @@ exports.getCustomers = async (req, res) => {
           businessName: buyer.businessName || customerUser.businessName,
           companyName: customerUser.companyName || buyer.businessName,
           createdAt: customerUser.createdAt,
-          linkedSupplier: true, // They are linked through WholesaleBuyer
+          linkedSupplier: true,
           syncPreference: customerUser.syncPreference || 'direct',
           subscription: {
             ...subscription,
@@ -285,7 +267,6 @@ exports.getCustomers = async (req, res) => {
               wholesale: wholesaleCount,
               total: totalOrdersThisMonth,
               estimatedAmount: estimatedBill,
-              // ✅ NEW: Show breakdown of chargeable vs unchargeable
               breakdown: {
                 chargeable: chargeableOrders,
                 unchargeable: unchargeableOrders,
@@ -302,7 +283,6 @@ exports.getCustomers = async (req, res) => {
       })
     );
 
-    // ✅ Filter out null values (buyers with missing users)
     const validCustomers = customersWithDetails.filter(c => c !== null);
 
     const stats = {
@@ -313,17 +293,14 @@ exports.getCustomers = async (req, res) => {
       estimatedRevenue: validCustomers.reduce((sum, c) => sum + c.billing.currentMonth.estimatedAmount, 0)
     };
 
-    logger.info('Fetched customer list', { 
-      adminId: userId, 
-      totalCustomers: validCustomers.length 
+    logger.info('Fetched customer list', {
+      adminId: userId,
+      totalCustomers: validCustomers.length
     });
 
     res.json({
       success: true,
-      data: {
-        customers: validCustomers,
-        stats
-      }
+      data: { customers: validCustomers, stats }
     });
 
   } catch (error) {
@@ -540,5 +517,207 @@ exports.getPaymentRequests = async (req, res) => {
       message: 'Failed to fetch payment requests',
       error: error.message
     });
+  }
+};
+
+// 🆕 Generate invoice for customer (order-based plan)
+exports.generateCustomerInvoice = async (req, res) => {
+  const mongoose = require('mongoose');
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { customerId } = req.params;
+    const adminId = req.user.id;
+
+    // Verify admin access
+    if (req.user.role !== 'admin') {
+      await session.abortTransaction();
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    // Verify this customer belongs to this admin
+    const buyer = await WholesaleBuyer.findOne({
+      customerUserId: customerId,
+      organizationId: adminId
+    }).session(session);
+
+    if (!buyer) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found or not linked to you'
+      });
+    }
+
+    const subscription = await Subscription.findOne({ 
+      userId: customerId 
+    }).session(session);
+
+    if (!subscription || subscription.planType !== 'order-based') {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Customer is not on order-based plan'
+      });
+    }
+
+    if (subscription.currentBillingCycle?.invoiceGenerated) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Invoice already generated for this billing cycle'
+      });
+    }
+
+    // Count real orders from database
+    const billingStart = subscription.currentBillingCycle?.startDate || 
+                         subscription.orderBasedStartDate ||
+                         new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    
+    const billingEnd = subscription.currentBillingCycle?.endDate || 
+                       new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
+
+    console.log('📅 Generating invoice for period:', {
+      billingStart: billingStart.toISOString(),
+      billingEnd: billingEnd.toISOString()
+    });
+
+    // Count orders in billing period (AFTER plan started)
+    const [marketplaceCount, directCount, wholesaleCount] = await Promise.all([
+      MarketplaceSale.countDocuments({
+        organizationId: customerId,
+        deletedAt: null,
+        createdAt: { 
+          $gte: billingStart,
+          $lte: billingEnd 
+        }
+      }),
+      DirectSale.countDocuments({
+        organizationId: customerId,
+        deletedAt: null,
+        createdAt: { 
+          $gte: billingStart,
+          $lte: billingEnd 
+        }
+      }),
+      WholesaleOrder.countDocuments({
+        organizationId: customerId,
+        deletedAt: null,
+        createdAt: { 
+          $gte: billingStart,
+          $lte: billingEnd 
+        }
+      })
+    ]);
+
+    const ordersCount = marketplaceCount + directCount + wholesaleCount;
+    const pricePerOrder = subscription.pricePerOrder;
+    const totalAmount = ordersCount * pricePerOrder;
+
+    // Skip if no orders
+    if (ordersCount === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'No billable orders in current billing cycle'
+      });
+    }
+
+    const user = await User.findById(customerId).session(session);
+    const now = new Date();
+    const gracePeriodEnd = new Date(now);
+    gracePeriodEnd.setDate(gracePeriodEnd.getDate() + 7);
+
+    // Generate invoice number
+    const userShortId = customerId.toString().slice(-6).toUpperCase();
+    const invoiceCount = await Invoice.countDocuments({ userId: customerId }).session(session);
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${userShortId}-${String(invoiceCount + 1).padStart(3, '0')}`;
+
+    // Create invoice
+    const invoice = await Invoice.create([{
+      userId: customerId,
+      organizationId: subscription.organizationId,
+      invoiceNumber,
+      customerName: user.name,
+      customerEmail: user.email,
+      customerPhone: user.phone,
+      billingPeriod: {
+        startDate: billingStart,
+        endDate: billingEnd,
+        month: billingEnd.toLocaleDateString('en-IN', { 
+          month: 'long', 
+          year: 'numeric' 
+        })
+      },
+      invoiceType: 'order-based',
+      planType: 'order-based',
+      items: [{
+        description: `Orders from ${billingStart.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} to ${billingEnd.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} (${marketplaceCount} marketplace + ${directCount} direct + ${wholesaleCount} wholesale = ${ordersCount} total × ₹${pricePerOrder})`,
+        quantity: ordersCount,
+        unitPrice: pricePerOrder,
+        amount: totalAmount
+      }],
+      subtotal: totalAmount,
+      gstRate: 0,
+      cgst: 0,
+      sgst: 0,
+      totalAmount: totalAmount,
+      status: 'generated',
+      paymentDueDate: gracePeriodEnd,
+      generatedAt: now,
+      notes: `Invoice generated by admin for ${ordersCount} billable orders`
+    }], { session });
+
+    // Update subscription
+    subscription.currentBillingCycle.invoiceGenerated = true;
+    subscription.currentBillingCycle.invoiceId = invoice[0]._id;
+    subscription.currentBillingCycle.ordersCount = ordersCount;
+    subscription.currentBillingCycle.totalAmount = totalAmount;
+    subscription.status = 'grace-period';
+    subscription.gracePeriodEndDate = gracePeriodEnd;
+    subscription.gracePeriodInvoiceId = invoice[0]._id;
+    subscription.notificationsSent.invoiceGenerated = true;
+    subscription.notificationsSent.gracePeriodStarted = true;
+
+    await subscription.save({ session });
+    await session.commitTransaction();
+
+    logger.info('Admin generated invoice for customer', { 
+      adminId,
+      customerId, 
+      invoiceId: invoice[0]._id, 
+      ordersCount,
+      totalAmount
+    });
+
+    res.json({
+      success: true,
+      message: `Invoice generated successfully for ${ordersCount} orders. Customer has 7 days to pay.`,
+      data: { 
+        invoice: invoice[0],
+        gracePeriodEnd,
+        breakdown: {
+          marketplace: marketplaceCount,
+          direct: directCount,
+          wholesale: wholesaleCount,
+          total: ordersCount
+        }
+      }
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    logger.error('Admin invoice generation failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate invoice',
+      error: error.message
+    });
+  } finally {
+    session.endSession();
   }
 };

@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import PlanCard from '../components/subscription/PlanCard';
 import SubscriptionStats from '../components/subscription/SubscriptionStats';
 import UsageWarningBanner from '../components/subscription/UsageWarningBanner';
+import UnpaidInvoiceWarning from '../components/subscription/UnpaidInvoiceWarning';
 
 const SubscriptionDashboard = () => {
   const { user } = useAuth();
@@ -190,6 +191,7 @@ const SubscriptionDashboard = () => {
     <div className="max-w-7xl mx-auto px-4 py-8">
       {/* Usage Warning Banner */}
       <UsageWarningBanner />
+      <UnpaidInvoiceWarning currentPlan={subscription} />
 
       {/* Header */}
       <div className="mb-8">

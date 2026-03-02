@@ -136,7 +136,7 @@ exports.syncOrderToCustomer = async (wholesaleOrderId, supplierTenantId) => {
     console.log('✅ SYNC: Customer organization found:', customerOrgId);
 
     // 🆕 NEW: Check buyer's sync preference
-    if (buyer.syncPreference === 'manual') {
+    if (customerUser.syncPreference === 'manual') {
       // Create sync request (pending approval)
       return await createSyncRequest(order, supplierTenantId, customerOrgId, customerUser, buyer);
     } else {
@@ -151,7 +151,7 @@ exports.syncOrderToCustomer = async (wholesaleOrderId, supplierTenantId) => {
     try {
       await SupplierSync.create({
         supplierTenantId: supplierTenantId,
-        customerTenantId: 'unknown',
+        customerTenantId: null,
         wholesaleOrderId: wholesaleOrderId,
         syncType: 'create',
         status: 'failed',
@@ -484,7 +484,6 @@ async function performDirectSync(order, supplierTenantId, customerOrgId, custome
 }
 
 // 🆕 NEW: Accept sync request
-// 🆕 NEW: Accept sync request
 exports.acceptSyncRequest = async (req, res) => {
   try {
     const { syncId } = req.params;
@@ -495,57 +494,88 @@ exports.acceptSyncRequest = async (req, res) => {
 
     console.log('✅ ACCEPT SYNC:', syncId, 'by', userName);
 
-    // Get sync request
     const syncRequest = await SupplierSync.findById(syncId);
     if (!syncRequest) {
-      return res.status(404).json({
-        success: false,
-        message: 'Sync request not found'
-      });
+      return res.status(404).json({ success: false, message: 'Sync request not found' });
     }
 
-    // Check if already processed
     if (syncRequest.status !== 'pending') {
-      return res.status(400).json({
-        success: false,
-        message: `Sync request already ${syncRequest.status}`
-      });
+      return res.status(400).json({ success: false, message: `Sync request already ${syncRequest.status}` });
     }
 
-    // Get the wholesale order
     const order = await WholesaleOrder.findById(syncRequest.wholesaleOrderId);
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Get customer user
     const customerUser = await User.findById(userId);
     if (!customerUser) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Perform the sync
     const supplierUser = await User.findOne({ organizationId: syncRequest.supplierTenantId });
     const supplierCompanyName = supplierUser?.businessName || 'Supplier';
 
+    // ══════════════════════════════════════════════════════════════
+    // FIX: For EDIT syncs — reverse previous stock before adding new
+    // This prevents old qty (5) + new qty (6) = 11 bug
+    // ══════════════════════════════════════════════════════════════
+    if (syncRequest.syncType === 'edit') {
+      console.log('✏️ ACCEPT-EDIT: Reversing previous stock before applying new quantities');
+
+      const previousSync = await SupplierSync.findOne({
+        wholesaleOrderId: syncRequest.wholesaleOrderId,
+        supplierTenantId: syncRequest.supplierTenantId,
+        syncType: { $in: ['create', 'edit'] },
+        status: { $in: ['synced', 'accepted'] }
+      }).sort({ syncedAt: -1 });
+
+      if (previousSync) {
+        // Reverse each item's stock
+        for (const item of previousSync.itemsSynced) {
+          const product = await Product.findOne({
+            design: item.design,
+            organizationId: customerOrgId
+          });
+          if (product) {
+            const colorVariant = product.colors.find(c => c.color === item.color);
+            if (colorVariant) {
+              Object.entries(item.quantities).forEach(([size, qty]) => {
+                const sizeStock = colorVariant.sizes.find(s => s.size === size);
+                if (sizeStock) {
+                  sizeStock.currentStock = Math.max(0, sizeStock.currentStock - qty);
+                }
+              });
+              await product.save();
+            }
+          }
+        }
+
+        // Delete old FactoryReceiving entries
+        if (previousSync.factoryReceivingIds?.length) {
+          await FactoryReceiving.deleteMany({
+            _id: { $in: previousSync.factoryReceivingIds }
+          });
+          console.log(`✏️ ACCEPT-EDIT: Removed ${previousSync.factoryReceivingIds.length} old receiving entries`);
+        }
+      } else {
+        console.warn('⚠️ ACCEPT-EDIT: No previous sync found to reverse — applying as fresh stock');
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Add new stock (same for both create and edit after reversal)
+    // ══════════════════════════════════════════════════════════════
     const factoryReceivingIds = [];
     const itemsSynced = [];
 
-    // Create FactoryReceiving entries and update stock
     for (const item of syncRequest.itemsSynced) {
-      // ✅ FIX: Calculate totalQuantity if not present
       let totalQuantity = item.totalQuantity;
       if (!totalQuantity) {
         totalQuantity = Object.values(item.quantities).reduce((sum, qty) => sum + qty, 0);
       }
 
-      // Ensure product exists
+      // Ensure product exists in customer org
       let customerProduct = await Product.findOne({
         design: item.design,
         organizationId: customerOrgId
@@ -588,11 +618,11 @@ exports.acceptSyncRequest = async (req, res) => {
       }
 
       if (!customerProduct) {
-        console.warn(`⚠️ Could not create product ${item.design}`);
+        console.warn(`⚠️ Could not find or create product ${item.design}`);
         continue;
       }
 
-      // Check/add color
+      // Ensure color variant exists
       let colorVariant = customerProduct.colors.find(c => c.color === item.color);
       if (!colorVariant) {
         const supplierProduct = await Product.findOne({
@@ -621,14 +651,14 @@ exports.acceptSyncRequest = async (req, res) => {
         }
       }
 
-      // Create FactoryReceiving
+      // Create FactoryReceiving entry
       const factoryReceiving = await FactoryReceiving.create({
         design: item.design,
         color: item.color,
         quantities: item.quantities,
-        totalQuantity: totalQuantity,  // ✅ FIXED: Use calculated totalQuantity
+        totalQuantity: totalQuantity,
         batchId: order.challanNumber || `WH-${order._id}`,
-        notes: `Synced from ${supplierCompanyName} - Order ${order.challanNumber || order._id} (Accepted by ${userName})`,
+        notes: `Synced from ${supplierCompanyName} - Order ${order.challanNumber || order._id}${syncRequest.syncType === 'edit' ? ' (Edit Accepted' : ' (Accepted'} by ${userName})`,
         receivedDate: order.createdAt,
         receivedBy: userName,
         sourceType: 'supplier-sync',
@@ -642,7 +672,8 @@ exports.acceptSyncRequest = async (req, res) => {
           orderDate: order.createdAt,
           supplierCompanyName: supplierCompanyName,
           acceptedBy: userName,
-          acceptedAt: new Date()
+          acceptedAt: new Date(),
+          isEdit: syncRequest.syncType === 'edit'
         },
         createdBy: {
           userId: customerUser._id,
@@ -650,7 +681,7 @@ exports.acceptSyncRequest = async (req, res) => {
         }
       });
 
-      // Update stock
+      // Add new stock
       if (colorVariant) {
         Object.entries(item.quantities).forEach(([size, qty]) => {
           const sizeStock = colorVariant.sizes.find(s => s.size === size);
@@ -665,7 +696,7 @@ exports.acceptSyncRequest = async (req, res) => {
       itemsSynced.push(item);
     }
 
-    // Update sync request
+    // Update sync request status
     syncRequest.status = 'accepted';
     syncRequest.approvedBy = {
       userId: userId,
@@ -695,12 +726,12 @@ exports.acceptSyncRequest = async (req, res) => {
     // Notify supplier
     try {
       const supplierUsers = await User.find({ organizationId: syncRequest.supplierTenantId });
-      for (const supplierUser of supplierUsers) {
+      for (const su of supplierUsers) {
         await Notification.create({
-          userId: supplierUser._id,
+          userId: su._id,
           type: 'sync_accepted',
-          title: 'Sync Request Accepted',
-          message: `${userName} accepted sync request for Order ${order.challanNumber || 'N/A'}`,
+          title: syncRequest.syncType === 'edit' ? 'Edit Request Accepted' : 'Sync Request Accepted',
+          message: `${userName} accepted ${syncRequest.syncType === 'edit' ? 'edit' : 'sync'} request for Order ${order.challanNumber || 'N/A'}`,
           severity: 'success',
           relatedId: syncRequest._id,
           relatedModel: 'SupplierSync',
@@ -713,9 +744,10 @@ exports.acceptSyncRequest = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Sync request accepted successfully',
+      message: `Sync request ${syncRequest.syncType === 'edit' ? '(edit) ' : ''}accepted successfully`,
       data: {
         syncId: syncRequest._id,
+        syncType: syncRequest.syncType,
         itemsCount: itemsSynced.length,
         acceptedBy: userName,
         acceptedAt: new Date()
@@ -834,88 +866,129 @@ exports.resendSyncRequest = async (req, res) => {
     const { orderId } = req.params;
     const supplierTenantId = req.user.organizationId;
 
-    console.log('🔄 RESEND SYNC:', orderId);
-
-    // Get order
     const order = await WholesaleOrder.findById(orderId);
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-    // Check if order belongs to this supplier
     if (order.organizationId.toString() !== supplierTenantId.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Unauthorized'
-      });
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    // ✅ NEW: Check if already synced/pending
     if (order.syncStatus === 'synced' || order.syncStatus === 'accepted') {
-      return res.status(400).json({
-        success: false,
-        message: 'Order is already synced'
-      });
+      return res.status(400).json({ success: false, message: 'Order is already synced' });
     }
 
     if (order.syncStatus === 'pending') {
-      return res.status(400).json({
-        success: false,
-        message: 'Sync request already pending'
-      });
+      return res.status(400).json({ success: false, message: 'Sync request already pending' });
     }
 
-    // Get buyer
-    const buyer = await WholesaleBuyer.findById(order.buyerId);
+    const buyer = await WholesaleBuyer.findOne({
+      mobile: order.buyerContact,
+      organizationId: supplierTenantId
+    });
     if (!buyer || !buyer.customerTenantId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Buyer is not a customer'
-      });
+      return res.status(400).json({ success: false, message: 'Buyer is not a customer' });
     }
 
-    // Get customer user
     const customerUser = await User.findById(buyer.customerTenantId);
     if (!customerUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'Customer user not found'
-      });
+      return res.status(400).json({ success: false, message: 'Customer account not found' });
     }
 
     const customerOrgId = customerUser.organizationId;
+    const supplierUser = await User.findOne({ organizationId: supplierTenantId });
+    const supplierCompanyName = supplierUser?.businessName || 'Supplier';
 
-    // ✅ NEW: If previously rejected, mark old sync as cancelled and create new one
-    if (order.syncStatus === 'rejected') {
-      await SupplierSync.updateMany(
-        {
-          wholesaleOrderId: orderId,
-          status: 'rejected'
-        },
-        {
-          $set: { status: 'cancelled' }
-        }
-      );
+    // ── FIX: Check if a previous accepted/synced record exists for this order ──
+    // If yes → this resend is an EDIT (customer had stock before, it was reversed on reject)
+    // If no  → this resend is a genuine first-time CREATE
+    const previousAcceptedSync = await SupplierSync.findOne({
+      wholesaleOrderId: order._id,
+      supplierTenantId,
+      syncType: { $in: ['create', 'edit'] },
+      status: { $in: ['synced', 'accepted'] }
+    }).sort({ syncedAt: -1 });
+
+    const isResendAfterRejection = !!previousAcceptedSync;
+    const syncType = isResendAfterRejection ? 'edit' : 'create';
+
+    // Group items
+    const itemGroups = {};
+    for (const item of order.items) {
+      const key = `${item.design}-${item.color}`;
+      if (!itemGroups[key]) {
+        itemGroups[key] = { design: item.design, color: item.color, quantities: {}, totalQuantity: 0, pricePerUnit: item.pricePerUnit };
+      }
+      itemGroups[key].quantities[item.size] = (itemGroups[key].quantities[item.size] || 0) + item.quantity;
+      itemGroups[key].totalQuantity += item.quantity;
+    }
+    const itemsSynced = Object.values(itemGroups);
+
+    // Build diff if this is a re-send after rejection
+    let changesMade = null;
+    if (isResendAfterRejection) {
+      const diffMap = {};
+      previousAcceptedSync.itemsSynced.forEach(item => {
+        const key = `${item.design}-${item.color}`;
+        diffMap[key] = { design: item.design, color: item.color, before: item.quantities, after: null };
+      });
+      itemsSynced.forEach(item => {
+        const key = `${item.design}-${item.color}`;
+        if (diffMap[key]) diffMap[key].after = item.quantities;
+        else diffMap[key] = { design: item.design, color: item.color, before: null, after: item.quantities };
+      });
+      changesMade = {
+        diff: Object.values(diffMap),
+        previouslySyncedAt: previousAcceptedSync.syncedAt,
+        editedAt: new Date()
+      };
     }
 
-    // Create new sync request
-    const result = await createSyncRequest(order, supplierTenantId, customerOrgId, customerUser, buyer);
-
-    res.json({
-      success: true,
-      message: 'Sync request resent successfully',
-      data: result
+    // Create pending sync record with correct syncType
+    const syncRecord = await SupplierSync.create({
+      supplierTenantId,
+      customerTenantId: customerOrgId,
+      wholesaleOrderId: order._id,
+      syncType,           // ← 'edit' if resending after prior accepted sync, 'create' if first time
+      status: 'pending',
+      itemsSynced,
+      changesMade,
+      metadata: {
+        orderChallanNumber: order.challanNumber,
+        orderTotalAmount: order.totalAmount,
+        orderDate: order.createdAt,
+        buyerName: order.buyerName,
+        supplierCompanyName
+      }
     });
+
+    await WholesaleOrder.findByIdAndUpdate(order._id, {
+      syncStatus: 'pending',
+      $push: { syncRequests: { requestId: syncRecord._id, sentAt: new Date(), status: 'pending' } }
+    });
+
+    // Notify customer
+    try {
+      await Notification.create({
+        userId: customerUser._id,
+        type: isResendAfterRejection ? 'sync_edit_request' : 'sync_request',
+        title: isResendAfterRejection ? '✏️ Supplier Resent Edit Request' : '📦 New Stock Sync Request',
+        message: isResendAfterRejection
+          ? `${supplierCompanyName} resent changes for Order ${order.challanNumber || 'N/A'}.`
+          : `${supplierCompanyName} sent a sync request for Order ${order.challanNumber || 'N/A'}.`,
+        severity: isResendAfterRejection ? 'warning' : 'info',
+        relatedId: syncRecord._id,
+        relatedModel: 'SupplierSync',
+        organizationId: customerOrgId
+      });
+    } catch (notifError) {
+      console.warn('⚠️ Notification failed:', notifError.message);
+    }
+
+    res.json({ success: true, message: 'Sync request resent successfully', data: { syncId: syncRecord._id, syncType } });
+
   } catch (error) {
     console.error('Error resending sync request:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to resend sync request',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to resend sync request', error: error.message });
   }
 };
 
@@ -979,69 +1052,64 @@ exports.syncOrderEdit = async (wholesaleOrderId, supplierTenantId, changesMade) 
     console.log('🔄 SYNC-EDIT: Starting edit sync for order', wholesaleOrderId);
 
     const order = await WholesaleOrder.findById(wholesaleOrderId);
-    if (!order || !order.syncedToCustomer) {
-      console.log('🔄 SYNC-EDIT: Order not previously synced');
+    if (!order) {
+      return { synced: false, reason: 'Order not found' };
+    }
+
+    // Check for ANY existing sync (pending counts too — customer may not have accepted yet)
+    const hasSyncHistory = order.syncedToCustomer || await SupplierSync.exists({
+      wholesaleOrderId: order._id,
+      supplierTenantId,
+      status: { $in: ['pending', 'synced', 'accepted'] }
+    });
+
+    if (!hasSyncHistory) {
+      console.log('🔄 SYNC-EDIT: Order has no sync history, skipping edit sync');
       return { synced: false, reason: 'Order not previously synced' };
     }
 
-    // Check if still within 24-hour edit window
+    // Check 24hr window
     const orderAge = Date.now() - new Date(order.createdAt).getTime();
-    const twentyFourHours = 24 * 60 * 60 * 1000;
-
-    if (orderAge > twentyFourHours) {
-      console.log('🔄 SYNC-EDIT: Order is older than 24hrs. Skipping auto-sync.');
+    if (orderAge > 24 * 60 * 60 * 1000) {
+      console.log('🔄 SYNC-EDIT: Order older than 24hrs. Skipping.');
       return { synced: false, reason: 'Edit window expired (>24hrs)' };
     }
 
-    // Get previous sync record
+    // ── STEP 1: Check for existing pending request FIRST ──
+    // Must happen before previousSync guard because rejected orders
+    // have no accepted/synced record but may have a new pending one
+    const existingPendingSync = await SupplierSync.findOne({
+      wholesaleOrderId: order._id,
+      supplierTenantId,
+      status: 'pending'
+    });
+
+    // ── STEP 2: Find last accepted/synced record (for diff + stock reversal) ──
     const previousSync = await SupplierSync.findOne({
       wholesaleOrderId: order._id,
       syncType: { $in: ['create', 'edit'] },
       status: { $in: ['synced', 'accepted'] }
     }).sort({ syncedAt: -1 });
 
-    if (!previousSync) {
-      console.log('🔄 SYNC-EDIT: No previous sync found');
-      return { synced: false, reason: 'No previous sync found' };
+    // ── STEP 3: Determine customerTenantId ──
+    // From previousSync if exists, otherwise from existingPendingSync
+    const customerTenantId = previousSync?.customerTenantId
+      || existingPendingSync?.customerTenantId;
+
+    if (!customerTenantId) {
+      console.log('🔄 SYNC-EDIT: Cannot determine customer — no sync history found');
+      return { synced: false, reason: 'No sync history found for this order' };
     }
-
-    const customerTenantId = previousSync.customerTenantId;
-
-    // Reverse old stock changes
-    console.log('🔄 SYNC-EDIT: Reversing old stock changes');
-    for (const item of previousSync.itemsSynced) {
-      const product = await Product.findOne({
-        design: item.design,
-        organizationId: customerTenantId
-      });
-
-      if (product) {
-        const colorVariant = product.colors.find(c => c.color === item.color);
-        if (colorVariant) {
-          Object.entries(item.quantities).forEach(([size, qty]) => {
-            const sizeStock = colorVariant.sizes.find(s => s.size === size);
-            if (sizeStock) {
-              sizeStock.currentStock = Math.max(0, sizeStock.currentStock - qty);
-            }
-          });
-          await product.save();
-        }
-      }
-    }
-
-    // Delete old FactoryReceiving entries
-    await FactoryReceiving.deleteMany({
-      _id: { $in: previousSync.factoryReceivingIds }
-    });
-
-    // Now add NEW stock
-    console.log('🔄 SYNC-EDIT: Adding new stock from updated order');
 
     const customerUser = await User.findOne({ organizationId: customerTenantId });
+    if (!customerUser) {
+      return { synced: false, reason: 'Customer not found' };
+    }
+
     const supplierUser = await User.findOne({ organizationId: supplierTenantId });
     const supplierCompanyName = supplierUser?.businessName || 'Supplier';
 
-    // Group items
+    // ── Group new order items ──
     const itemGroups = {};
     for (const item of order.items) {
       const key = `${item.design}-${item.color}`;
@@ -1057,20 +1125,168 @@ exports.syncOrderEdit = async (wholesaleOrderId, supplierTenantId, changesMade) 
       itemGroups[key].quantities[item.size] = (itemGroups[key].quantities[item.size] || 0) + item.quantity;
       itemGroups[key].totalQuantity += item.quantity;
     }
+    const newItemsSynced = Object.values(itemGroups);
+
+    // ── Build diff (use previousSync items if available, else existingPending items) ──
+    const baseItems = previousSync?.itemsSynced || existingPendingSync?.itemsSynced || [];
+    const diffMap = {};
+    baseItems.forEach(item => {
+      const key = `${item.design}-${item.color}`;
+      diffMap[key] = { design: item.design, color: item.color, before: item.quantities, after: null };
+    });
+    newItemsSynced.forEach(item => {
+      const key = `${item.design}-${item.color}`;
+      if (diffMap[key]) diffMap[key].after = item.quantities;
+      else diffMap[key] = { design: item.design, color: item.color, before: null, after: item.quantities };
+    });
+    const structuredDiff = Object.values(diffMap);
+
+    // ── STEP 4: If pending exists, update it in place ──
+    if (existingPendingSync) {
+      console.log('🔄 SYNC-EDIT: Updating existing pending request in place:', existingPendingSync._id);
+
+      existingPendingSync.syncType    = 'edit';
+      existingPendingSync.itemsSynced = newItemsSynced;
+      existingPendingSync.changesMade = {
+        diff: structuredDiff,
+        previouslySyncedAt: previousSync?.syncedAt || null,
+        editedAt: new Date()
+      };
+      existingPendingSync.metadata = {
+        ...existingPendingSync.metadata,
+        orderChallanNumber: order.challanNumber,
+        orderTotalAmount:   order.totalAmount,
+        orderDate:          order.createdAt,
+        buyerName:          order.buyerName,
+        supplierCompanyName,
+        lastEditedAt:       new Date()
+      };
+      await existingPendingSync.save();
+
+      try {
+        await Notification.create({
+          userId: customerUser._id,
+          type: 'sync_request_updated',
+          title: '✏️ Pending Sync Request Updated',
+          message: `${supplierCompanyName} updated Order ${order.challanNumber || 'N/A'} before you reviewed it. Please check the updated request.`,
+          severity: 'warning',
+          relatedId: existingPendingSync._id,
+          relatedModel: 'SupplierSync',
+          organizationId: customerTenantId
+        });
+      } catch (notifError) {
+        console.warn('⚠️ Update notification failed:', notifError.message);
+      }
+
+      console.log('✅ SYNC-EDIT: Existing pending request updated');
+      return {
+        synced: false,
+        pending: true,
+        updated: true,
+        syncRequestId: existingPendingSync._id,
+        message: 'Existing pending request updated with new quantities'
+      };
+    }
+
+    // ── STEP 5: No pending exists — need previousSync for manual/direct flow ──
+    if (!previousSync) {
+      console.log('🔄 SYNC-EDIT: No previous accepted sync and no pending request found');
+      return { synced: false, reason: 'No previous sync found' };
+    }
+
+    // ══════════════════════════════════════════════════════
+    // MANUAL MODE
+    // ══════════════════════════════════════════════════════
+    if (customerUser.syncPreference === 'manual') {
+      console.log('📋 SYNC-EDIT: Manual mode, creating new pending edit request');
+
+      const editSync = await SupplierSync.create({
+        supplierTenantId,
+        customerTenantId,
+        wholesaleOrderId: order._id,
+        syncType: 'edit',
+        status: 'pending',
+        itemsSynced: newItemsSynced,
+        changesMade: {
+          diff: structuredDiff,
+          previouslySyncedAt: previousSync.syncedAt,
+          editedAt: new Date()
+        },
+        editedWithin24Hours: true,
+        metadata: {
+          orderChallanNumber: order.challanNumber,
+          orderTotalAmount:   order.totalAmount,
+          orderDate:          order.createdAt,
+          buyerName:          order.buyerName,
+          supplierCompanyName
+        }
+      });
+
+      await WholesaleOrder.findByIdAndUpdate(order._id, {
+        syncStatus: 'pending',
+        $push: {
+          syncRequests: {
+            requestId: editSync._id,
+            sentAt: new Date(),
+            status: 'pending'
+          }
+        }
+      });
+
+      try {
+        await Notification.create({
+          userId: customerUser._id,
+          type: 'sync_edit_request',
+          title: '✏️ Supplier Edited an Order',
+          message: `${supplierCompanyName} made changes to Order ${order.challanNumber || 'N/A'}. Review and accept or reject.`,
+          severity: 'warning',
+          relatedId: editSync._id,
+          relatedModel: 'SupplierSync',
+          organizationId: customerTenantId,
+          metadata: { supplierName: supplierCompanyName, challanNumber: order.challanNumber, isEdit: true }
+        });
+      } catch (notifError) {
+        console.warn('⚠️ SYNC-EDIT: Notification failed:', notifError.message);
+      }
+
+      console.log('✅ SYNC-EDIT: Pending edit request created:', editSync._id);
+      return {
+        synced: false,
+        pending: true,
+        syncRequestId: editSync._id,
+        message: 'Edit sync request sent to customer for approval'
+      };
+    }
+
+    // ══════════════════════════════════════════════════════
+    // DIRECT MODE
+    // ══════════════════════════════════════════════════════
+    console.log('⚡ SYNC-EDIT: Direct mode, applying immediately');
+
+    for (const item of previousSync.itemsSynced) {
+      const product = await Product.findOne({ design: item.design, organizationId: customerTenantId });
+      if (product) {
+        const colorVariant = product.colors.find(c => c.color === item.color);
+        if (colorVariant) {
+          Object.entries(item.quantities).forEach(([size, qty]) => {
+            const sizeStock = colorVariant.sizes.find(s => s.size === size);
+            if (sizeStock) sizeStock.currentStock = Math.max(0, sizeStock.currentStock - qty);
+          });
+          await product.save();
+        }
+      }
+    }
+
+    await FactoryReceiving.deleteMany({ _id: { $in: previousSync.factoryReceivingIds } });
 
     const factoryReceivingIds = [];
-    const itemsSynced = [];
+    const itemsSyncedFinal = [];
 
     for (const key in itemGroups) {
       const item = itemGroups[key];
-      const customerProduct = await Product.findOne({
-        design: item.design,
-        organizationId: customerTenantId
-      });
-
+      const customerProduct = await Product.findOne({ design: item.design, organizationId: customerTenantId });
       if (!customerProduct) continue;
 
-      // Create new FactoryReceiving
       const factoryReceiving = await FactoryReceiving.create({
         design: item.design,
         color: item.color,
@@ -1083,35 +1299,24 @@ exports.syncOrderEdit = async (wholesaleOrderId, supplierTenantId, changesMade) 
         sourceType: 'supplier-sync',
         sourceName: supplierCompanyName.toLowerCase(),
         organizationId: customerTenantId,
-        supplierTenantId: supplierTenantId,
+        supplierTenantId,
         supplierWholesaleOrderId: order._id,
         isReadOnly: true,
-        supplierMetadata: {
-          challanNumber: order.challanNumber,
-          orderDate: order.createdAt,
-          supplierCompanyName: supplierCompanyName,
-          isEdit: true
-        },
-        createdBy: {
-          userId: customerUser._id,
-          userName: 'System Auto-sync'
-        }
+        supplierMetadata: { challanNumber: order.challanNumber, orderDate: order.createdAt, supplierCompanyName, isEdit: true },
+        createdBy: { userId: customerUser._id, userName: 'System Auto-sync' }
       });
 
-      // Add new stock
       const colorVariant = customerProduct.colors.find(c => c.color === item.color);
       if (colorVariant) {
         Object.entries(item.quantities).forEach(([size, qty]) => {
           const sizeStock = colorVariant.sizes.find(s => s.size === size);
-          if (sizeStock) {
-            sizeStock.currentStock += qty;
-          }
+          if (sizeStock) sizeStock.currentStock += qty;
         });
         await customerProduct.save();
       }
 
       factoryReceivingIds.push(factoryReceiving._id);
-      itemsSynced.push({
+      itemsSyncedFinal.push({
         design: item.design,
         color: item.color,
         quantities: item.quantities,
@@ -1119,30 +1324,31 @@ exports.syncOrderEdit = async (wholesaleOrderId, supplierTenantId, changesMade) 
       });
     }
 
-    // Create edit sync record
     await SupplierSync.create({
-      supplierTenantId: supplierTenantId,
-      customerTenantId: customerTenantId,
+      supplierTenantId,
+      customerTenantId,
       wholesaleOrderId: order._id,
       syncType: 'edit',
-      itemsSynced: itemsSynced,
-      factoryReceivingIds: factoryReceivingIds,
+      itemsSynced: itemsSyncedFinal,
+      factoryReceivingIds,
       status: 'synced',
-      changesMade: changesMade,
+      changesMade: {
+        diff: structuredDiff,
+        previouslySyncedAt: previousSync.syncedAt,
+        editedAt: new Date(),
+        ...(changesMade || {})
+      },
       editedWithin24Hours: true,
       metadata: {
         orderChallanNumber: order.challanNumber,
-        orderDate: order.createdAt
+        orderTotalAmount:   order.totalAmount,
+        orderDate:          order.createdAt,
+        buyerName:          order.buyerName
       }
     });
 
-    console.log('✅ SYNC-EDIT: Successfully synced order edit');
-
-    return {
-      synced: true,
-      itemsCount: itemsSynced.length,
-      factoryReceivingIds: factoryReceivingIds
-    };
+    console.log('✅ SYNC-EDIT: Direct sync complete');
+    return { synced: true, itemsCount: itemsSyncedFinal.length, factoryReceivingIds };
 
   } catch (error) {
     console.error('🔴 SYNC-EDIT Error:', error);

@@ -10,7 +10,7 @@ const supplierSyncSchema = new mongoose.Schema({
   customerTenantId: {
     type: mongoose.Schema.Types.ObjectId,  // ✅ CORRECT
     ref: 'User',
-    required: true,
+    required: false,
     index: true
   },
   

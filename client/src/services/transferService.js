@@ -21,6 +21,16 @@ const transferService = {
     return response.data;
   },
 
+  // ✅ NEW: Get transfer statistics with per-account breakdown
+  getTransferStats: async (filters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.month) params.append('month', filters.month);
+    if (filters.year) params.append('year', filters.year);
+    const queryString = params.toString();
+    const response = await api.get(`/transfers/stats${queryString ? `?${queryString}` : ''}`);
+    return response.data;
+  },
+
   // Transfer from main to reserved
   transferToReserved: async (data) => {
     const response = await api.post('/transfers/to-reserved', data);
@@ -39,11 +49,17 @@ const transferService = {
     return response.data;
   },
 
-  // Bulk transfer to main (ADD THIS)
+  // Bulk transfer to main
   bulkTransferToMain: async (data) => {
     const response = await api.post('/transfers/bulk-to-main', data);
     return response.data;
-  }
+  },
+
+  // Bulk internal transfer between accounts
+  bulkInternalTransfer: async (data) => {
+    const response = await api.post('/transfers/bulk-internal-transfer', data);
+    return response.data;
+  },
 };
 
 export default transferService;

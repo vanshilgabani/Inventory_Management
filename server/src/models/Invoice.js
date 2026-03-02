@@ -51,6 +51,7 @@ const invoiceSchema = new mongoose.Schema({
 
   // Financial details
   subtotal: { type: Number, required: true },
+  discount: { type: Number, default: 0 },
   gstRate: { type: Number, default: 18 }, // 18% GST
   cgst: Number,
   sgst: Number,
@@ -98,11 +99,14 @@ invoiceSchema.index({ organizationId: 1 });
 // Generate invoice number
 invoiceSchema.pre('save', async function(next) {
   if (!this.invoiceNumber) {
-    const count = await mongoose.model('Invoice').countDocuments();
+    // ✅ Include userId short code — guaranteed globally unique
+    const userShortId = this.userId.toString().slice(-6).toUpperCase();
     const year = new Date().getFullYear();
-    this.invoiceNumber = `INV-${year}-${String(count + 1).padStart(5, '0')}`;
+    const count = await mongoose.model('Invoice').countDocuments({ userId: this.userId });
+    this.invoiceNumber = `INV-${year}-${userShortId}-${String(count + 1).padStart(3, '0')}`;
   }
   next();
 });
+
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

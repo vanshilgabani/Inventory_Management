@@ -6,8 +6,8 @@ import {
   FiMail, FiPhone, FiPackage, FiSearch, FiShoppingCart,
   FiShoppingBag, FiBarChart2, FiSettings, FiSave, FiX,
   FiFileText, FiCreditCard, FiActivity, FiClock, FiZap,
-  FiEye, FiEdit3, FiShield, FiAlertCircle, FiCheck,
-  FiLock, FiUnlock, FiMoreVertical, FiCalendar, FiTrendingUp,
+  FiEye, FiArchive, FiShield, FiAlertCircle, FiCheck,
+  FiLock, FiUnlock, FiMoreVertical, FiCalendar, FiTruck,
   FiTrendingDown, FiFilter, FiChevronRight, FiGrid, FiList
 } from 'react-icons/fi';
 
@@ -44,17 +44,221 @@ const CustomerManagement = () => {
   const [paymentRequests, setPaymentRequests] = useState([]);
   const [loadingRequests, setLoadingRequests] = useState(false);
   const [requestsFilter, setRequestsFilter] = useState('pending');
+  const [generatingInvoiceFor, setGeneratingInvoiceFor] = useState(null);
 
   const availableSidebarItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: FiActivity, locked: true, section: 'Main Menu', color: 'text-sky-600', bgColor: 'bg-sky-50', gradient: 'from-sky-400 to-blue-500' },
-    { id: 'inventory', label: 'Inventory', icon: FiPackage, section: 'Main Menu', color: 'text-violet-600', bgColor: 'bg-violet-50', gradient: 'from-violet-400 to-purple-500' },
-    { id: 'wholesale', label: 'Wholesale Orders', icon: FiShoppingCart, section: 'Main Menu', color: 'text-amber-600', bgColor: 'bg-amber-50', gradient: 'from-amber-400 to-orange-500' },
-    { id: 'direct-sales', label: 'Direct Sales', icon: FiShoppingBag, section: 'Main Menu', color: 'text-rose-600', bgColor: 'bg-rose-50', gradient: 'from-rose-400 to-pink-500' },
-    { id: 'marketplace-sales', label: 'Marketplace Sales', icon: FiBarChart2, section: 'Main Menu', color: 'text-indigo-600', bgColor: 'bg-indigo-50', gradient: 'from-indigo-400 to-purple-500' },
-    { id: 'customers', label: 'Customers', icon: FiUsers, section: 'Main Menu', color: 'text-blue-600', bgColor: 'bg-blue-50', gradient: 'from-blue-400 to-indigo-500' },
-    { id: 'analytics', label: 'Analytics', icon: FiBarChart2, section: 'Main Menu', color: 'text-red-600', bgColor: 'bg-red-50', gradient: 'from-red-400 to-pink-500' },
-    { id: 'settings', label: 'Settings', icon: FiSettings, locked: false, section: 'Settings', color: 'text-slate-600', bgColor: 'bg-slate-50', gradient: 'from-slate-400 to-gray-500' }
-  ];
+  // ── Main Menu ──────────────────────────────────────────
+  {
+    id: 'dashboard',
+    label: 'Dashboard',
+    icon: FiActivity,
+    locked: true, // always visible, can't be removed
+    section: 'Main Menu',
+    color: 'text-sky-600',
+    bgColor: 'bg-sky-50',
+    gradient: 'from-sky-400 to-blue-500'
+  },
+  {
+    id: 'inventory',
+    label: 'Inventory',
+    icon: FiPackage,
+    section: 'Main Menu',
+    color: 'text-violet-600',
+    bgColor: 'bg-violet-50',
+    gradient: 'from-violet-400 to-purple-500'
+  },
+  {
+    id: 'factory-receiving',
+    label: 'Factory Receiving',
+    icon: FiTruck,
+    section: 'Main Menu',
+    color: 'text-green-600',
+    bgColor: 'bg-green-50',
+    gradient: 'from-green-400 to-emerald-500'
+  },
+  {
+    id: 'received-from-supplier',
+    label: 'Received from Supplier',
+    icon: FiTruck,
+    section: 'Main Menu',
+    color: 'text-teal-600',
+    bgColor: 'bg-teal-50',
+    gradient: 'from-teal-400 to-cyan-500'
+  },
+  {
+    id: 'wholesale',
+    label: 'Wholesale Orders',
+    icon: FiShoppingCart,
+    section: 'Main Menu',
+    color: 'text-amber-600',
+    bgColor: 'bg-amber-50',
+    gradient: 'from-amber-400 to-orange-500'
+  },
+  {
+    id: 'direct-sales',
+    label: 'Direct Sales',
+    icon: FiShoppingBag,
+    section: 'Main Menu',
+    color: 'text-rose-600',
+    bgColor: 'bg-rose-50',
+    gradient: 'from-rose-400 to-pink-500'
+  },
+  {
+    id: 'marketplace-sales',
+    label: 'Marketplace Sales',
+    icon: FiBarChart2,
+    section: 'Main Menu',
+    color: 'text-indigo-600',
+    bgColor: 'bg-indigo-50',
+    gradient: 'from-indigo-400 to-purple-500'
+  },
+  {
+    id: 'wholesale-buyers',
+    label: 'Wholesale Buyers',
+    icon: FiUsers,
+    section: 'Main Menu',
+    color: 'text-teal-600',
+    bgColor: 'bg-teal-50',
+    gradient: 'from-teal-400 to-cyan-500'
+  },
+  {
+    id: 'customers',
+    label: 'Customers',
+    icon: FiUsers,
+    section: 'Main Menu',
+    color: 'text-blue-600',
+    bgColor: 'bg-blue-50',
+    gradient: 'from-blue-400 to-indigo-500'
+  },
+  {
+    id: 'analytics',
+    label: 'Analytics',
+    icon: FiBarChart2,
+    section: 'Main Menu',
+    color: 'text-red-600',
+    bgColor: 'bg-red-50',
+    gradient: 'from-red-400 to-pink-500'
+  },
+  {
+    id: 'analytics-wholesale',
+    label: 'Analytics → Wholesale & Direct',
+    icon: FiBarChart2,
+    section: 'Main Menu',
+    color: 'text-green-600',
+    bgColor: 'bg-green-50',
+    gradient: 'from-green-400 to-emerald-500'
+  },
+  {
+    id: 'analytics-marketplace',
+    label: 'Analytics → Marketplace & Inventory',
+    icon: FiBarChart2,
+    section: 'Main Menu',
+    color: 'text-cyan-600',
+    bgColor: 'bg-cyan-50',
+    gradient: 'from-cyan-400 to-blue-500'
+  },
+
+  // ── Subscription ───────────────────────────────────────
+  {
+    id: 'subscription',
+    label: 'Subscription',
+    icon: FiCreditCard,
+    section: 'Subscription',
+    color: 'text-indigo-600',
+    bgColor: 'bg-indigo-50',
+    gradient: 'from-indigo-400 to-purple-500'
+  },
+  {
+    id: 'invoices',
+    label: 'Invoices',
+    icon: FiDollarSign,
+    section: 'Subscription',
+    color: 'text-yellow-600',
+    bgColor: 'bg-yellow-50',
+    gradient: 'from-yellow-400 to-amber-500'
+  },
+  {
+    id: 'sync-logs',
+    label: 'Sync Logs',
+    icon: FiRefreshCw,
+    section: 'Subscription',
+    color: 'text-blue-600',
+    bgColor: 'bg-blue-50',
+    gradient: 'from-blue-400 to-cyan-500'
+  },
+
+  // ── Admin ──────────────────────────────────────────────
+  {
+    id: 'monthly-bills',
+    label: 'Monthly Bills',
+    icon: FiFileText,
+    section: 'Admin',
+    color: 'text-orange-600',
+    bgColor: 'bg-orange-50',
+    gradient: 'from-orange-400 to-amber-500'
+  },
+  {
+    id: 'deleted-orders',
+    label: 'Deleted Orders',
+    icon: FiArchive,
+    section: 'Admin',
+    color: 'text-red-600',
+    bgColor: 'bg-red-50',
+    gradient: 'from-red-400 to-rose-500'
+  },
+  {
+    id: 'users',
+    label: 'User Management',
+    icon: FiUsers,
+    section: 'Admin',
+    color: 'text-purple-600',
+    bgColor: 'bg-purple-50',
+    gradient: 'from-purple-400 to-violet-500'
+  },
+  {
+    id: 'settings',
+    label: 'Settings',
+    icon: FiSettings,
+    section: 'Settings',
+    color: 'text-slate-600',
+    bgColor: 'bg-slate-50',
+    gradient: 'from-slate-400 to-gray-500'
+  },
+];
+
+  const handleGenerateInvoice = async (customerId, customerName) => {
+  if (!confirm(`Generate invoice for ${customerName}? This will start a 7-day grace period.`)) {
+    return;
+  }
+
+  try {
+    setGeneratingInvoiceFor(customerId);
+    
+    const response = await fetch(`${API_URL}/admin/customers/${customerId}/generate-invoice`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      }
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      toast.success(`✅ ${data.message}`);
+      toast.info(`📊 Breakdown: ${data.data.breakdown.marketplace} marketplace + ${data.data.breakdown.direct} direct + ${data.data.breakdown.wholesale} wholesale = ${data.data.breakdown.total} orders`);
+      
+      // Refresh customer list to show updated status
+      fetchCustomers();
+    } else {
+      toast.error(data.message || 'Failed to generate invoice');
+    }
+  } catch (error) {
+    console.error('Generate invoice error:', error);
+    toast.error('Failed to generate invoice');
+  } finally {
+    setGeneratingInvoiceFor(null);
+  }
+};
 
   const groupedItems = availableSidebarItems.reduce((acc, item) => {
     if (!acc[item.section]) acc[item.section] = [];
@@ -474,6 +678,8 @@ const CustomerManagement = () => {
           <DetailsModal
             customer={selectedCustomer}
             onClose={closeDetailsModal}
+            generatingInvoiceFor={generatingInvoiceFor}
+            onGenerateInvoice={handleGenerateInvoice}
           />
         )}
       </div>
@@ -961,7 +1167,7 @@ const PermissionsModal = ({ customer, tempPermissions, groupedItems, onToggle, o
 );
 
 // Details Modal Component
-const DetailsModal = ({ customer, onClose }) => (
+const DetailsModal = ({ customer, onClose, generatingInvoiceFor, onGenerateInvoice }) => (
   <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in">
     <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-hidden animate-scale-in">
       <div className="bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white p-6">
@@ -1105,8 +1311,124 @@ const DetailsModal = ({ customer, onClose }) => (
               <p className="text-xs text-blue-600 mt-2">{customer.billing?.lastMonth?.total || 0} orders</p>
             </div>
           </div>
-        </div>
+          {/* 🆕 ADD THIS ENTIRE NEW SECTION HERE - Order-Based Billing Invoice Generator */}
+          {customer.subscription?.planType === 'order-based' && (
+            <div>
+              <h3 className="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2">
+                <FiFileText className="w-5 h-5 text-blue-600" />
+                Invoice Management
+              </h3>
+              <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-300 rounded-xl p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h4 className="text-base font-bold text-blue-900 mb-1">Order-Based Plan</h4>
+                    <p className="text-sm text-blue-700">Generate monthly invoice for billable orders</p>
+                  </div>
+                  
+                  {/* Show Generate Button only if there are unbilled orders */}
+                  {customer.subscription.status === 'active' && 
+                  customer.billing?.currentMonth?.breakdown?.chargeable > 0 &&
+                  !customer.subscription.currentBillingCycle?.invoiceGenerated && (
+                    <button
+                      onClick={() => onGenerateInvoice(customer._id, customer.name)}
+                      disabled={generatingInvoiceFor === customer._id}
+                      className="flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-bold rounded-xl hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl transform hover:scale-105"
+                    >
+                      {generatingInvoiceFor === customer._id ? (
+                        <>
+                          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <FiFileText className="w-5 h-5" />
+                          Generate Invoice
+                        </>
+                      )}
+                    </button>
+                  )}
+                  
+                  {/* Show status badges */}
+                  {customer.subscription.status === 'grace-period' && (
+                    <div className="flex items-center gap-2 px-4 py-2 bg-orange-100 border-2 border-orange-300 rounded-xl">
+                      <FiClock className="w-5 h-5 text-orange-600" />
+                      <span className="text-sm font-bold text-orange-700">Invoice Pending Payment</span>
+                    </div>
+                  )}
+                  
+                  {customer.subscription.currentBillingCycle?.invoiceGenerated && 
+                  customer.subscription.status === 'active' && (
+                    <div className="flex items-center gap-2 px-4 py-2 bg-green-100 border-2 border-green-300 rounded-xl">
+                      <FiCheck className="w-5 h-5 text-green-600" />
+                      <span className="text-sm font-bold text-green-700">Invoice Paid</span>
+                    </div>
+                  )}
+                  
+                  {!customer.billing?.currentMonth?.breakdown?.chargeable && (
+                    <div className="flex items-center gap-2 px-4 py-2 bg-gray-100 border-2 border-gray-300 rounded-xl">
+                      <FiAlertCircle className="w-5 h-5 text-gray-600" />
+                      <span className="text-sm font-bold text-gray-700">No Billable Orders</span>
+                    </div>
+                  )}
+                </div>
 
+                {/* Chargeable vs Unchargeable Breakdown */}
+                {customer.billing?.currentMonth?.breakdown && (
+                  <div className="bg-white rounded-xl p-5 space-y-3 shadow-sm">
+                    <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                      <span className="text-sm font-semibold text-gray-700">Order Breakdown</span>
+                      <span className="text-xs text-gray-500">This Month</span>
+                    </div>
+                    
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-2">
+                        <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                        <span className="text-sm text-gray-700 font-medium">Billable orders:</span>
+                      </div>
+                      <span className="text-xl font-bold text-green-600">
+                        {customer.billing.currentMonth.breakdown.chargeable}
+                      </span>
+                    </div>
+                    
+                    {customer.billing.currentMonth.breakdown.unchargeable > 0 && (
+                      <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+                          <span className="text-sm text-gray-700 font-medium">Free orders (trial):</span>
+                        </div>
+                        <span className="text-xl font-bold text-blue-600">
+                          {customer.billing.currentMonth.breakdown.unchargeable}
+                        </span>
+                      </div>
+                    )}
+                    
+                    <div className="flex justify-between items-center pt-3 border-t-2 border-gray-300">
+                      <span className="text-base text-gray-900 font-bold">Estimated Invoice Amount:</span>
+                      <span className="text-2xl font-black text-indigo-600">
+                        ₹{customer.billing.currentMonth.estimatedAmount?.toFixed(2)}
+                      </span>
+                    </div>
+                    
+                    {customer.billing?.nextBillDate && (
+                      <div className="text-xs text-center text-gray-600 pt-2 border-t border-gray-200">
+                        Next billing cycle starts: {formatDate(customer.billing.nextBillDate)}
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {/* Info Note */}
+                <div className="mt-4 flex items-start gap-2 p-3 bg-blue-100 rounded-lg">
+                  <FiAlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-blue-800">
+                    <strong>Note:</strong> Generating invoice will start a 7-day grace period. Customer must pay before grace period expires to continue service.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        
         {/* Sync Preference */}
         <div>
           <h3 className="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2">

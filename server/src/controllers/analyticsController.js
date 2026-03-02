@@ -597,16 +597,18 @@ const getReturnRateByProduct = async (req, res) => {
       };
     }
 
+    // ✅ KEY FIX: Group key changes based on whether account filter is active
+    // When a specific account is selected → group by design+color+size+accountName
+    // When "All Accounts" is selected  → group by design+color+size only (merges across accounts)
+    const groupId = accountName
+      ? { design: '$design', color: '$color', size: '$size', accountName: '$accountName' }
+      : { design: '$design', color: '$color', size: '$size' };
+
     const stats = await MarketplaceSale.aggregate([
       { $match: matchFilter },
       {
         $group: {
-          _id: {
-            design: '$design',
-            color: '$color',
-            size: '$size',         // ✅ added size
-            accountName: '$accountName'
-          },
+          _id: groupId,
           totalOrders: { $sum: 1 },
           successfulCount: {
             $sum: { $cond: [{ $eq: ['$status', 'dispatched'] }, 1, 0] }
@@ -617,7 +619,7 @@ const getReturnRateByProduct = async (req, res) => {
           wrongReturnCount: {
             $sum: { $cond: [{ $eq: ['$status', 'wrongreturn'] }, 1, 0] }
           },
-          RTOCount: {                // ✅ was missing entirely
+          RTOCount: {
             $sum: { $cond: [{ $eq: ['$status', 'RTO'] }, 1, 0] }
           },
           cancelledCount: {
@@ -686,6 +688,7 @@ const getReturnRateByProduct = async (req, res) => {
           design: '$_id.design',
           color: '$_id.color',
           size: '$_id.size',
+          // ✅ accountName will be undefined in "All Accounts" mode — frontend already handles this
           accountName: '$_id.accountName',
           totalOrders: 1,
           successfulCount: 1,
@@ -699,10 +702,9 @@ const getReturnRateByProduct = async (req, res) => {
           totalIssueRate: 1
         }
       },
-      { $sort: { returnRate: -1 } }  // default sort by returnRate desc
+      { $sort: { returnRate: -1 } }
     ]);
 
-    // Also return distinct accounts for dropdown
     const accounts = await MarketplaceSale.distinct('accountName', {
       organizationId: new mongoose.Types.ObjectId(organizationId),
       deletedAt: null

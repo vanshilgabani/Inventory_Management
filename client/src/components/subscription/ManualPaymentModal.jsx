@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import api from '../../services/api';
 import upiQRCode from '../../../public/upi-qr-code.png.jpeg';
 
-const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrderId, onSuccess }) => {
+const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrderId, invoiceId, onSuccess }) => {
   const [paymentMethod, setPaymentMethod] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -21,6 +21,7 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
     toast.success('Copied to clipboard!');
   };
 
+  // 🔧 UPDATED: Handle both subscription and invoice payments
   const handleConfirmPayment = async () => {
     if (!paymentMethod) {
       toast.error('Please select a payment method');
@@ -29,12 +30,17 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
 
     try {
       setLoading(true);
-      const response = await api.post('/payment/manual-payment-request', {
-        planType,
-        paymentMethod,
-        amount,
-        razorpayOrderId
-      });
+      
+      // 🆕 Use different endpoint for invoice payments
+      const endpoint = invoiceId 
+        ? `/subscription/invoices/${invoiceId}/pay-request`
+        : '/payment/manual-payment-request';
+      
+      const payload = invoiceId
+        ? { paymentMethod } // For invoice payment
+        : { planType, paymentMethod, amount, razorpayOrderId }; // For subscription
+
+      const response = await api.post(endpoint, payload);
 
       if (response.data.success) {
         toast.success('Payment request submitted! Admin will verify soon.');
@@ -71,7 +77,7 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
           <div className="bg-gradient-to-br from-blue-50 to-purple-50 p-4 rounded-lg border border-blue-200">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Plan Selected</p>
+                <p className="text-sm text-gray-600">{invoiceId ? 'Invoice' : 'Plan Selected'}</p>
                 <p className="text-xl font-bold text-gray-800">{planName}</p>
               </div>
               <div className="text-right">
@@ -197,7 +203,7 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
                   <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
                     <p className="text-sm text-yellow-800">
                       <strong>Note:</strong> After making the payment, click "I Have Paid" below.
-                      Admin will verify and activate your subscription within 24 hours.
+                      Admin will verify and {invoiceId ? 'mark your invoice as paid' : 'activate your subscription'} within 24 hours.
                     </p>
                   </div>
                 </div>
@@ -238,7 +244,10 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
                   </p>
                   <p className="text-sm text-gray-600 mt-2">
                     <strong>Note:</strong> After confirming, admin will review your request.
-                    Your subscription will be activated after payment verification.
+                    {invoiceId 
+                      ? ' Your invoice will be marked as paid after verification.'
+                      : ' Your subscription will be activated after payment verification.'
+                    }
                   </p>
                 </div>
               )}

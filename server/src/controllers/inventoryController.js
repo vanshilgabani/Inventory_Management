@@ -1,6 +1,8 @@
 const Product = require('../models/Product');
 const Settings = require('../models/Settings');
+const AllocationChange = require('../models/AllocationChange');
 const mongoose = require('mongoose');
+const logger = require('../utils/logger');
 
 // ✅ ADD THIS - Global flag to disable locked stock
 const STOCK_LOCK_DISABLED = true;
@@ -47,31 +49,38 @@ const getAllProducts = async (req, res) => {
   try {
     const organizationId = req.organizationId || req.user?.organizationId;
 
+    // ⭐ FIX: Don't use .lean() - it might not include nested arrays properly
     const products = await Product.find({ organizationId })
-      .sort({ design: 1 })
-      .lean();
+      .sort({ design: 1 });
 
-    // Calculate available stock (main - locked for backward compatibility)
-    const enrichedProducts = products.map(product => ({
-      ...product,
-      colors: product.colors?.map(color => ({
-        ...color,
-        sizes: color.sizes?.map(size => ({
-          ...size,
-          currentStock: size.currentStock || 0,
-          reservedStock: size.reservedStock || 0, // NEW
-          lockedStock: shouldUseLockStock() ? (size.lockedStock || 0) : 0,
-          availableStock: Math.max(0, (size.currentStock || 0) - (size.lockedStock || 0))
+    // Convert to plain objects and explicitly include reservedAllocations
+    const enrichedProducts = products.map(product => {
+      const plainProduct = product.toObject();
+      return {
+        ...plainProduct,
+        colors: plainProduct.colors?.map(color => ({
+          ...color,
+          sizes: color.sizes?.map(size => ({
+            ...size,
+            currentStock: size.currentStock || 0,
+            reservedStock: size.reservedStock || 0,
+            lockedStock: size.lockedStock || 0,
+            reservedAllocations: size.reservedAllocations || [] // ⭐ EXPLICIT
+          }))
         }))
-      }))
-    }));
+      };
+    });
 
-    res.json({ products: enrichedProducts });
+    console.log('✅ getAllProducts - Sample allocation:', 
+      enrichedProducts[0]?.colors?.[0]?.sizes?.[0]?.reservedAllocations
+    );
+
+    res.json(enrichedProducts);
   } catch (error) {
-    logger.error('Failed to fetch products', { error: error.message });
+    console.error('Failed to fetch products', error);
     res.status(500).json({ 
       code: 'FETCH_FAILED', 
-      message: 'Failed to fetch products', 
+      message: 'Failed to fetch products',
       error: error.message 
     });
   }
@@ -704,6 +713,232 @@ const refillVariantLock = async (req, res) => {
   }
 };
 
+const allocateReservedStock = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id: productId } = req.params;
+    const { allocations } = req.body;
+    const organizationId = req.user;
+    const userId = req.user.id;
+
+    const product = await Product.findOne({ 
+      _id: productId, 
+      organizationId 
+    }).session(session);
+
+    if (!product) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Product not found' 
+      });
+    }
+
+    const allocationChanges = []; // Track changes for logging
+
+    for (const allocation of allocations) {
+      const { color, size, accounts } = allocation;
+
+      const colorVariant = product.colors.find(c => c.color === color);
+      if (!colorVariant) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ 
+          success: false, 
+          message: `Color ${color} not found` 
+        });
+      }
+
+      const sizeIndex = colorVariant.sizes.findIndex(s => s.size === size);
+      if (sizeIndex === -1) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ 
+          success: false, 
+          message: `Size ${size} not found for color ${color}` 
+        });
+      }
+
+      const sizeVariant = colorVariant.sizes[sizeIndex];
+
+      const totalAllocated = accounts.reduce((sum, acc) => sum + acc.quantity, 0);
+
+      if (totalAllocated > sizeVariant.reservedStock) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ 
+          success: false, 
+          message: `Allocation exceeds reserved stock for ${color}-${size}. Reserved: ${sizeVariant.reservedStock}, Trying to allocate: ${totalAllocated}` 
+        });
+      }
+
+      // ✅ Process each account and track changes
+      accounts.forEach(acc => {
+        if (acc.quantity > 0) {
+          const existingAlloc = sizeVariant.reservedAllocations?.find(
+            a => a.accountName === acc.accountName
+          );
+
+          const quantityBefore = existingAlloc?.quantity || 0;
+          const quantityAfter = acc.quantity;
+          const amountChanged = quantityAfter - quantityBefore;
+
+          if (amountChanged !== 0) {
+            // Log the change
+            allocationChanges.push({
+              productId: product._id,
+              design: product.design,
+              color: color,
+              size: size,
+              accountName: acc.accountName,
+              quantityBefore: quantityBefore,
+              quantityAfter: quantityAfter,
+              amountChanged: amountChanged,
+              changeType: 'manualallocation',
+              changedBy: userId,
+              notes: amountChanged > 0 
+                ? `Added ${amountChanged} units to ${acc.accountName}`
+                : `Removed ${Math.abs(amountChanged)} units from ${acc.accountName}`,
+              organizationId: organizationId
+            });
+          }
+
+          if (existingAlloc) {
+            existingAlloc.quantity = quantityAfter;
+            existingAlloc.updatedAt = acc.updatedAt || new Date();
+          } else {
+            if (!sizeVariant.reservedAllocations) {
+              sizeVariant.reservedAllocations = [];
+            }
+            sizeVariant.reservedAllocations.push({
+              accountName: acc.accountName,
+              quantity: quantityAfter,
+              allocatedAt: acc.allocatedAt || new Date(),
+              updatedAt: acc.updatedAt || new Date()
+            });
+          }
+        }
+      });
+
+      // Remove allocations with 0 quantity
+      const accountNamesInRequest = accounts.map(a => a.accountName);
+      sizeVariant.reservedAllocations = sizeVariant.reservedAllocations.filter(
+        alloc => accountNamesInRequest.includes(alloc.accountName) && 
+                 accounts.find(a => a.accountName === alloc.accountName)?.quantity > 0
+      );
+    }
+
+    product.markModified('colors');
+    await product.save({ session });
+
+    // ✅ Bulk insert allocation change logs
+    if (allocationChanges.length > 0) {
+      await AllocationChange.insertMany(allocationChanges, { session });
+      logger.info('Allocation changes logged', { count: allocationChanges.length });
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    logger.info('Stock allocated successfully', {
+      productId,
+      design: product.design,
+      allocations: allocations.length,
+      changesLogged: allocationChanges.length
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Stock allocated successfully',
+      data: product 
+    });
+
+  } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    session.endSession();
+    
+    logger.error('Allocation error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to allocate stock',
+      error: error.message 
+    });
+  }
+};
+
+// ✅ NEW: Get Reserved Stock with Account Filter
+const getReservedStockByAccount = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { accountName } = req.query; // Optional: filter by account
+
+    const products = await Product.find({ organizationId }).lean();
+
+    // Transform data to show account-specific allocations
+    const result = products.map(product => {
+      const colors = product.colors.map(color => {
+        const sizes = color.sizes.map(size => {
+          // If account filter is specified, show only that account's stock
+          if (accountName && accountName !== 'all') {
+            const allocation = size.reservedAllocations?.find(
+              a => a.accountName === accountName
+            );
+            return {
+              size: size.size,
+              currentStock: size.currentStock,
+              reservedStock: size.reservedStock, // Total
+              allocatedStock: allocation?.quantity || 0, // This account
+              pool: size.reservedStock - (size.reservedAllocations?.reduce((sum, a) => sum + a.quantity, 0) || 0),
+              reservedAllocations: size.reservedAllocations || []
+            };
+          }
+
+          // No filter: show all allocations
+          return {
+            size: size.size,
+            currentStock: size.currentStock,
+            reservedStock: size.reservedStock,
+            pool: size.reservedStock - (size.reservedAllocations?.reduce((sum, a) => sum + a.quantity, 0) || 0),
+            reservedAllocations: size.reservedAllocations || []
+          };
+        });
+
+        return {
+          color: color.color,
+          wholesalePrice: color.wholesalePrice,
+          retailPrice: color.retailPrice,
+          sizes
+        };
+      });
+
+      return {
+        _id: product._id,
+        design: product.design,
+        colors
+      };
+    });
+
+    res.json({ 
+      success: true, 
+      data: result,
+      accountName: accountName || 'all'
+    });
+
+  } catch (error) {
+    console.error('Get reserved stock error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch reserved stock', 
+      error: error.message 
+    });
+  }
+};
+
 module.exports = {
   getAllProducts,
   createProduct,
@@ -714,5 +949,7 @@ module.exports = {
   updateStock,
   getStockStatus,
   reduceVariantLock,
-  refillVariantLock
+  refillVariantLock,
+  allocateReservedStock,
+  getReservedStockByAccount,
 };

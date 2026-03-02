@@ -13,7 +13,9 @@ import {
   FiChevronDown,
   FiChevronUp,
   FiUser,
-  FiLock
+  FiLock,
+  FiX,
+  FiBarChart2
 } from 'react-icons/fi';
 import Card from '../components/common/Card';
 import SkeletonCard from '../components/common/SkeletonCard';
@@ -34,6 +36,15 @@ const TransferHistory = () => {
   const [showFilters, setShowFilters] = useState(false);
   const [expandedCards, setExpandedCards] = useState({});
 
+  // ✅ NEW: Stats state
+  const [stats, setStats] = useState(null);
+  const [statsLoading, setStatsLoading] = useState(true);
+  const [selectedMonth, setSelectedMonth] = useState('');
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
+  const [showModal, setShowModal] = useState(false);
+  const [modalData, setModalData] = useState(null);
+  const [modalTitle, setModalTitle] = useState('');
+
   // Filters
   const [filterType, setFilterType] = useState('all');
   const [filterDesign, setFilterDesign] = useState('all');
@@ -41,10 +52,35 @@ const TransferHistory = () => {
   const [filterSize, setFilterSize] = useState('all');
   const [dateRange, setDateRange] = useState({ startDate: '', endDate: '' });
 
-  // Fetch transfers
+  // ✅ NEW: Month and Year options
+  const months = [
+    { value: '', label: 'All Months' },
+    { value: '1', label: 'January' },
+    { value: '2', label: 'February' },
+    { value: '3', label: 'March' },
+    { value: '4', label: 'April' },
+    { value: '5', label: 'May' },
+    { value: '6', label: 'June' },
+    { value: '7', label: 'July' },
+    { value: '8', label: 'August' },
+    { value: '9', label: 'September' },
+    { value: '10', label: 'October' },
+    { value: '11', label: 'November' },
+    { value: '12', label: 'December' }
+  ];
+
+  const years = ['2024', '2025', '2026', '2027'];
+
+  // Fetch transfers and stats
   useEffect(() => {
     fetchTransfers();
+    fetchStats();
   }, []);
+
+  // ✅ NEW: Refetch stats when month/year changes
+  useEffect(() => {
+    fetchStats();
+  }, [selectedMonth, selectedYear]);
 
   const fetchTransfers = async () => {
     setLoading(true);
@@ -66,6 +102,46 @@ const TransferHistory = () => {
       setLoading(false);
     }
   };
+
+  // ✅ NEW: Fetch stats
+  const fetchStats = async () => {
+    setStatsLoading(true);
+    try {
+      const filters = {};
+      if (selectedMonth) filters.month = selectedMonth;
+      if (selectedYear) filters.year = selectedYear;
+
+      const data = await transferService.getTransferStats(filters);
+      setStats(data);
+    } catch (error) {
+      console.error('Failed to fetch stats:', error);
+      toast.error('Failed to load statistics');
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  // ✅ NEW: Open modal with breakdown
+  const openModal = (accountName, breakdown) => {
+    setModalTitle(accountName === 'total' ? 'Total Allocation Breakdown' : `${accountName} - Allocation Breakdown`);
+    setModalData(breakdown);
+    setShowModal(true);
+  };
+
+  // ✅ NEW: Group breakdown by design
+  const groupedBreakdown = useMemo(() => {
+    if (!modalData) return {};
+    
+    const grouped = {};
+    modalData.forEach(item => {
+      if (!grouped[item.design]) {
+        grouped[item.design] = [];
+      }
+      grouped[item.design].push(item);
+    });
+    
+    return grouped;
+  }, [modalData]);
 
   // Apply filters
   const handleApplyFilters = () => {
@@ -94,61 +170,6 @@ const TransferHistory = () => {
   const uniqueSizes = useMemo(() => {
     return [...new Set(transfers.map(t => t.size))].filter(Boolean).sort();
   }, [transfers]);
-
-// Calculate meaningful stats with corrected logic
-const stats = useMemo(() => {
-  // BORROWED: Main → Reserved + Emergency Use from Main
-  const manualRefills = transfers
-    .filter(t => t.type === 'manual_refill')
-    .reduce((sum, t) => sum + t.quantity, 0);
-
-  const emergencyUseFromMain = transfers
-    .filter(t => t.type === 'emergency_use') // Main → Sold for marketplace
-    .reduce((sum, t) => sum + t.quantity, 0);
-
-  const totalBorrowed = manualRefills + emergencyUseFromMain;
-
-  // RETURNED: Reserved → Main + Wholesale/Direct sales from Reserved ONLY
-  const manualReturns = transfers
-    .filter(t => t.type === 'manual_return')
-    .reduce((sum, t) => sum + t.quantity, 0);
-
-  // Only count wholesale/direct sales from Reserved (NOT marketplace sales)
-  const wholesaleSalesFromReserved = transfers
-    .filter(t => 
-      (t.from === 'reserved' && t.to === 'sold' && t.type !== 'marketplace_order') || 
-      (t.notes && (t.notes.toLowerCase().includes('wholesale') || t.notes.toLowerCase().includes('direct')))
-    )
-    .reduce((sum, t) => sum + t.quantity, 0);
-
-  const totalReturned = manualReturns + wholesaleSalesFromReserved;
-
-  // NET BALANCE: What you currently owe to main inventory
-  const netBalance = totalBorrowed - totalReturned;
-
-  // Most active design
-  const designCounts = {};
-  transfers.forEach(t => {
-    designCounts[t.design] = (designCounts[t.design] || 0) + 1;
-  });
-  const mostActiveDesign = Object.keys(designCounts).length > 0
-    ? Object.keys(designCounts).reduce((a, b) => designCounts[a] > designCounts[b] ? a : b)
-    : 'N/A';
-
-  // Today's activity
-  const today = new Date().toDateString();
-  const todayTransfers = transfers.filter(t => 
-    new Date(t.createdAt).toDateString() === today
-  ).length;
-
-  return {
-    totalBorrowed,
-    totalReturned,
-    netBalance,
-    mostActiveDesign,
-    todayTransfers
-  };
-}, [transfers]);
 
   // Export to CSV
   const handleExportCSV = () => {
@@ -269,7 +290,7 @@ const stats = useMemo(() => {
     return format(new Date(dateString), 'dd MMM yyyy, hh:mm a');
   };
 
-  if (loading) {
+  if (loading && statsLoading) {
     return (
       <div className="space-y-6">
         <SkeletonCard />
@@ -309,82 +330,212 @@ const stats = useMemo(() => {
         </div>
       </div>
 
-      {/* Stats Cards - Updated with correct logic */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Total Borrowed */}
-        <Card className="bg-gradient-to-br from-green-50 to-green-100">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Total Borrowed</p>
-              <p className="text-3xl font-bold text-green-600">{stats.totalBorrowed}</p>
-              <p className="text-xs text-gray-500">units</p>
-              <p className="text-xs text-green-700 mt-1 font-medium">From Main Inventory</p>
-            </div>
-            <div className="p-3 bg-green-500 rounded-full">
-              <FiArrowDown className="text-2xl text-white" />
-            </div>
-          </div>
-        </Card>
+      {/* ✅ NEW: Month/Year Filter Row */}
+      <Card>
+        <div className="flex items-center gap-4">
+          <FiCalendar className="text-gray-600 text-xl" />
+          <span className="text-sm font-medium text-gray-700">Filter Statistics:</span>
+          
+          <select
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(e.target.value)}
+            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          >
+            {months.map(month => (
+              <option key={month.value} value={month.value}>{month.label}</option>
+            ))}
+          </select>
 
-        {/* Total Returned/Used */}
-        <Card className="bg-gradient-to-br from-blue-50 to-blue-100">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Total Returned/Used</p>
-              <p className="text-3xl font-bold text-blue-600">{stats.totalReturned}</p>
-              <p className="text-xs text-gray-500">units</p>
-              <p className="text-xs text-blue-700 mt-1 font-medium">Returned + Sales from Reserved</p>
-            </div>
-            <div className="p-3 bg-blue-500 rounded-full">
-              <FiArrowUp className="text-2xl text-white" />
-            </div>
-          </div>
-        </Card>
+          <select
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(e.target.value)}
+            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          >
+            {years.map(year => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
 
-        {/* Net Outstanding */}
-        <Card className="bg-gradient-to-br from-purple-50 to-purple-100">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Net Outstanding</p>
-              <p className={`text-3xl font-bold ${stats.netBalance >= 0 ? 'text-purple-600' : 'text-green-600'}`}>
-                {stats.netBalance >= 0 ? '+' : ''}{stats.netBalance}
-              </p>
-              <p className="text-xs text-gray-500">units</p>
-              <p className="text-xs text-purple-700 mt-1 font-medium">
-                {stats.netBalance >= 0 ? 'Owed to Main' : 'Surplus Returned'}
-              </p>
-            </div>
-            <div className="p-3 bg-purple-500 rounded-full">
-              <FiTrendingUp className="text-2xl text-white" />
-            </div>
-          </div>
-        </Card>
-      </div>
+          {(selectedMonth || selectedYear !== new Date().getFullYear().toString()) && (
+            <button
+              onClick={() => {
+                setSelectedMonth('');
+                setSelectedYear(new Date().getFullYear().toString());
+              }}
+              className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+            >
+              Reset Filter
+            </button>
+          )}
+        </div>
+      </Card>
 
-      {/* Additional Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card className="bg-gradient-to-br from-orange-50 to-orange-100">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Most Active Design</p>
-              <p className="text-2xl font-bold text-orange-600">{stats.mostActiveDesign}</p>
-              <p className="text-xs text-gray-500">highest transfer count</p>
-            </div>
-            <FiPackage className="text-4xl text-orange-600 opacity-20" />
+      {/* ✅ CORRECTED: Stats Cards with proper onClick */}
+      {statsLoading ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
           </div>
-        </Card>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
+        </div>
+      ) : stats ? (
+        <>
+          {/* First Row: Total Transferred + Per-Account Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Total Transferred Card */}
+            <div 
+              onClick={() => openModal('total', stats.totalStats.breakdown)}
+              className="bg-white rounded-lg shadow-md p-6 bg-gradient-to-br from-green-50 to-green-100 cursor-pointer hover:shadow-lg transition-shadow"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 flex items-center gap-2">
+                    <FiBarChart2 className="text-green-600" />
+                    Total Transferred
+                  </p>
+                  <p className="text-3xl font-bold text-green-600 mt-2">
+                    {stats.totalStats.totalTransferred}
+                  </p>
+                  <p className="text-xs text-gray-500">units</p>
+                  <p className="text-xs text-green-700 mt-1 font-medium">From Main Inventory</p>
+                  <div className="mt-2 text-xs text-gray-600 space-y-0.5">
+                    <div>➕ Refills: {stats.totalStats.manualRefills}</div>
+                    <div>➕ Emergency: {stats.totalStats.emergencyUse}</div>
+                    <div>➖ Returns: {stats.totalStats.manualReturns}</div>
+                    <div>➖ Borrows: {stats.totalStats.emergencyBorrow}</div>
+                  </div>
+                </div>
+                <div className="p-3 bg-green-500 rounded-full">
+                  <FiArrowDown className="text-2xl text-white" />
+                </div>
+              </div>
+            </div>
 
-        <Card className="bg-gradient-to-br from-indigo-50 to-indigo-100">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Today's Activity</p>
-              <p className="text-2xl font-bold text-indigo-600">{stats.todayTransfers}</p>
-              <p className="text-xs text-gray-500">transfers today</p>
-            </div>
-            <FiClock className="text-4xl text-indigo-600 opacity-20" />
+            {/* Per-Account Cards */}
+            {stats.accountStats.slice(0, 2).map((account, index) => (
+              <div
+                key={index}
+                onClick={() => openModal(account.accountName, account.breakdown)}
+                className="bg-white rounded-lg shadow-md p-6 bg-gradient-to-br from-purple-50 to-purple-100 cursor-pointer hover:shadow-lg transition-shadow"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <p className="text-sm text-gray-600 flex items-center gap-2">
+                      <FiUser className="text-purple-600" />
+                      {account.accountName}
+                    </p>
+                    <p className="text-3xl font-bold text-purple-600 mt-2">
+                      {account.allocated}
+                    </p>
+                    <p className="text-xs text-gray-500">units allocated (net)</p>
+                    
+                    {/* ✅ NEW: Breakdown Stats */}
+                    <div className="mt-3 pt-3 border-t border-purple-200 space-y-1 text-xs text-gray-600">
+                      {account.manualAllocations > 0 && (
+                        <div className="flex items-center gap-1">
+                          <span className="text-green-600">➕</span>
+                          <span>Allocated: {account.manualAllocations}</span>
+                        </div>
+                      )}
+                      {account.transfersIn > 0 && (
+                        <div className="flex items-center gap-1">
+                          <span className="text-blue-600">➕</span>
+                          <span>Transfers In: {account.transfersIn}</span>
+                        </div>
+                      )}
+                      {account.transfersOut > 0 && (
+                        <div className="flex items-center gap-1">
+                          <span className="text-orange-600">➖</span>
+                          <span>Transfers Out: {account.transfersOut}</span>
+                        </div>
+                      )}
+                      {account.returns > 0 && (
+                        <div className="flex items-center gap-1">
+                          <span className="text-blue-600">➖</span>
+                          <span>Returns: {account.returns}</span>
+                        </div>
+                      )}
+                      {account.borrows > 0 && (
+                        <div className="flex items-center gap-1">
+                          <span className="text-red-600">➖</span>
+                          <span>Borrows: {account.borrows}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <FiLock className="text-4xl text-purple-600 opacity-20" />
+                </div>
+              </div>
+            ))}
           </div>
-        </Card>
-      </div>
+
+          {/* Second Row: Additional Account Cards (if more than 2 accounts) */}
+          {stats.accountStats.length > 2 && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {stats.accountStats.slice(2).map((account, index) => (
+                <div
+                  key={index}
+                  onClick={() => openModal(account.accountName, account.breakdown)}
+                  className="bg-white rounded-lg shadow-md p-6 bg-gradient-to-br from-purple-50 to-purple-100 cursor-pointer hover:shadow-lg transition-shadow"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <p className="text-sm text-gray-600 flex items-center gap-2">
+                        <FiUser className="text-purple-600" />
+                        {account.accountName}
+                      </p>
+                      <p className="text-3xl font-bold text-purple-600 mt-2">
+                        {account.allocated}
+                      </p>
+                      <p className="text-xs text-gray-500">units allocated (net)</p>
+                      
+                      {/* ✅ NEW: Breakdown Stats */}
+                      <div className="mt-3 pt-3 border-t border-purple-200 space-y-1 text-xs text-gray-600">
+                        {account.manualAllocations > 0 && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-green-600">➕</span>
+                            <span>Allocated: {account.manualAllocations}</span>
+                          </div>
+                        )}
+                        {account.transfersIn > 0 && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-blue-600">➕</span>
+                            <span>Transfers In: {account.transfersIn}</span>
+                          </div>
+                        )}
+                        {account.transfersOut > 0 && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-orange-600">➖</span>
+                            <span>Transfers Out: {account.transfersOut}</span>
+                          </div>
+                        )}
+                        {account.returns > 0 && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-blue-600">➖</span>
+                            <span>Returns: {account.returns}</span>
+                          </div>
+                        )}
+                        {account.borrows > 0 && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-red-600">➖</span>
+                            <span>Borrows: {account.borrows}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <FiLock className="text-4xl text-purple-600 opacity-20" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : null}
 
       {/* Filters Section - Collapsible */}
       <Card>
@@ -651,6 +802,238 @@ const stats = useMemo(() => {
           </div>
         )}
       </Card>
+
+      {/* ✅ NEW: Modern Breakdown Modal - Pivot Table Style */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-7xl max-h-[90vh] flex flex-col animate-slideUp">
+            {/* Modal Header */}
+            <div className="relative p-6 border-b bg-gradient-to-r from-purple-600 to-blue-600 rounded-t-2xl">
+              <button
+                onClick={() => setShowModal(false)}
+                className="absolute top-4 right-4 p-2 hover:bg-white hover:bg-opacity-20 rounded-lg transition-all duration-200"
+              >
+                <FiX className="w-6 h-6 text-white" />
+              </button>
+              <div className="text-white">
+                <h2 className="text-3xl font-bold mb-2">{modalTitle}</h2>
+                <p className="text-purple-100 text-sm flex items-center gap-2">
+                  <FiBarChart2 className="w-4 h-4" />
+                  {selectedMonth && selectedYear 
+                    ? `${months.find(m => m.value === selectedMonth)?.label} ${selectedYear}`
+                    : selectedYear 
+                    ? `Year ${selectedYear}`
+                    : 'All Time'}
+                </p>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
+              {modalData && modalData.length > 0 ? (
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                  {Object.entries(groupedBreakdown).map(([design, items], designIndex) => {
+
+                    const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+  
+                    // ✅ DEBUG: Log to console
+                    console.log('Design:', design, 'Items:', items, 'Total:', totalQuantity);
+                    // Group items by color and size
+                    const colorSizeMap = {};
+                    const allSizes = new Set();
+                    
+                    items.forEach(item => {
+                      if (!colorSizeMap[item.color]) {
+                        colorSizeMap[item.color] = {};
+                      }
+                      colorSizeMap[item.color][item.size] = item.quantity;
+                      allSizes.add(item.size);
+                    });
+                    
+                    const sortedSizes = Array.from(allSizes).sort();
+                    
+                    return (
+                      <div 
+                        key={design} 
+                        className="border border-gray-200 rounded-lg overflow-hidden bg-white shadow-lg animate-slideIn"
+                        style={{ animationDelay: `${designIndex * 0.1}s` }}
+                      >
+                        {/* Design Header */}
+                        <div className="bg-gradient-to-r from-gray-800 to-gray-700 px-6 py-4">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className="p-2 bg-white bg-opacity-20 rounded-lg">
+                                <FiPackage className="text-white text-xl" />
+                              </div>
+                              <div>
+                                <h3 className="text-xl font-bold text-white">{design}</h3>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-sm text-gray-300">Total</p>
+                              <p className={`text-2xl font-bold ${
+                                totalQuantity > 0 ? 'text-green-300' : 'text-red-300'
+                              }`}>
+                                {totalQuantity > 0 ? '+' : ''}{totalQuantity} units
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Pivot Table */}
+                        <div className="overflow-x-auto">
+                          <table className="w-full">
+                            <thead className="bg-gray-100">
+                              <tr>
+                                <th className="px-4 py-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider w-32">
+                                  Color
+                                </th>
+                                {sortedSizes.map((size) => (
+                                  <th
+                                    key={size}
+                                    className="px-4 py-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider"
+                                  >
+                                    {size}
+                                  </th>
+                                ))}
+                                <th className="px-4 py-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                  Total
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-200">
+                              {Object.entries(colorSizeMap).map(([color, sizes], idx) => {
+                                const rowTotal = Object.values(sizes).reduce((sum, qty) => sum + qty, 0);
+                                const isRowPositive = rowTotal > 0;
+                                
+                                return (
+                                  <tr 
+                                    key={idx} 
+                                    className="hover:bg-blue-50 transition-colors duration-150"
+                                  >
+                                    {/* Color Column */}
+                                    <td className="px-4 py-3">
+                                      <div className="flex items-center justify-center gap-2">
+                                        <div
+                                          className="w-8 h-8 rounded-full border-2 border-gray-300 shadow-md hover:scale-110 transition-transform cursor-pointer"
+                                          style={{ backgroundColor: getColorCode(color) || '#9CA3AF' }}
+                                          title={color}
+                                        />
+                                      </div>
+                                    </td>
+                                    
+                                    {/* Size Columns */}
+                                    {sortedSizes.map((size) => {
+                                      const qty = sizes[size] || 0;
+                                      const isPositive = qty > 0;
+                                      const isNegative = qty < 0;
+                                      
+                                      return (
+                                        <td key={size} className="px-4 py-3 text-center">
+                                          {qty !== 0 ? (
+                                            <span
+                                              className={`inline-block px-3 py-1 rounded-full text-sm font-bold ${
+                                                isPositive
+                                                  ? 'bg-green-100 text-green-800'
+                                                  : isNegative
+                                                  ? 'bg-red-100 text-red-800'
+                                                  : 'bg-gray-100 text-gray-400'
+                                              }`}
+                                            >
+                                              {isPositive ? '+' : ''}{qty}
+                                            </span>
+                                          ) : (
+                                            <span className="text-gray-300">-</span>
+                                          )}
+                                        </td>
+                                      );
+                                    })}
+                                    
+                                    {/* Row Total */}
+                                    <td className="px-4 py-3 text-center">
+                                      <span className={`inline-block px-4 py-1 rounded-full text-sm font-bold ${
+                                        isRowPositive 
+                                          ? 'bg-gradient-to-r from-green-500 to-green-600 text-white'
+                                          : 'bg-gradient-to-r from-red-500 to-red-600 text-white'
+                                      }`}>
+                                        {isRowPositive ? '+' : ''}{rowTotal}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                              
+                              {/* Grand Total Row */}
+                              <tr className="bg-gradient-to-r from-blue-600 to-blue-500 font-bold">
+                                <td className="px-4 py-3 text-center text-white">
+                                  TOTAL
+                                </td>
+                                {sortedSizes.map((size) => {
+                                  const sizeTotal = Object.values(colorSizeMap).reduce(
+                                    (sum, colorSizes) => sum + (colorSizes[size] || 0), 
+                                    0
+                                  );
+                                  return (
+                                    <td key={size} className="px-4 py-3 text-center">
+                                      <span className={`text-sm font-bold ${
+                                        sizeTotal > 0 ? 'text-green-200' : sizeTotal < 0 ? 'text-red-200' : 'text-white'
+                                      }`}>
+                                        {sizeTotal !== 0 ? (sizeTotal > 0 ? '+' : '') + sizeTotal : '-'}
+                                      </span>
+                                    </td>
+                                  );
+                                })}
+                                <td className="px-4 py-3 text-center">
+                                  <span className={`text-lg font-bold ${
+                                    totalQuantity > 0 ? 'text-green-200' : 'text-red-200'
+                                  }`}>
+                                    {totalQuantity > 0 ? '+' : ''}{totalQuantity}
+                                  </span>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-20">
+                  <div className="inline-flex items-center justify-center w-24 h-24 rounded-full bg-gray-200 mb-6">
+                    <FiPackage className="text-6xl text-gray-400" />
+                  </div>
+                  <p className="text-gray-500 text-xl font-semibold">No allocation data available</p>
+                  <p className="text-gray-400 text-sm mt-2">No changes recorded for this period</p>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-6 border-t bg-gray-50 rounded-b-2xl">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-gray-600">
+                  <span className="font-semibold">Legend:</span>
+                  <span className="ml-3 inline-flex items-center gap-1">
+                    <span className="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs font-bold">+</span>
+                    Net Addition
+                  </span>
+                  <span className="ml-3 inline-flex items-center gap-1">
+                    <span className="px-2 py-0.5 bg-red-100 text-red-800 rounded text-xs font-bold">-</span>
+                    Net Reduction
+                  </span>
+                </div>
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="px-8 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-xl hover:from-purple-700 hover:to-blue-700 font-semibold shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <ScrollToTop />
     </div>
   );

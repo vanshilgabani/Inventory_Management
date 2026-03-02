@@ -58,6 +58,7 @@ const supplierSyncRoutes = require('./src/routes/supplierSyncRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
 const paymentRoutes = require('./src/routes/paymentRoutes');
 const skuMappingRoutes = require('./src/routes/skuMappingRoutes');
+const flipkartRoutes = require('./src/routes/flipkartRoutes');
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -85,7 +86,7 @@ app.use('/api/supplier-sync', supplierSyncRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/sku-mappings', skuMappingRoutes);
-
+app.use('/api/flipkart', flipkartRoutes);
 
 // Test route
 app.get('/', (req, res) => {
@@ -111,6 +112,8 @@ initCronJobs();
 // Start server
 const PORT = process.env.PORT || 5000;
 
+const flipkartSyncJob = require('./src/utils/flipkartSyncJob');
+
 connectDB().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
@@ -118,5 +121,9 @@ connectDB().then(() => {
     // Start notification cron job
     startNotificationCron();
     console.log('🔔 Notification system initialized');
+    
+    // ✅ NEW: Initialize Flipkart sync jobs
+    flipkartSyncJob.initializeAllJobs();
+    console.log('🛒 Flipkart sync system initialized');
   });
 });

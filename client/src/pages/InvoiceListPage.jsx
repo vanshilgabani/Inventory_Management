@@ -2,12 +2,18 @@
 
 import React, { useState, useEffect } from 'react';
 import { getInvoices } from '../services/subscriptionService';
+import ManualPaymentModal from '../components/subscription/ManualPaymentModal';
+import toast from 'react-hot-toast';
 
 const InvoiceListPage = () => {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [filter, setFilter] = useState('all'); // all, paid, generated, overdue
+  const [filter, setFilter] = useState('all');
+  
+  // 🆕 Add modal state
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [selectedInvoice, setSelectedInvoice] = useState(null);
 
   useEffect(() => {
     fetchInvoices();
@@ -49,6 +55,20 @@ const InvoiceListPage = () => {
   const downloadInvoice = (invoiceId) => {
     // TODO: Implement PDF download
     alert(`Download invoice: ${invoiceId}`);
+  };
+
+  // 🆕 Handle Pay Now click
+  const handlePayNow = (invoice) => {
+    setSelectedInvoice(invoice);
+    setShowPaymentModal(true);
+  };
+
+  // 🆕 Handle payment success
+  const handlePaymentSuccess = () => {
+    setShowPaymentModal(false);
+    setSelectedInvoice(null);
+    toast.success('Payment request submitted! Please wait for admin verification.');
+    fetchInvoices(); // Refresh list
   };
 
   if (loading && invoices.length === 0) {
@@ -129,17 +149,33 @@ const InvoiceListPage = () => {
                 invoice={invoice}
                 getStatusBadge={getStatusBadge}
                 downloadInvoice={downloadInvoice}
+                onPayNow={handlePayNow}
               />
             ))}
           </div>
         )}
       </div>
+
+      {/* 🆕 Payment Modal */}
+      {showPaymentModal && selectedInvoice && (
+        <ManualPaymentModal
+          onClose={() => {
+            setShowPaymentModal(false);
+            setSelectedInvoice(null);
+          }}
+          planType="invoice-payment"
+          planName={`Invoice ${selectedInvoice.invoiceNumber}`}
+          amount={selectedInvoice.totalAmount}
+          invoiceId={selectedInvoice._id}
+          onSuccess={handlePaymentSuccess}
+        />
+      )}
     </div>
   );
 };
 
 // Invoice Card Component
-const InvoiceCard = ({ invoice, getStatusBadge, downloadInvoice }) => {
+const InvoiceCard = ({ invoice, getStatusBadge, downloadInvoice, onPayNow }) => {
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
       <div className="flex items-center justify-between">
@@ -164,12 +200,13 @@ const InvoiceCard = ({ invoice, getStatusBadge, downloadInvoice }) => {
             <div>
               <div className="flex items-center space-x-3">
                 <h3 className="text-lg font-semibold text-gray-900">
-                  Invoice #{invoice._id.slice(-8).toUpperCase()}
+                  Invoice #{invoice.invoiceNumber || invoice._id.slice(-8).toUpperCase()}
                 </h3>
                 {getStatusBadge(invoice.status)}
               </div>
               <p className="text-sm text-gray-600 mt-1">
                 {invoice.invoiceType === 'yearly-subscription' && 'Yearly Subscription'}
+                {invoice.invoiceType === 'monthly-subscription' && 'Monthly Subscription'}
                 {invoice.invoiceType === 'order-based' && 'Monthly Order-Based Bill'}
               </p>
             </div>
@@ -234,6 +271,7 @@ const InvoiceCard = ({ invoice, getStatusBadge, downloadInvoice }) => {
           </button>
           {invoice.status === 'generated' && (
             <button
+              onClick={() => onPayNow(invoice)}
               className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
             >
               Pay Now

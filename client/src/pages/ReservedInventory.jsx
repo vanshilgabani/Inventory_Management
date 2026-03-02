@@ -15,6 +15,8 @@ import {
 import Card from '../components/common/Card';
 import SkeletonCard from '../components/common/SkeletonCard';
 import TransferModal from '../components/TransferModal';
+import AllocationModal from '../components/modals/AllocationModal'; // ✅ NEW
+import { settingsService } from '../services/settingsService'; // ✅ NEW
 import { inventoryService } from '../services/inventoryService';
 import transferService from '../services/transferService';
 import toast from 'react-hot-toast';
@@ -23,6 +25,7 @@ import { useColorPalette } from '../hooks/useColorPalette';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import ScrollToTop from '../components/common/ScrollToTop';
+import FlipkartSyncButton from '../components/sync/FlipkartSyncButton';
 
 const ReservedInventory = () => {
   const { enabledSizes } = useEnabledSizes();
@@ -38,6 +41,13 @@ const ReservedInventory = () => {
   const [filterColor, setFilterColor] = useState('all');
   const [filterStock, setFilterStock] = useState('all');
 
+  const [filterAccount, setFilterAccount] = useState('all');
+  const [marketplaceAccounts, setMarketplaceAccounts] = useState([]);
+  const [showAllocationModal, setShowAllocationModal] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+
+  const [globalThreshold, setGlobalThreshold] = useState(10);
+
   // Transfer Modal (single)
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferDirection, setTransferDirection] = useState('to-reserved');
@@ -47,6 +57,8 @@ const ReservedInventory = () => {
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkMode, setBulkMode] = useState('refill'); // 'refill' or 'return'
   const [bulkQuantities, setBulkQuantities] = useState({}); // { productId-color-size: quantity }
+  const [showInternalModal, setShowInternalModal] = useState(false);
+  const [internalTransfers, setInternalTransfers] = useState({});
 
   // Export Modal
   const [showExportModal, setShowExportModal] = useState(false);
@@ -54,24 +66,51 @@ const ReservedInventory = () => {
   // Fetch data
   useEffect(() => {
     fetchData();
+    fetchMarketplaceAccounts();
   }, []);
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const [productsData, transfersData] = await Promise.all([
-        inventoryService.getAllProducts(),
-        transferService.getRecentTransfers()
-      ]);
-      setProducts(Array.isArray(productsData) ? productsData : productsData?.products || []);
-      setRecentTransfers(transfersData || []);
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-      toast.error('Failed to load inventory');
-    } finally {
-      setLoading(false);
-    }
-  };
+const fetchData = async () => {
+  setLoading(true);
+  try {
+    const [productsData, settingsData, transfersData] = await Promise.all([
+      inventoryService.getAllProducts(),
+      settingsService.getSettings(),
+      transferService.getRecentTransfers()
+    ]);
+    
+    // ⭐ Handle response correctly
+    const productsArray = Array.isArray(productsData) ? productsData : (productsData?.products || []);
+    
+    console.log('📦 Loaded products:', productsArray.length);
+    console.log('📦 Sample product:', productsArray[0]);
+    console.log('📦 Sample allocations:', productsArray[0]?.colors?.[0]?.sizes?.[0]?.reservedAllocations);
+    
+    setProducts(productsArray);
+    
+    // Load marketplace accounts
+    const accounts = settingsData.marketplaceAccounts || [];
+    const activeAccounts = accounts.filter(acc => acc.isActive);
+    setMarketplaceAccounts(activeAccounts);
+    
+    setRecentTransfers(transfersData);
+  } catch (error) {
+    console.error('Failed to fetch data:', error);
+    toast.error('Failed to load inventory');
+  } finally {
+    setLoading(false);
+  }
+};
+
+  // ✅ NEW: Fetch marketplace accounts
+const fetchMarketplaceAccounts = async () => {
+  try {
+    const settings = await settingsService.getSettings();
+    const activeAccounts = settings.marketplaceAccounts?.filter(acc => acc.isActive) || [];
+    setMarketplaceAccounts(activeAccounts);
+  } catch (error) {
+    console.error('Failed to fetch marketplace accounts:', error);
+  }
+};
 
   // Helper: Time ago
   const getTimeAgo = (date) => {
@@ -90,31 +129,107 @@ const ReservedInventory = () => {
     return activeColors.some(c => c.colorName === colorName);
   };
 
-  // Flatten products into variants
-  const allVariants = useMemo(() => {
-    const variants = [];
-    products.forEach(product => {
-      product.colors?.forEach(color => {
-        if (isColorActive(color.color)) {
-          color.sizes?.forEach(size => {
-            if (enabledSizes.includes(size.size)) {
-              variants.push({
-                productId: product._id,
-                design: product.design,
-                color: color.color,
-                size: size.size,
-                mainStock: size.currentStock || 0,
-                reservedStock: size.reservedStock || 0,
-                wholesalePrice: color.wholesalePrice || 0,
-                retailPrice: color.retailPrice || 0
+// Get allocated stock for a specific account
+const getAllocatedStockForAccount = (sizeData, accountName) => {
+  if (accountName === 'all') {
+    return sizeData.reservedStock || 0;
+  }
+  
+  if (!sizeData.reservedAllocations || !Array.isArray(sizeData.reservedAllocations)) {
+    console.log('⚠️ No allocations found for size:', sizeData.size);
+    return 0;
+  }
+  
+  const allocation = sizeData.reservedAllocations.find(a => a.accountName === accountName);
+  console.log('🔍 Looking for account:', accountName, '| Found:', allocation);
+  
+  return allocation?.quantity || 0;
+};
+
+// ✅ NEW: Get pool stock
+const getPoolStock = (sizeData) => {
+  const totalReserved = sizeData.reservedStock || 0;
+  const totalAllocated = sizeData.reservedAllocations?.reduce((sum, a) => sum + a.quantity, 0) || 0;
+  return totalReserved - totalAllocated;
+};
+
+// ✅ NEW: Open allocation modal
+const handleOpenAllocationModal = (productId, design) => {
+  const product = products.find(p => p._id === productId);
+  if (product) {
+    setSelectedProduct(product);
+    setShowAllocationModal(true);
+  }
+};
+
+// NEW: Create flat variant list (each variant is separate)
+const allVariants = useMemo(() => {
+  const variants = [];
+  
+  products.forEach(product => {
+    if (product.colors && Array.isArray(product.colors)) {
+      // FILTER: Only process active colors
+      product.colors
+        .filter(color => isColorActive(color.color)) // ADD THIS LINE
+        .forEach(color => {
+          if (color.sizes && Array.isArray(color.sizes)) {
+            color.sizes
+              .filter(s => enabledSizes.includes(s.size))
+              .forEach(size => {
+                const currentStock = size.currentStock || 0;
+                const lockedStock = size.lockedStock || 0;
+                const reservedStock = size.reservedStock || 0;
+                const availableStock = size.availableStock !== undefined 
+                  ? size.availableStock 
+                  : currentStock - lockedStock;
+
+                // ⭐ FIX: Calculate display stock based on account filter
+                let displayStock;
+                if (filterAccount === 'all') {
+                  // Show total reserved stock
+                  displayStock = reservedStock;
+                } else {
+                  // Show allocated stock for specific account
+                  displayStock = getAllocatedStockForAccount(size, filterAccount);
+                }
+
+                // Calculate pool stock
+                const totalAllocated = size.reservedAllocations?.reduce((sum, a) => sum + a.quantity, 0) || 0;
+                const poolStock = reservedStock - totalAllocated;
+
+                // Determine status based on displayStock (not reservedStock)
+                let status = 'instock';
+                if (displayStock === 0) {
+                  status = 'outofstock';
+                } else if (displayStock <= globalThreshold) {
+                  status = 'lowstock';
+                }
+
+                variants.push({
+                  productId: product._id,
+                  design: product.design,
+                  color: color.color,
+                  size: size.size,
+                  stock: displayStock, // ⭐ Use displayStock here
+                  wholesalePrice: color.wholesalePrice || 0,
+                  retailPrice: color.retailPrice || 0,
+                  value: displayStock * (color.wholesalePrice || 0),
+                  status: status,
+                  // Keep raw data for display
+                  mainStock: currentStock,
+                  reservedStock: reservedStock,
+                  displayStock: displayStock, // ⭐ NEW
+                  poolStock: poolStock,
+                  allocations: size.reservedAllocations || []
+                });
               });
-            }
-          });
-        }
-      });
-    });
-    return variants;
-  }, [products, enabledSizes, activeColors]);
+          }
+        });
+    }
+  });
+  
+  return variants;
+}, [products, enabledSizes, globalThreshold, filterAccount, activeColors]); // ⭐ ADD filterAccount to deps
 
   // Get unique designs and colors for filters
   const uniqueDesigns = useMemo(() => {
@@ -147,53 +262,60 @@ const ReservedInventory = () => {
     }
 
     if (filterStock === 'low') {
-      filtered = filtered.filter(v => v.reservedStock > 0 && v.reservedStock <= 10);
+      filtered = filtered.filter(v => v.displayStock > 0 && v.displayStock <= 10); // ✅ CHANGE
     } else if (filterStock === 'out') {
-      filtered = filtered.filter(v => v.reservedStock === 0);
+      filtered = filtered.filter(v => v.displayStock === 0); // ✅ CHANGE
     }
 
     return filtered;
   }, [allVariants, searchTerm, filterDesign, filterColor, filterStock]);
 
-  // Group filtered variants by design and color
-  const groupedVariants = useMemo(() => {
-    const grouped = {};
-    filteredVariants.forEach(variant => {
-      const key = `${variant.productId}-${variant.design}`;
-      if (!grouped[key]) {
-        grouped[key] = {
-          productId: variant.productId,
-          design: variant.design,
-          colors: {}
-        };
-      }
-
-      if (!grouped[key].colors[variant.color]) {
-        grouped[key].colors[variant.color] = {
-          color: variant.color,
-          wholesalePrice: variant.wholesalePrice,
-          retailPrice: variant.retailPrice,
-          sizes: []
-        };
-      }
-
-      grouped[key].colors[variant.color].sizes.push({
-        size: variant.size,
-        mainStock: variant.mainStock,
-        reservedStock: variant.reservedStock
-      });
+// Group filtered variants by design and color
+const groupedVariants = useMemo(() => {
+  const grouped = {};
+  
+  filteredVariants.forEach(variant => {
+    const key = `${variant.productId}-${variant.design}`;
+    
+    if (!grouped[key]) {
+      grouped[key] = {
+        productId: variant.productId,
+        design: variant.design,
+        colors: {}
+      };
+    }
+    
+    if (!grouped[key].colors[variant.color]) {
+      grouped[key].colors[variant.color] = {
+        color: variant.color,
+        wholesalePrice: variant.wholesalePrice,
+        retailPrice: variant.retailPrice,
+        sizes: []
+      };
+    }
+    
+    // ⭐ FIX: Include reservedAllocations
+    grouped[key].colors[variant.color].sizes.push({
+      size: variant.size,
+      mainStock: variant.mainStock,
+      reservedStock: variant.reservedStock,
+      currentStock: variant.mainStock, // ⭐ ADD THIS
+      reservedAllocations: variant.allocations // ⭐ ADD THIS - Critical!
     });
-    return Object.values(grouped);
-  }, [filteredVariants]);
+  });
+  
+  return Object.values(grouped);
+}, [filteredVariants]);
 
   // Calculate stats
   const stats = useMemo(() => {
-    const totalReserved = allVariants.reduce((sum, v) => sum + v.reservedStock, 0);
-    const lowStock = allVariants.filter(v => v.reservedStock > 0 && v.reservedStock <= 10).length;
-    const outOfStock = allVariants.filter(v => v.reservedStock === 0).length;
+    const totalReserved = allVariants.reduce((sum, v) => sum + v.displayStock, 0); // ✅ CHANGE
+    const lowStock = allVariants.filter(v => v.displayStock > 0 && v.displayStock <= 10).length; // ✅ CHANGE
+    const outOfStock = allVariants.filter(v => v.displayStock === 0).length; // ✅ CHANGE
     const lastTransfer = recentTransfers.length > 0 ? recentTransfers[0] : null;
     const lastTransferTime = lastTransfer ? getTimeAgo(new Date(lastTransfer.createdAt)) : 'No transfers yet';
-    return { totalReserved, lowStock, outOfStock, lastTransferTime };
+    const totalPool = allVariants.reduce((sum, v) => sum + v.poolStock, 0); // ✅ NEW
+    return { totalReserved, lowStock, outOfStock, lastTransferTime, totalPool }; // ✅ ADD totalPool
   }, [allVariants, recentTransfers]);
 
   // Handle single transfer modal
@@ -246,53 +368,183 @@ const ReservedInventory = () => {
     }
   };
 
-  const getTotalBulkQuantity = () => {
-    return Object.values(bulkQuantities).reduce((sum, qty) => sum + qty, 0);
-  };
-
-const handleBulkTransferSubmit = async () => {
-  const totalQty = getTotalBulkQuantity();
-  if (totalQty === 0) {
-    toast.error('Please enter at least one quantity');
+// ✅ NEW: Handle account-specific return input
+const handleAccountReturnChange = (productId, color, size, accountName, value, maxQuantity) => {
+  const numValue = parseInt(value) || 0;
+  
+  // Validate: can't exceed allocated quantity
+  if (numValue > maxQuantity) {
+    toast.error(`Cannot return more than ${maxQuantity} units from ${accountName}`);
     return;
   }
 
-  try {
-    const transfers = Object.entries(bulkQuantities)
-      .filter(([_, qty]) => qty > 0)
-      .map(([key, quantity]) => {
-        const [productId, color, size] = key.split('-');
-        const variant = allVariants.find(
-          v => v.productId === productId && v.color === color && v.size === size
-        );
-        return {
-          design: variant.design,
-          color: variant.color,
-          size: variant.size,
-          quantity
-        };
-      });
+  const key = `${productId}-${color}-${size}-${accountName}`;
+  setBulkQuantities(prev => ({
+    ...prev,
+    [key]: numValue > 0 ? numValue : ''
+  }));
+};
 
-    // Use bulk endpoint instead of individual calls
-    if (bulkMode === 'refill') {
-      await transferService.bulkTransferToReserved({ 
-        transfers, 
-        notes: 'Bulk refill from Reserved Inventory page' 
-      });
-    } else {
-      await transferService.bulkTransferToMain({ 
-        transfers, 
-        notes: 'Bulk return from Reserved Inventory page' 
-      });
+// ✅ UPDATED: Calculate total bulk quantity (handle both modes)
+const getTotalBulkQuantity = () => {
+  return Object.entries(bulkQuantities).reduce((total, [key, qty]) => {
+    return total + (parseInt(qty) || 0);
+  }, 0);
+};
+
+// ✅ UPDATED: Handle bulk transfer submit (support per-account returns)
+const handleBulkTransferSubmit = async () => {
+  try {
+    const transfersMap = {};
+
+    // Build transfers array
+    Object.entries(bulkQuantities).forEach(([key, qty]) => {
+      const quantity = parseInt(qty) || 0;
+      if (quantity <= 0) return;
+
+      if (bulkMode === 'refill') {
+        // REFILL MODE: key = productId-color-size
+        const [productId, color, size] = key.split('-');
+        const product = products.find(p => p._id === productId);
+        if (!product) return;
+
+        const transferKey = `${product.design}-${color}-${size}`;
+        if (!transfersMap[transferKey]) {
+          transfersMap[transferKey] = {
+            design: product.design,
+            color,
+            size,
+            quantity: 0
+          };
+        }
+        transfersMap[transferKey].quantity += quantity;
+      } else {
+        // RETURN MODE: key = productId-color-size-accountName
+        const parts = key.split('-');
+        const accountName = parts[parts.length - 1]; // Last part is account name
+        const size = parts[parts.length - 2]; // Second last is size
+        const color = parts.slice(1, parts.length - 2).join('-'); // Middle parts are color
+        const productId = parts[0]; // First part is product ID
+
+        const product = products.find(p => p._id === productId);
+        if (!product) return;
+
+        const transferKey = `${product.design}-${color}-${size}`;
+        if (!transfersMap[transferKey]) {
+          transfersMap[transferKey] = {
+            design: product.design,
+            color,
+            size,
+            accountReturns: []
+          };
+        }
+        transfersMap[transferKey].accountReturns.push({
+          accountName,
+          quantity
+        });
+      }
+    });
+
+    const transfers = Object.values(transfersMap);
+
+    if (transfers.length === 0) {
+      toast.error('Please enter at least one quantity');
+      return;
     }
 
-    toast.success(`Successfully transferred ${totalQty} units`);
-    setShowBulkModal(false);
+    if (bulkMode === 'refill') {
+      await transferService.bulkTransferToReserved({ transfers });
+      toast.success(`Successfully refilled ${transfers.length} variants to reserved inventory`);
+    } else {
+      await transferService.bulkTransferToMain({ transfers });
+      toast.success(`Successfully returned ${transfers.length} variants to main inventory`);
+    }
+
     setBulkQuantities({});
-    await fetchData();
+    setShowBulkModal(false);
+    fetchProducts();
   } catch (error) {
     console.error('Bulk transfer error:', error);
-    toast.error(error.response?.data?.message || 'Failed to process bulk transfer');
+    toast.error(error.response?.data?.message || 'Failed to complete bulk transfer');
+  }
+};
+
+// ✅ ADD: Internal transfer handlers
+const openInternalModal = () => {
+  setInternalTransfers({});
+  setShowInternalModal(true);
+};
+
+// ✅ UPDATED: Auto-fill toAccount when only 2 accounts and fromAccount is selected
+const handleInternalTransferChange = (productId, color, size, field, value) => {
+  const key = `${productId}-${color}-${size}`;
+  
+  setInternalTransfers(prev => {
+    const updated = {
+      ...prev,
+      [key]: {
+        ...prev[key],
+        [field]: value
+      }
+    };
+
+    // ✅ AUTO-FILL LOGIC: If selecting fromAccount and only 2 accounts exist, auto-fill toAccount
+    if (field === 'fromAccount' && value && marketplaceAccounts.length === 2) {
+      const otherAccount = marketplaceAccounts.find(acc => acc.accountName !== value);
+      if (otherAccount) {
+        updated[key].toAccount = otherAccount.accountName;
+      }
+    }
+
+    return updated;
+  });
+};
+
+const getTotalInternalQuantity = () => {
+  return Object.values(internalTransfers).reduce((total, transfer) => {
+    return total + (parseInt(transfer?.quantity) || 0);
+  }, 0);
+};
+
+const handleInternalTransferSubmit = async () => {
+  try {
+    const transfers = [];
+
+    Object.entries(internalTransfers).forEach(([key, data]) => {
+      const { fromAccount, toAccount, quantity } = data;
+      if (!fromAccount || !toAccount || !quantity || quantity <= 0) return;
+
+      const [productId, ...rest] = key.split('-');
+      const size = rest[rest.length - 1];
+      const color = rest.slice(0, rest.length - 1).join('-');
+
+      const product = products.find(p => p._id === productId);
+      if (!product) return;
+
+      transfers.push({
+        design: product.design,
+        color,
+        size,
+        fromAccount,
+        toAccount,
+        quantity: parseInt(quantity)
+      });
+    });
+
+    if (transfers.length === 0) {
+      toast.error('Please enter at least one transfer');
+      return;
+    }
+
+    await transferService.bulkInternalTransfer({ transfers });
+    toast.success(`Successfully transferred ${transfers.length} variants between accounts`);
+    
+    setInternalTransfers({});
+    setShowInternalModal(false);
+    fetchData();
+  } catch (error) {
+    console.error('Internal transfer error:', error);
+    toast.error(error.response?.data?.message || 'Failed to complete internal transfer');
   }
 };
 
@@ -312,12 +564,13 @@ const handleBulkTransferSubmit = async () => {
       return;
     }
 
-    const headers = ['Design', 'Color', 'Size', 'Reserved Stock', 'Main Stock', 'Wholesale Price', 'Retail Price'];
+    const headers = ['Design', 'Color', 'Size', 'Reserved Stock', 'Pool', 'Main Stock', 'Wholesale Price', 'Retail Price']; // ✅ ADD Pool
     const rows = dataToExport.map(v => [
       v.design,
       v.color,
       v.size,
-      v.reservedStock,
+      v.displayStock, // ✅ CHANGE to displayStock
+      v.poolStock, // ✅ ADD Pool
       v.mainStock,
       v.wholesalePrice,
       v.retailPrice
@@ -378,13 +631,16 @@ const handleBulkTransferSubmit = async () => {
           </div>
           <p className="text-gray-600 mt-1">Dedicated stock for marketplace sales only</p>
         </div>
-        <button
-          onClick={fetchData}
-          className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-        >
-          <FiRefreshCw className="w-4 h-4" />
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={fetchData}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+          >
+            <FiRefreshCw className="w-4 h-4" />
+            Refresh
+          </button>
+          {/*<FlipkartSyncButton />*/}
+        </div>
       </div>
 
       {/* Stats Bar */}
@@ -449,14 +705,17 @@ const handleBulkTransferSubmit = async () => {
           </div>
 
           {/* Filters */}
+          {/* ✅ NEW: Account Filter */}
           <select
-            value={filterDesign}
-            onChange={(e) => setFilterDesign(e.target.value)}
+            value={filterAccount}
+            onChange={(e) => setFilterAccount(e.target.value)}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
           >
-            <option value="all">All Designs</option>
-            {uniqueDesigns.map(design => (
-              <option key={design} value={design}>{design}</option>
+            <option value="all">All Accounts</option>
+            {marketplaceAccounts.map(account => (
+              <option key={account._id} value={account.accountName}>
+                {account.accountName}
+              </option>
             ))}
           </select>
 
@@ -498,6 +757,13 @@ const handleBulkTransferSubmit = async () => {
               Bulk Return
             </button>
             <button
+              onClick={openInternalModal}
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+            >
+              <FiArrowRight className="w-4 h-4" />
+              Internal Transfer
+            </button>
+            <button
               onClick={() => setShowExportModal(true)}
               className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"
             >
@@ -532,18 +798,26 @@ const handleBulkTransferSubmit = async () => {
 
                 return (
                   <Card key={`${group.productId}-${group.design}`}>
-                    {/* Design Header */}
-                    <div className="flex items-center justify-between mb-4 pb-3 border-b">
-                      <div className="flex items-center gap-3">
-                        <FiLayers className="text-2xl text-gray-600" />
-                        <div>
-                          <h3 className="text-xl font-bold text-gray-900">{group.design}</h3>
-                          <p className="text-sm text-gray-500">
-                            Reserved: {totalReserved}, Main: {totalMain}
-                          </p>
-                        </div>
+                  {/* Design Header */}
+                  <div className="flex items-center justify-between mb-4 pb-3 border-b">
+                    <div className="flex items-center gap-3">
+                      <FiLayers className="text-2xl text-gray-600" />
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-900">{group.design}</h3>
+                        <p className="text-sm text-gray-500">
+                          Reserved: {totalReserved}, Main: {totalMain}
+                        </p>
                       </div>
                     </div>
+                    {/* ✅ NEW: Allocate Button */}
+                    <button
+                      onClick={() => handleOpenAllocationModal(group.productId, group.design)}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+                    >
+                      <FiLayers />
+                      Allocate
+                    </button>
+                  </div>
 
                     {/* Colors */}
                     <div className="space-y-6">
@@ -568,46 +842,45 @@ const handleBulkTransferSubmit = async () => {
 
                           {/* Size Grid */}
                           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                            {colorData.sizes.map((sizeData) => (
-                              <div
-                                key={sizeData.size}
-                                className={`relative border-2 rounded-lg p-3 group hover:shadow-lg transition-all ${getStockStatusColor(sizeData.reservedStock)}`}
-                              >
+                            {colorData.sizes.map((sizeData) => {
+                              // ⭐ Calculate display stock based on account filter
+                              const displayStock = filterAccount === 'all' 
+                                ? (sizeData.reservedStock || 0)
+                                : getAllocatedStockForAccount(sizeData, filterAccount);
+                              
+                              const poolStock = getPoolStock(sizeData);
+                              const mainStock = sizeData.currentStock || 0;
 
-                                {/* Stock Display */}
-                                <div className="text-center">
-                                  <div className="text-sm font-bold">
-                                    {sizeData.size}:{sizeData.reservedStock}/{sizeData.mainStock}
+                              return (
+                                <div
+                                  key={sizeData.size}
+                                  className={`relative border-2 rounded-lg p-3 transition-all ${getStockStatusColor(displayStock)}`}
+                                >
+                                  {/* Stock Display */}
+                                  <div className="text-center">
+                                    {/* ⭐ CONDITIONAL DISPLAY */}
+                                    {filterAccount === 'all' ? (
+                                      // Show Reserved/Main format for "All Accounts"
+                                      <div className="text-sm font-bold">
+                                        {sizeData.size}:{displayStock}/{mainStock}
+                                      </div>
+                                    ) : (
+                                      // Show ONLY allocated stock for specific account
+                                      <div className="text-sm font-bold">
+                                        {sizeData.size}:{displayStock}
+                                      </div>
+                                    )}
+
+                                    {/* Show account name when filtered */}
+                                    {filterAccount !== 'all' && displayStock > 0 && (
+                                      <div className="text-xs text-blue-600 mt-1 font-medium">
+                                        {filterAccount}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
-
-                                {/* Action Buttons (Show on hover) */}
-                                <div className="hidden group-hover:flex flex-col gap-1">
-                                  <button
-                                    onClick={() => openTransferModal({
-                                      design: group.design,
-                                      color: colorData.color,
-                                      size: sizeData.size
-                                    }, 'to-reserved')}
-                                    className="w-full flex items-center justify-center gap-1 px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700"
-                                  >
-                                    <FiArrowDown className="w-3 h-3" />
-                                    Refill
-                                  </button>
-                                  <button
-                                    onClick={() => openTransferModal({
-                                      design: group.design,
-                                      color: colorData.color,
-                                      size: sizeData.size
-                                    }, 'to-main')}
-                                    className="w-full flex items-center justify-center gap-1 px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
-                                  >
-                                    <FiArrowUp className="w-3 h-3" />
-                                    Return
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       ))}
@@ -705,7 +978,9 @@ const handleBulkTransferSubmit = async () => {
                   Bulk {bulkMode === 'refill' ? 'Refill to Reserved' : 'Return to Main'}
                 </h2>
                 <p className="text-sm text-gray-500 mt-1">
-                  Enter quantities to transfer {bulkMode === 'refill' ? 'from Main → Reserved' : 'from Reserved → Main'}
+                  {bulkMode === 'refill' 
+                    ? 'Enter quantities to transfer from Main → Reserved'
+                    : 'Enter quantities per account to return from Reserved → Main'}
                 </p>
               </div>
               <button
@@ -716,7 +991,7 @@ const handleBulkTransferSubmit = async () => {
               </button>
             </div>
 
-            {/* Search Bar - NEW */}
+            {/* Search Bar */}
             <div className="px-6 pt-4 pb-2 bg-gray-50 border-b">
               <div className="relative">
                 <FiSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
@@ -735,7 +1010,6 @@ const handleBulkTransferSubmit = async () => {
               <div className="space-y-6">
                 {products
                   .filter(product => {
-                    // Filter products based on search term
                     if (!searchTerm) return true;
                     return product.design.toLowerCase().includes(searchTerm.toLowerCase());
                   })
@@ -754,45 +1028,103 @@ const handleBulkTransferSubmit = async () => {
                         <div className="space-y-6">
                           {productColors.map((colorData) => (
                             <div key={colorData.color} className="border-l-4 pl-4" style={{ borderColor: getColorCode(colorData.color) || '#ccc' }}>
-                              {/* Color Header with Quick Fill */}
-                                <div className="flex items-center justify-between mb-3">
-                                  <div className="flex items-center gap-3">
-                                    <div
-                                      className="w-5 h-5 rounded-full border"
-                                      style={{ backgroundColor: getColorCode(colorData.color) || '#9CA3AF' }}
-                                    />
-                                    <span className="font-semibold">{colorData.color}</span>
-                                  </div>
+                              {/* Color Header */}
+                              <div className="flex items-center justify-between mb-3">
+                                <div className="flex items-center gap-3">
+                                  <div
+                                    className="w-5 h-5 rounded-full border"
+                                    style={{ backgroundColor: getColorCode(colorData.color) || '#9CA3AF' }}
+                                  />
+                                  <span className="font-semibold">{colorData.color}</span>
+                                </div>
+                                {bulkMode === 'refill' && (
                                   <button
                                     onClick={() => handleQuickFillColor(product._id, { ...colorData, sizes: colorData.sizes.filter(s => enabledSizes.includes(s.size)) })}
                                     className="text-sm px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
                                   >
                                     Quick Fill All
                                   </button>
-                                </div>
+                                )}
+                              </div>
 
                               {/* Size Input Grid */}
-                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                                 {colorData.sizes
                                   ?.filter(s => enabledSizes.includes(s.size))
                                   .map((sizeData) => {
                                     const key = `${product._id}-${colorData.color}-${sizeData.size}`;
+                                    
+                                    // ✅ Get accounts with allocated stock for RETURN mode
+                                    const allocatedAccounts = bulkMode === 'return' 
+                                      ? (sizeData.reservedAllocations || []).filter(a => a.quantity > 0)
+                                      : [];
+
                                     return (
-                                      <div key={sizeData.size} className="border-2 border-gray-200 rounded-lg p-3">
-                                        <div className="text-center mb-2">
-                                          <div className="text-xs text-black-900 font-bold">Size {sizeData.size}</div>
-                                          <div className="text-xs text-gray-500">
-                                            {bulkMode === 'return' ? `Reserved:${sizeData.reservedStock || 0}` : `Main:${sizeData.currentStock || 0}`}
+                                      <div key={sizeData.size} className="border-2 border-gray-200 rounded-lg p-4 bg-gray-50">
+                                        {/* Size Header */}
+                                        <div className="text-center mb-3 pb-2 border-b">
+                                          <div className="text-sm font-bold text-gray-900">Size {sizeData.size}</div>
+                                          <div className="text-xs text-gray-600 mt-1">
+                                            {bulkMode === 'return' 
+                                              ? `Total Reserved: ${sizeData.reservedStock || 0}`
+                                              : `Main Stock: ${sizeData.currentStock || 0}`}
                                           </div>
                                         </div>
-                                        <input
-                                          type="number"
-                                          min="0"
-                                          placeholder="0"
-                                          value={bulkQuantities[key] || ''}
-                                          onChange={(e) => handleBulkQuantityChange(product._id, colorData.color, sizeData.size, e.target.value)}
-                                          className="w-full px-2 py-1 text-center border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
-                                        />
+
+                                        {/* ✅ REFILL MODE: Single input */}
+                                        {bulkMode === 'refill' && (
+                                          <input
+                                            type="number"
+                                            min="0"
+                                            placeholder="0"
+                                            value={bulkQuantities[key] || ''}
+                                            onChange={(e) => handleBulkQuantityChange(product._id, colorData.color, sizeData.size, e.target.value)}
+                                            className="w-full px-3 py-2 text-center border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                          />
+                                        )}
+
+                                        {/* ✅ RETURN MODE: Per-account inputs */}
+                                        {bulkMode === 'return' && (
+                                          <div className="space-y-2">
+                                            {allocatedAccounts.length > 0 ? (
+                                              <>
+                                                {allocatedAccounts.map((allocation) => {
+                                                  const accountKey = `${key}-${allocation.accountName}`;
+                                                  return (
+                                                    <div key={allocation.accountName} className="bg-white rounded p-2 border border-gray-200">
+                                                      <div className="flex items-center justify-between mb-1">
+                                                        <span className="text-xs font-semibold text-gray-700">{allocation.accountName}</span>
+                                                        <span className="text-xs text-gray-500">Has: {allocation.quantity}</span>
+                                                      </div>
+                                                      <input
+                                                        type="number"
+                                                        min="0"
+                                                        max={allocation.quantity}
+                                                        placeholder="0"
+                                                        value={bulkQuantities[accountKey] || ''}
+                                                        onChange={(e) => handleAccountReturnChange(product._id, colorData.color, sizeData.size, allocation.accountName, e.target.value, allocation.quantity)}
+                                                        className="w-full px-2 py-1 text-center text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                      />
+                                                    </div>
+                                                  );
+                                                })}
+                                                {/* Total for this size */}
+                                                <div className="pt-2 border-t text-center">
+                                                  <span className="text-xs font-semibold text-blue-600">
+                                                    Total: {allocatedAccounts.reduce((sum, alloc) => {
+                                                      const accountKey = `${key}-${alloc.accountName}`;
+                                                      return sum + (parseInt(bulkQuantities[accountKey]) || 0);
+                                                    }, 0)} units
+                                                  </span>
+                                                </div>
+                                              </>
+                                            ) : (
+                                              <div className="text-center py-2">
+                                                <p className="text-xs text-gray-400">No allocated stock</p>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
                                       </div>
                                     );
                                   })}
@@ -852,6 +1184,215 @@ const handleBulkTransferSubmit = async () => {
         </div>
       )}
 
+      {/* ✅ ADD: Internal Transfer Modal */}
+      {showInternalModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-6 border-b sticky top-0 bg-white z-10">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">
+                  Internal Transfer Between Accounts
+                </h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  Transfer reserved stock from one account to another
+                </p>
+              </div>
+              <button
+                onClick={() => setShowInternalModal(false)}
+                className="p-2 hover:bg-gray-100 rounded-lg"
+              >
+                <FiX className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Search Bar */}
+            <div className="px-6 pt-4 pb-2 bg-gray-50 border-b">
+              <div className="relative">
+                <FiSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search design... (e.g., D1, D10)"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="space-y-6">
+                {products
+                  .filter(product => {
+                    if (!searchTerm) return true;
+                    return product.design.toLowerCase().includes(searchTerm.toLowerCase());
+                  })
+                  .map((product) => {
+                    const productColors = product.colors?.filter(c => isColorActive(c.color)) || [];
+                    if (productColors.length === 0) return null;
+
+                    return (
+                      <Card key={product._id}>
+                        {/* Design Header */}
+                        <div className="flex items-center justify-between mb-4 pb-3 border-b">
+                          <h3 className="text-lg font-bold text-gray-900">{product.design}</h3>
+                        </div>
+
+                        {/* Colors */}
+                        <div className="space-y-6">
+                          {productColors.map((colorData) => (
+                            <div key={colorData.color} className="border-l-4 pl-4" style={{ borderColor: getColorCode(colorData.color) || '#ccc' }}>
+                              {/* Color Header */}
+                              <div className="flex items-center gap-3 mb-3">
+                                <div
+                                  className="w-5 h-5 rounded-full border"
+                                  style={{ backgroundColor: getColorCode(colorData.color) || '#9CA3AF' }}
+                                />
+                                <span className="font-semibold">{colorData.color}</span>
+                              </div>
+
+                              {/* Size Grid */}
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                {colorData.sizes
+                                  ?.filter(s => enabledSizes.includes(s.size))
+                                  .map((sizeData) => {
+                                    const key = `${product._id}-${colorData.color}-${sizeData.size}`;
+                                    const allocatedAccounts = (sizeData.reservedAllocations || []).filter(a => a.quantity > 0);
+                                    
+                                    if (allocatedAccounts.length === 0) return null;
+
+                                    return (
+                                      <div key={sizeData.size} className="border-2 border-gray-200 rounded-lg p-4 bg-gray-50">
+                                        {/* Size Header */}
+                                        <div className="text-center mb-3 pb-2 border-b">
+                                          <div className="text-sm font-bold text-gray-900">Size {sizeData.size}</div>
+                                          <div className="text-xs text-gray-600 mt-1">
+                                            Total Reserved: {sizeData.reservedStock || 0}
+                                          </div>
+                                        </div>
+
+                                        {/* Transfer Inputs */}
+                                        <div className="space-y-3">
+                                          {/* From Account */}
+                                          <div>
+                                            <label className="block text-xs font-semibold text-gray-700 mb-1">
+                                              From Account
+                                            </label>
+                                            <select
+                                              value={internalTransfers[key]?.fromAccount || ''}
+                                              onChange={(e) => handleInternalTransferChange(product._id, colorData.color, sizeData.size, 'fromAccount', e.target.value)}
+                                              className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-purple-500"
+                                            >
+                                              <option value="">Select...</option>
+                                              {allocatedAccounts.map(alloc => (
+                                                <option key={alloc.accountName} value={alloc.accountName}>
+                                                  {alloc.accountName} ({alloc.quantity})
+                                                </option>
+                                              ))}
+                                            </select>
+                                          </div>
+
+                                          {/* To Account */}
+                                          <div>
+                                            <label className="block text-xs font-semibold text-gray-700 mb-1">
+                                              To Account
+                                            </label>
+                                            <select
+                                              value={internalTransfers[key]?.toAccount || ''}
+                                              onChange={(e) => handleInternalTransferChange(product._id, colorData.color, sizeData.size, 'toAccount', e.target.value)}
+                                              className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-purple-500"
+                                            >
+                                              <option value="">Select...</option>
+                                              {marketplaceAccounts
+                                                .filter(acc => acc.accountName !== internalTransfers[key]?.fromAccount)
+                                                .map(acc => (
+                                                  <option key={acc.accountName} value={acc.accountName}>
+                                                    {acc.accountName}
+                                                  </option>
+                                                ))}
+                                            </select>
+                                          </div>
+
+                                          {/* Quantity */}
+                                          <div>
+                                            <label className="block text-xs font-semibold text-gray-700 mb-1">
+                                              Quantity
+                                            </label>
+                                            <input
+                                              type="number"
+                                              min="0"
+                                              max={allocatedAccounts.find(a => a.accountName === internalTransfers[key]?.fromAccount)?.quantity || 0}
+                                              placeholder="0"
+                                              value={internalTransfers[key]?.quantity || ''}
+                                              onChange={(e) => handleInternalTransferChange(product._id, colorData.color, sizeData.size, 'quantity', e.target.value)}
+                                              className="w-full px-2 py-1.5 text-center text-sm border border-gray-300 rounded focus:ring-2 focus:ring-purple-500"
+                                              disabled={!internalTransfers[key]?.fromAccount}
+                                            />
+                                            {internalTransfers[key]?.fromAccount && (
+                                              <p className="text-xs text-gray-500 mt-1 text-center">
+                                                Max: {allocatedAccounts.find(a => a.accountName === internalTransfers[key]?.fromAccount)?.quantity || 0}
+                                              </p>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    );
+                  })}
+                
+                {/* No Results Message */}
+                {products.filter(p => p.design.toLowerCase().includes(searchTerm.toLowerCase())).length === 0 && searchTerm && (
+                  <div className="text-center py-12">
+                    <FiSearch className="mx-auto text-6xl text-gray-300 mb-4" />
+                    <p className="text-gray-500 text-lg">No designs found for "{searchTerm}"</p>
+                    <p className="text-gray-400 text-sm">Try a different search term</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-between p-6 border-t bg-gray-50 sticky bottom-0">
+              <div className="text-lg font-bold text-gray-900">
+                Total units to transfer: <span className="text-purple-600">{getTotalInternalQuantity()}</span>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setInternalTransfers({})}
+                  className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-100"
+                >
+                  Clear All
+                </button>
+                <button
+                  onClick={() => setShowInternalModal(false)}
+                  className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleInternalTransferSubmit}
+                  disabled={getTotalInternalQuantity() === 0}
+                  className={`px-6 py-2 rounded-lg text-white font-semibold ${
+                    getTotalInternalQuantity() === 0
+                      ? 'bg-gray-400 cursor-not-allowed'
+                      : 'bg-purple-600 hover:bg-purple-700'
+                  }`}
+                >
+                  Transfer Stock
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -885,6 +1426,18 @@ const handleBulkTransferSubmit = async () => {
             </div>
           </Card>
         </div>
+      )}
+      {/* ✅ NEW: Allocation Modal */}
+      {showAllocationModal && (
+        <AllocationModal
+          isOpen={showAllocationModal}
+          onClose={() => {
+            setShowAllocationModal(false);
+            setSelectedProduct(null);
+          }}
+          product={selectedProduct}
+          onSuccess={fetchData}
+        />
       )}
       <ScrollToTop />
     </div>

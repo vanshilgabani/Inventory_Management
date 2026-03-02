@@ -5,6 +5,177 @@ const Settings = require('../models/Settings');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 
+const updateChallansAfterPayment = async (bill, session) => {
+  try {
+    logger.info('Starting challan payment update', {
+      billId: bill._id,
+      billNumber: bill.billNumber,
+      buyerId: bill.buyer.id,
+      period: `${bill.billingPeriod.month} ${bill.billingPeriod.year}`
+    });
+
+    // STEP 1: Find ALL bills for this buyer + period (includes split bills)
+    const allBills = await MonthlyBill.find({
+      organizationId: bill.organizationId,
+      'buyer.id': bill.buyer.id,
+      'billingPeriod.month': bill.billingPeriod.month,
+      'billingPeriod.year': bill.billingPeriod.year
+    }).session(session);
+
+    logger.info('Found bills for period', {
+      totalBills: allBills.length,
+      billNumbers: allBills.map(b => b.billNumber)
+    });
+
+    // STEP 2: Build cumulative payment map for each challan
+    const challanPaymentMap = new Map();
+    
+    for (const b of allBills) {
+      // Calculate how much of this bill has been paid
+      const billPaidRatio = b.financials.grandTotal > 0 
+        ? b.financials.amountPaid / b.financials.grandTotal 
+        : 0;
+
+      logger.debug('Processing bill', {
+        billNumber: b.billNumber,
+        grandTotal: b.financials.grandTotal,
+        amountPaid: b.financials.amountPaid,
+        paidRatio: billPaidRatio,
+        challansCount: b.challans.length
+      });
+      
+      // For each challan in this bill
+      for (const challan of b.challans) {
+        if (!challan.challanId) continue;
+        
+        const challanId = challan.challanId.toString();
+        
+        // Initialize tracking for this challan if first time seeing it
+        if (!challanPaymentMap.has(challanId)) {
+          challanPaymentMap.set(challanId, {
+            challanNumber: challan.challanNumber,
+            totalInBills: 0,      // Total amount across all bills
+            totalPaid: 0,         // Total paid amount across all bills
+            appearances: []       // Track which bills it appears in
+          });
+        }
+        
+        const info = challanPaymentMap.get(challanId);
+        
+        // Add this bill's allocation
+        info.totalInBills += challan.totalAmount;
+        info.totalPaid += (challan.totalAmount * billPaidRatio);
+        info.appearances.push({
+          billNumber: b.billNumber,
+          amount: challan.totalAmount,
+          paidAmount: (challan.totalAmount * billPaidRatio),
+          billStatus: b.status
+        });
+      }
+    }
+
+    logger.info('Challan payment map built', {
+      uniqueChallans: challanPaymentMap.size
+    });
+
+    // STEP 3: Update each WholesaleOrder based on cumulative payments
+    let updatedCount = 0;
+    let fullyPaidCount = 0;
+    let partiallyPaidCount = 0;
+
+    for (const [challanId, paymentInfo] of challanPaymentMap) {
+      const order = await WholesaleOrder.findById(challanId).session(session);
+      if (!order) {
+        logger.warn('Challan not found, skipping', { challanId });
+        continue;
+      }
+
+      // Calculate final payment amounts
+      const totalPaid = Math.min(
+        Math.round(paymentInfo.totalPaid * 100) / 100, // Round to 2 decimals
+        order.totalAmount
+      );
+      const totalDue = Math.max(0, order.totalAmount - totalPaid);
+
+      // Determine payment status
+      let newStatus;
+      if (totalDue <= 0) {
+        newStatus = 'Paid';
+        fullyPaidCount++;
+      } else if (totalPaid > 0) {
+        newStatus = 'Partial';
+        partiallyPaidCount++;
+      } else {
+        newStatus = 'Pending';
+      }
+
+      // Only update if status actually changed
+      const statusChanged = order.paymentStatus !== newStatus;
+      const amountChanged = Math.abs(order.amountPaid - totalPaid) > 0.01;
+
+      if (statusChanged || amountChanged) {
+        const oldStatus = order.paymentStatus;
+        const oldPaid = order.amountPaid;
+
+        order.amountPaid = totalPaid;
+        order.amountDue = totalDue;
+        order.paymentStatus = newStatus;
+
+        // Add payment history entry if this is a meaningful change
+        if (amountChanged) {
+          order.paymentHistory.push({
+            amount: totalPaid - oldPaid,
+            paymentDate: new Date(),
+            paymentMethod: 'Bill Payment',
+            notes: `Cumulative payment via bills. Total paid: ₹${totalPaid.toFixed(2)} of ₹${order.totalAmount.toFixed(2)}`,
+            recordedBy: 'System'
+          });
+        }
+
+        await order.save({ session });
+        updatedCount++;
+
+        logger.info('Challan updated', {
+          challanId,
+          challanNumber: order.challanNumber,
+          oldStatus,
+          newStatus,
+          oldPaid: oldPaid.toFixed(2),
+          newPaid: totalPaid.toFixed(2),
+          totalDue: totalDue.toFixed(2),
+          totalAmount: order.totalAmount.toFixed(2),
+          appearances: paymentInfo.appearances
+        });
+      }
+    }
+
+    logger.info('Challan payment update completed', {
+      billNumber: bill.billNumber,
+      challansProcessed: challanPaymentMap.size,
+      challansUpdated: updatedCount,
+      fullyPaid: fullyPaidCount,
+      partiallyPaid: partiallyPaidCount
+    });
+
+    return {
+      success: true,
+      challansProcessed: challanPaymentMap.size,
+      challansUpdated: updatedCount,
+      fullyPaid: fullyPaidCount,
+      partiallyPaid: partiallyPaidCount
+    };
+
+  } catch (error) {
+    logger.error('Failed to update challans after payment', {
+      error: error.message,
+      stack: error.stack,
+      billId: bill._id,
+      billNumber: bill.billNumber
+    });
+    throw error;
+  }
+};
+
 // Get all monthly bills
 const getAllBills = async (req, res) => {
   try {
@@ -1075,7 +1246,7 @@ const recordAdvancePayment = async (req, res) => {
   }
 };
 
-// ✅ UPDATED: Record payment against existing bill (with sync)
+// UPDATED Record payment against existing bill with sync
 const recordPaymentForBill = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -1087,39 +1258,39 @@ const recordPaymentForBill = async (req, res) => {
 
     if (!amount || amount <= 0) {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payment amount'
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid payment amount' 
       });
     }
 
-    const bill = await MonthlyBill.findOne({
-      _id: id,
-      organizationId
+    const bill = await MonthlyBill.findOne({ 
+      _id: id, 
+      organizationId 
     }).session(session);
 
     if (!bill) {
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: 'Bill not found'
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Bill not found' 
       });
     }
 
     if (bill.financials.balanceDue <= 0) {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: 'Bill is already fully paid'
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Bill is already fully paid' 
       });
     }
 
     // Validate amount doesn't exceed balance
     if (amount > bill.financials.balanceDue) {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: `Payment amount (₹${amount}) exceeds balance due (₹${bill.financials.balanceDue})`
+      return res.status(400).json({ 
+        success: false, 
+        message: `Payment amount ${amount} exceeds balance due ${bill.financials.balanceDue}` 
       });
     }
 
@@ -1147,10 +1318,10 @@ const recordPaymentForBill = async (req, res) => {
 
     await bill.save({ session });
 
-    // ✅ SYNC TO BUYER
-    const buyer = await WholesaleBuyer.findOne({
-      _id: bill.buyer.id,
-      organizationId
+    // SYNC TO BUYER
+    const buyer = await WholesaleBuyer.findOne({ 
+      _id: bill.buyer.id, 
+      organizationId 
     }).session(session);
 
     if (buyer) {
@@ -1166,8 +1337,8 @@ const recordPaymentForBill = async (req, res) => {
       }
 
       // Recalculate buyer's total due and paid
-      buyer.totalDue = buyer.monthlyBills.reduce((sum, b) => sum + b.balanceDue, 0);
-      buyer.totalPaid = buyer.monthlyBills.reduce((sum, b) => sum + b.amountPaid, 0);
+      buyer.totalDue = buyer.monthlyBills.reduce((sum, b) => sum + (b.balanceDue || 0), 0);
+      buyer.totalPaid = buyer.monthlyBills.reduce((sum, b) => sum + (b.amountPaid || 0), 0);
 
       await buyer.save({ session });
 
@@ -1176,6 +1347,18 @@ const recordPaymentForBill = async (req, res) => {
         newTotalDue: buyer.totalDue,
         newTotalPaid: buyer.totalPaid
       });
+    }
+
+    // 🆕 NEW: UPDATE CHALLANS AFTER PAYMENT
+    try {
+      const challanUpdateResult = await updateChallansAfterPayment(bill, session);
+      logger.info('Challans updated successfully', challanUpdateResult);
+    } catch (challanError) {
+      logger.error('Failed to update challans, but continuing with payment', {
+        error: challanError.message
+      });
+      // Don't fail the payment if challan update fails
+      // The payment is recorded, we can fix challans later
     }
 
     await session.commitTransaction();
@@ -1199,7 +1382,7 @@ const recordPaymentForBill = async (req, res) => {
 
   } catch (error) {
     await session.abortTransaction();
-    logger.error('Payment recording failed:', error.message);
+    logger.error('Payment recording failed', { error: error.message });
     res.status(500).json({
       success: false,
       message: 'Failed to record payment',
@@ -2624,5 +2807,6 @@ module.exports = {
   customizeBill,
   deletePaymentFromBill,
   updateBillNumber,
-  splitBill
+  splitBill,
+  updateChallansAfterPayment
 };

@@ -99,7 +99,7 @@ const calculateProration = (subscription, newPlanType) => {
 
   // If upgrading from monthly to yearly
   if (subscription.planType === 'monthly' && newPlanType === 'yearly') {
-    const monthlyEndDate = subscription.yearlyEndDate || new Date();
+    const monthlyEndDate = subscription.monthlyEndDate  || new Date();
     const daysRemaining = Math.max(0, Math.ceil((monthlyEndDate - now) / (1000 * 60 * 60 * 24)));
     const daysInMonth = 30;
 
@@ -113,24 +113,78 @@ const calculateProration = (subscription, newPlanType) => {
       fullAmount: yearlyPrice,
       credited: unusedCredit,
       daysRemaining,
+      finalAmount,
       newExpiryDate: new Date(now.setFullYear(now.getFullYear() + 1))
     };
   }
 
-  // If upgrading from yearly to yearly (renewal)
+  // ✅ NEW: If renewing yearly plan (expired or active)
   if (subscription.planType === 'yearly' && newPlanType === 'yearly') {
-    return { 
-      proratedAmount: 0, 
-      fullAmount: PRICING.yearly, 
-      credited: 0 
-    };
+    const yearlyEndDate = subscription.yearlyEndDate;
+    const isExpired = !yearlyEndDate || new Date() > yearlyEndDate;
+    
+    if (isExpired) {
+      // Expired - charge full price, start from today
+      return {
+        proratedAmount: 0,
+        fullAmount: PRICING.yearly,
+        credited: 0,
+        isRenewal: true,
+        newStartDate: new Date(),
+        newExpiryDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1))
+      };
+    } else {
+      // Active - extend from current expiry date
+      const newExpiryDate = new Date(yearlyEndDate);
+      newExpiryDate.setFullYear(newExpiryDate.getFullYear() + 1);
+      
+      return {
+        proratedAmount: 0,
+        fullAmount: PRICING.yearly,
+        credited: 0,
+        isRenewal: true,
+        currentExpiryDate: yearlyEndDate,
+        newExpiryDate
+      };
+    }
+  }
+
+  // ✅ NEW: If renewing monthly plan (expired or active)
+  if (subscription.planType === 'monthly' && newPlanType === 'monthly') {
+    const monthlyEndDate = subscription.monthlyEndDate;
+    const isExpired = !monthlyEndDate || new Date() > monthlyEndDate;
+    
+    if (isExpired) {
+      // Expired - charge full price, start from today
+      return {
+        proratedAmount: 0,
+        fullAmount: PRICING.monthly,
+        credited: 0,
+        isRenewal: true,
+        newStartDate: new Date(),
+        newExpiryDate: new Date(new Date().setMonth(new Date().getMonth() + 1))
+      };
+    } else {
+      // Active - extend from current expiry date
+      const newExpiryDate = new Date(monthlyEndDate);
+      newExpiryDate.setMonth(newExpiryDate.getMonth() + 1);
+      
+      return {
+        proratedAmount: 0,
+        fullAmount: PRICING.monthly,
+        credited: 0,
+        isRenewal: true,
+        currentExpiryDate: monthlyEndDate,
+        newExpiryDate
+      };
+    }
   }
 
   // Default: no proration
-  return { 
-    proratedAmount: 0, 
-    fullAmount: getPlanPrice(newPlanType), 
-    credited: 0 
+  return {
+    proratedAmount: 0,
+    fullAmount: getPlanPrice(newPlanType),
+    credited: 0
   };
 };
 
@@ -310,44 +364,96 @@ exports.verifyPayment = async (req, res) => {
 
     const user = await User.findById(userId).session(session);
     const now = new Date();
-    let endDate;
-
-    // ✅ Simple amount in rupees (NO GST calculations)
+    
+    // ✅ Calculate proration to determine start/end dates
+    const proration = calculateProration(subscription, planType);
+    
+    let startDate, endDate;
     const amountPaid = payment.amount / 100; // Convert paise to rupees
 
     if (planType === 'yearly') {
-      endDate = new Date(now);
-      endDate.setFullYear(endDate.getFullYear() + 1);
-      
+      // ✅ Use proration-calculated dates if available (for renewals)
+      if (proration.newStartDate) {
+        startDate = proration.newStartDate;
+        endDate = proration.newExpiryDate;
+      } else if (proration.currentExpiryDate) {
+        // Extending active subscription
+        startDate = subscription.yearlyStartDate;
+        endDate = proration.newExpiryDate;
+      } else {
+        // New subscription
+        startDate = now;
+        endDate = new Date(now);
+        endDate.setFullYear(endDate.getFullYear() + 1);
+      }
+
       subscription.planType = 'yearly';
       subscription.status = 'active';
-      subscription.yearlyStartDate = now;
+      subscription.yearlyStartDate = startDate;
       subscription.yearlyEndDate = endDate;
-      subscription.yearlyPrice = amountPaid;
+      subscription.yearlyPrice = PRICING.yearly; // Store standard price, not paid amount
       subscription.lastPaymentDate = now;
       subscription.nextPaymentDue = endDate;
-    } else if (planType === 'monthly') {
-      endDate = new Date(now);
-      endDate.setMonth(endDate.getMonth() + 1);
       
+      // ✅ Clear monthly plan data if upgrading from monthly
+      if (subscription.monthlyStartDate) {
+        subscription.monthlyStartDate = undefined;
+        subscription.monthlyEndDate = undefined;
+        subscription.monthlyPrice = undefined;
+      }
+
+    } else if (planType === 'monthly') {
+      // ✅ Use proration-calculated dates if available (for renewals)
+      if (proration.newStartDate) {
+        startDate = proration.newStartDate;
+        endDate = proration.newExpiryDate;
+      } else if (proration.currentExpiryDate) {
+        // Extending active subscription
+        startDate = subscription.monthlyStartDate;
+        endDate = proration.newExpiryDate;
+      } else {
+        // New subscription
+        startDate = now;
+        endDate = new Date(now);
+        endDate.setMonth(endDate.getMonth() + 1);
+      }
+
       subscription.planType = 'monthly';
       subscription.status = 'active';
-      subscription.yearlyStartDate = now;
-      subscription.yearlyEndDate = endDate;
-      subscription.yearlyPrice = amountPaid;
+      subscription.monthlyStartDate = startDate;
+      subscription.monthlyEndDate = endDate;
+      subscription.monthlyPrice = PRICING.monthly;
       subscription.lastPaymentDate = now;
       subscription.nextPaymentDue = endDate;
     }
 
-    // Clear trial data
+    // Clear trial data and notifications
     subscription.notificationsSent = {};
     await subscription.save({ session });
 
-    // ✅ Create simple invoice (NO GST)
+    // ✅ Create invoice with proration details
+    const userShortId = userId.toString().slice(-6).toUpperCase();
     const invoiceCount = await Invoice.countDocuments({ userId });
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${String(invoiceCount + 1).padStart(5, '0')}`;
-    
-    console.log('📄 Generated invoice number:', invoiceNumber);
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${userShortId}-${String(invoiceCount + 1).padStart(3, '0')}`;
+
+    const invoiceItems = [{
+      description: planType === 'yearly'
+        ? 'Annual Subscription - Inventory & Marketplace Management System'
+        : 'Monthly Subscription - Inventory & Marketplace Management System',
+      quantity: 1,
+      unitPrice: proration.fullAmount,
+      amount: proration.fullAmount
+    }];
+
+    // ✅ Add credit line item if proration applied
+    if (proration.credited > 0) {
+      invoiceItems.push({
+        description: `Credit from previous ${subscription.planType} plan (${proration.daysRemaining} days remaining)`,
+        quantity: 1,
+        unitPrice: -proration.credited,
+        amount: -proration.credited
+      });
+    }
 
     const invoice = await Invoice.create([{
       userId,
@@ -358,23 +464,14 @@ exports.verifyPayment = async (req, res) => {
       customerPhone: user.phone,
       invoiceType: planType === 'yearly' ? 'yearly-subscription' : 'monthly-subscription',
       planType,
-      items: [{
-        description: planType === 'yearly' 
-          ? 'Annual Subscription - Inventory & Marketplace Management System'
-          : 'Monthly Subscription - Inventory & Marketplace Management System',
-        quantity: 1,
-        unitPrice: amountPaid,
-        amount: amountPaid
-      }],
-      
-      // ✅ Simple amounts (NO GST)
-      subtotal: amountPaid,
+      items: invoiceItems,
+      subtotal: proration.fullAmount,
+      discount: proration.credited, // ✅ Show proration as discount
       gstRate: 0,
       cgst: 0,
       sgst: 0,
       igst: 0,
-      totalAmount: amountPaid,
-      
+      totalAmount: amountPaid, // ✅ Actual amount paid
       status: 'paid',
       paidAt: now,
       paymentMethod: 'Razorpay',
@@ -384,7 +481,9 @@ exports.verifyPayment = async (req, res) => {
       paymentDueDate: now,
       generatedAt: now,
       sentAt: now,
-      notes: 'Payment received via Razorpay'
+      notes: proration.credited > 0 
+        ? `Payment received via Razorpay. Credit of ₹${proration.credited.toFixed(2)} applied from previous plan.`
+        : 'Payment received via Razorpay'
     }], { session });
 
     await session.commitTransaction();
@@ -393,16 +492,20 @@ exports.verifyPayment = async (req, res) => {
       userId,
       planType,
       invoiceId: invoice[0]._id,
-      amount: amountPaid
+      amount: amountPaid,
+      credited: proration.credited
     });
 
     res.json({
       success: true,
-      message: `Successfully subscribed to ${planType} plan!`,
+      message: proration.credited > 0
+        ? `Successfully upgraded to ${planType} plan! ₹${proration.credited.toFixed(2)} credit from your previous plan has been applied.`
+        : `Successfully subscribed to ${planType} plan!`,
       data: {
         subscription,
         invoice: invoice[0],
-        expiryDate: endDate
+        expiryDate: endDate,
+        credited: proration.credited
       }
     });
 
