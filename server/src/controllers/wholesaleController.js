@@ -502,61 +502,37 @@ try {
 // FIXED: Generate challan number - Reuse ONLY latest deleted, skip old gaps
 const generateChallanNumber = async (businessName, organizationId, session) => {
   try {
-    // Clean business name for consistent formatting
-    const cleanBusinessName = businessName
-      .replace(/[^a-zA-Z0-9 ]/g, '') // Remove special characters, keep spaces
-      .replace(/ /g, '_')             // Replace spaces with underscores
-      .toUpperCase();                 // Convert to uppercase
-    
-    // Get all ACTIVE (non-deleted) orders for this business
-    const existingOrders = await WholesaleOrder.find({
-      businessName: businessName,
-      organizationId,
-      deletedAt: null, // Only active orders
-    })
-      .select('challanNumber')
-      .session(session)
-      .lean();
-    
-    // Extract sequence numbers from active challans
+    const cleanBusinessName = (businessName || '')
+      .trim()                           // remove leading/trailing spaces
+      .replace(/[^a-zA-Z0-9 ]/g, '')   // remove special characters
+      .replace(/ /g, '_')              // spaces → underscores
+      .toUpperCase()
+
+    const existingOrders = await WholesaleOrder.find(
+      { businessName: businessName, organizationId, deletedAt: null },
+      { challanNumber: 1 }
+    ).session(session).lean()
+
     const usedNumbers = existingOrders
       .map(order => {
-        // Extract number from format: SNELLY23 → 23
-        const match = order.challanNumber.match(/(\d+)$/);
-        return match ? parseInt(match[1], 10) : null;
+        const match = order.challanNumber.match(/(\d+)$/)
+        return match ? parseInt(match[1], 10) : null
       })
       .filter(num => num !== null)
-      .sort((a, b) => a - b);
-    
-    // ✅ KEY LOGIC: Find HIGHEST number and add 1
-    // This automatically reuses the latest deleted number!
-    const maxSequence = usedNumbers.length > 0 
-      ? Math.max(...usedNumbers) 
-      : 0;
-    
-    const orderNumber = maxSequence + 1;
-    
-    // Format: BUSINESSNAME + NUMBER
-    const challanNumber = `${cleanBusinessName}_${String(orderNumber).padStart(2, '0')}`;
-    
-    logger.debug('Challan number generated', {
-      businessName,
-      cleanBusinessName,
-      activeOrdersCount: existingOrders.length,
-      usedNumbers: usedNumbers,
-      maxSequence,
-      orderNumber,
-      challanNumber,
-    });
-    
-    return challanNumber;
-    
+      .sort((a, b) => a - b)
+
+    const maxSequence = usedNumbers.length > 0 ? Math.max(...usedNumbers) : 0
+    const orderNumber = maxSequence + 1
+
+    // ✅ Always produces BUSINESSNAME_01 format
+    const challanNumber = `${cleanBusinessName}_${String(orderNumber).padStart(2, '0')}`
+
+    return challanNumber
   } catch (error) {
-    logger.error('Challan number generation failed', { error: error.message });
-    // Fallback to timestamp-based if generation fails
-    return `CH${Date.now().toString().slice(-8)}`;
+    logger.error('Challan number generation failed', { error: error.message })
+    return `CH${Date.now().toString().slice(-8)}`
   }
-};
+}
 
 // ✅ NEW: Manual send challan email endpoint
 const sendChallanEmail = async (req, res) => {
