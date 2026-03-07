@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import NotificationDropdown from '../NotificationDropdown';
+import LanguageSwitcher from '../LanguageSwitcher';
 import SyncRequestModal from '../sync/SyncRequestModal';
 import { useSyncContext } from '../../context/SyncContext';
 import { authService } from '../../services/authService';
@@ -164,8 +165,9 @@ const Layout = () => {
           </div>
 
           <div className="flex items-center gap-4">
-            {/* Notification Bell */}
-            <NotificationDropdown />
+            {/* Notification Bell 
+            <NotificationDropdown />*/}
+            <LanguageSwitcher />
 
             {/* User Info with Role */}
             <div className="flex items-center gap-3">

@@ -8,6 +8,7 @@ const mongoose = require('mongoose');
 const Subscription = require('../models/Subscription');
 const TenantSettings = require('../models/TenantSettings');
 const MarketplaceSKUMapping = require('../models/MarketplaceSKUMapping');
+const AllocationChange = require('../models/AllocationChange');
 const { parseMarketplaceSKU, matchColor, suggestDesign } = require('../utils/skuParser');
 const { convertSizeToLetter } = require('../utils/sizeMappings');
 
@@ -1962,6 +1963,7 @@ exports.importFromCSV = async (req, res) => {
     const salesToInsert = [];
     const transfersToInsert = [];
     const stockChangesByProduct = new Map();
+    const autoInternalTransfers = [];
     const unmappedSKUs = new Set(); // Track SKUs that need mapping
 
     for (const row of csvData) {
@@ -2104,31 +2106,93 @@ exports.importFromCSV = async (req, res) => {
       }
 
       // ✅ NEW: Check account-specific allocation
-      const allocation = sizeVariant.reservedAllocations?.find(
+      let allocation = sizeVariant.reservedAllocations?.find(
         a => a.accountName === accountName
       );
 
       const accountStock = allocation?.quantity || 0;
 
       if (accountStock < quantity) {
-        const totalAllocated = sizeVariant.reservedAllocations?.reduce((sum, a) => sum + a.quantity, 0) || 0;
-        const pool = reservedStock - totalAllocated;
+          // ✅ AUTO INTERNAL TRANSFER: Pull deficit from other accounts
+          let deficit = quantity - accountStock;
 
-        results.failed.push({
-          orderItemId,
-          sku,
-          reason: `Insufficient stock for ${accountName}. Account has: ${accountStock}, Need: ${quantity}. Pool: ${pool}`,
-          design: finalDesign,
-          color: matchedColor,
-          size: finalSize,
-          accountName,
-          accountStock,
-          pool,
-          needsAllocation: true // ✅ Flag to show it needs allocation
-        });
-        continue;
+          // Get other accounts sorted DESC by quantity (most stock first)
+          const otherAllocations = (sizeVariant.reservedAllocations || [])
+              .filter(a => a.accountName !== accountName && a.quantity > 0)
+              .sort((a, b) => b.quantity - a.quantity);
+
+          const totalOtherStock = otherAllocations.reduce((sum, a) => sum + a.quantity, 0);
+
+          if (totalOtherStock < deficit) {
+              // Still not enough even across all accounts — genuinely fail
+              results.failed.push({
+                  orderItemId,
+                  sku,
+                  reason: `Insufficient stock for "${accountName}" across all accounts. Account: ${accountStock}, All other accounts total: ${totalOtherStock}, Need: ${quantity}`,
+                  design: finalDesign,
+                  color: matchedColor,
+                  size: finalSize,
+                  accountName,
+                  accountStock,
+                  totalOtherStock,
+              });
+              continue;
+          }
+
+          // ✅ Greedy loop: transfer from highest-stock account first
+          for (const sourceAlloc of otherAllocations) {
+              if (deficit <= 0) break;
+
+              const transferQty = Math.min(sourceAlloc.quantity, deficit);
+              const sourceQtyBefore = sourceAlloc.quantity;
+
+              // Ensure destination allocation entry exists in the live Mongoose doc
+              let destAlloc = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
+              if (!destAlloc) {
+                  if (!sizeVariant.reservedAllocations) sizeVariant.reservedAllocations = [];
+                  sizeVariant.reservedAllocations.push({ accountName, quantity: 0 });
+                  destAlloc = sizeVariant.reservedAllocations[sizeVariant.reservedAllocations.length - 1];
+                  allocation = destAlloc; // update outer reference
+              }
+
+              const destQtyBefore = destAlloc.quantity;
+
+              // ✅ In-memory transfer (modifies live Mongoose doc — visible to later rows too)
+              sourceAlloc.quantity -= transferQty;
+              destAlloc.quantity += transferQty;
+              deficit -= transferQty;
+
+              // Track for STEP 8 logging
+              autoInternalTransfers.push({
+                  productId: product._id.toString(),
+                  design: finalDesign,
+                  color: matchedColor,
+                  size: finalSize,
+                  fromAccount: sourceAlloc.accountName,
+                  toAccount: accountName,
+                  quantity: transferQty,
+                  sourceQtyBefore,
+                  sourceQtyAfter: sourceAlloc.quantity,
+                  destQtyBefore,
+                  destQtyAfter: destAlloc.quantity,
+                  mainStock: sizeVariant.currentStock || 0,       // unchanged by internal transfer
+                  reservedStock: sizeVariant.reservedStock || 0,  // unchanged by internal transfer
+              });
+
+              logger.info('✅ Auto internal transfer during CSV import', {
+                  design: finalDesign, color: matchedColor, size: finalSize,
+                  from: sourceAlloc.accountName, to: accountName,
+                  quantity: transferQty, orderItemId
+              });
+          }
+
+          // Re-read allocation reference (in case it was just created above)
+          allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
       }
     }
+
+    const runningAlloc = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
+      if (runningAlloc) runningAlloc.quantity -= quantity;
 
       // Track stock changes
       const productId = product._id.toString();
@@ -2182,19 +2246,9 @@ exports.importFromCSV = async (req, res) => {
         if (inventoryMode === 'main') {
           colorVariant.sizes[change.sizeIndex].currentStock -= change.quantity;
         } else {
-          // ✅ RESERVED MODE: Deduct from BOTH account allocation AND total reserved
+          // ✅ RESERVED MODE: Only deduct reservedStock total
+          // allocation.quantity was already deducted per-row in STEP 4
           const sizeVariant = colorVariant.sizes[change.sizeIndex];
-          
-          // Find the account allocation
-          const allocation = sizeVariant.reservedAllocations?.find(
-            a => a.accountName === accountName
-          );
-          
-          if (allocation) {
-            allocation.quantity -= change.quantity;
-          }
-          
-          // Also deduct from total reserved
           sizeVariant.reservedStock -= change.quantity;
         }
       }
@@ -2248,6 +2302,74 @@ exports.importFromCSV = async (req, res) => {
       logger.info('Created transfer logs', { count: transfersToInsert.length });
     }
 
+    // ✅ STEP 8: Log auto internal transfers (AllocationChange + Transfer records)
+    if (autoInternalTransfers.length > 0) {
+        const allocationChangesToInsert = [];
+        const autoTransferLogsToInsert = [];
+
+        for (const transfer of autoInternalTransfers) {
+            // Source account — stock went OUT
+            allocationChangesToInsert.push({
+                productId: transfer.productId,
+                design: transfer.design,
+                color: transfer.color,
+                size: transfer.size,
+                accountName: transfer.fromAccount,
+                quantityBefore: transfer.sourceQtyBefore,
+                quantityAfter: transfer.sourceQtyAfter,
+                amountChanged: -transfer.quantity,
+                changeType: 'internal_transfer_out',
+                relatedOrderType: null,
+                changedBy: userId,
+                notes: `Auto internal transfer to "${transfer.toAccount}" (${transfer.quantity} units) — triggered by CSV import`,
+                organizationId
+            });
+
+            // Destination account — stock came IN
+            allocationChangesToInsert.push({
+                productId: transfer.productId,
+                design: transfer.design,
+                color: transfer.color,
+                size: transfer.size,
+                accountName: transfer.toAccount,
+                quantityBefore: transfer.destQtyBefore,
+                quantityAfter: transfer.destQtyAfter,
+                amountChanged: transfer.quantity,
+                changeType: 'internal_transfer_in',
+                relatedOrderType: null,
+                changedBy: userId,
+                notes: `Auto internal transfer from "${transfer.fromAccount}" (${transfer.quantity} units) — triggered by CSV import`,
+                organizationId
+            });
+
+            // Transfer record (shows in Transfer History)
+            autoTransferLogsToInsert.push({
+                design: transfer.design,
+                color: transfer.color,
+                size: transfer.size,
+                quantity: transfer.quantity,
+                type: 'internal_transfer',
+                from: `reserved-${transfer.fromAccount}`,
+                to: `reserved-${transfer.toAccount}`,
+                mainStockBefore: transfer.mainStock,
+                reservedStockBefore: transfer.reservedStock,
+                mainStockAfter: transfer.mainStock,      // unchanged — only allocation moved
+                reservedStockAfter: transfer.reservedStock, // unchanged
+                performedBy: userId,
+                notes: `Auto internal transfer: "${transfer.fromAccount}" → "${transfer.toAccount}" (${transfer.quantity} units) — CSV import`,
+                organizationId
+            });
+        }
+
+        await AllocationChange.insertMany(allocationChangesToInsert, { session });
+        await Transfer.insertMany(autoTransferLogsToInsert, { session });
+
+        logger.info('✅ Auto internal transfers logged', {
+            transfers: autoInternalTransfers.length,
+            allocationChanges: allocationChangesToInsert.length
+        });
+    }
+
     await session.commitTransaction();
 
     // Return results with unmapped SKUs info
@@ -2258,7 +2380,16 @@ exports.importFromCSV = async (req, res) => {
         failed: results.failed,
         duplicates: results.duplicates,
         unmappedSKUs: Array.from(unmappedSKUs),
-        needsMapping: unmappedSKUs.size > 0
+        needsMapping: unmappedSKUs.size > 0,
+        autoTransfers: autoInternalTransfers.length,
+        autoTransferDetails: autoInternalTransfers.map(t => ({
+            design: t.design,
+            color: t.color,
+            size: t.size,
+            fromAccount: t.fromAccount,
+            toAccount: t.toAccount,
+            quantity: t.quantity
+        }))
       }
     });
 

@@ -47,6 +47,8 @@ const Sales = () => {
   const [showFinalImportPreviewModal, setShowFinalImportPreviewModal] = useState(false);
   const [showImportResultModal, setShowImportResultModal] = useState(false);
   const [importResultData, setImportResultData] = useState(null);
+  const [showAutoTransferModal, setShowAutoTransferModal] = useState(false);
+  const [autoTransferDetails, setAutoTransferDetails] = useState([]);
 
   // ============ DATA STATES ============
   const [settlements, setSettlements] = useState([]);
@@ -207,6 +209,59 @@ const [stats, setStats] = useState({
       year: 'numeric'
     });
   };
+
+  const showAutoTransferNotification = (transfers) => {
+    if (!transfers?.length) return;
+    
+    setAutoTransferDetails(transfers);
+    
+    // Show a rich toast first (sneak peek)
+    const preview = transfers.slice(0, 2);
+    const extra = transfers.length - 2;
+    
+    toast.custom((t) => (
+        <div className={`bg-white rounded-xl shadow-xl border-l-4 border-amber-400 p-4 max-w-sm w-full transition-all ${t.visible ? 'animate-enter' : 'animate-leave'}`}>
+            <div className="flex items-start justify-between gap-3">
+                <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                        <span className="text-lg">🔄</span>
+                        <p className="font-bold text-gray-800 text-sm">
+                            {transfers.length} Auto Transfer{transfers.length > 1 ? 's' : ''} Done
+                        </p>
+                    </div>
+                    <div className="space-y-1">
+                        {preview.map((tr, i) => (
+                            <div key={i} className="text-xs text-gray-600 flex items-center gap-1">
+                                <span className="font-medium text-gray-800">{tr.design}-{tr.color}-{tr.size}</span>
+                                <span className="text-amber-500">→</span>
+                                <span className="text-red-500 line-through text-xs">{tr.fromAccount}</span>
+                                <span className="text-xs">→</span>
+                                <span className="text-green-600 font-medium">{tr.toAccount}</span>
+                                <span className="bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-bold text-xs ml-1">
+                                    {tr.quantity}u
+                                </span>
+                            </div>
+                        ))}
+                        {extra > 0 && (
+                            <p className="text-xs text-gray-400 mt-1">+{extra} more transfer{extra > 1 ? 's' : ''}...</p>
+                        )}
+                    </div>
+                </div>
+            </div>
+            <button
+                onClick={() => { setShowAutoTransferModal(true); toast.dismiss(t.id); }}
+                className="mt-3 w-full text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 font-semibold py-1.5 rounded-lg transition-colors border border-amber-200"
+            >
+                View All Transfers →
+            </button>
+        </div>
+    ), { duration: 5000, position: 'top-right' });
+    
+    // Also open modal directly if many transfers
+    if (transfers.length > 5) {
+        setShowAutoTransferModal(true);
+    }
+};
 
   const getStatusBadge = (status) => {
     const styles = {
@@ -1194,7 +1249,7 @@ const handleFinalImportConfirm = async () => {
 
     console.log('✅ Import response:', result);
 
-    const { success, failed, duplicates } = result.data;
+    const { success, failed, duplicates, autoTransferDetails: transfers } = result.data;
 
     // Close final preview modal
     setShowFinalImportPreviewModal(false);
@@ -1210,6 +1265,9 @@ const handleFinalImportConfirm = async () => {
       mappedSKUs: completedMappings.length
     });
     setShowImportResultModal(true);
+    if (transfers?.length > 0) {
+      setTimeout(() => showAutoTransferNotification(transfers), 500); // slight delay so result modal opens first
+    }
 
     // Reset states
     setPendingImportData(null);
@@ -1233,7 +1291,7 @@ const handleFinalImportConfirm = async () => {
 };
 
 const handleImportSuccess = (result) => {
-  const { success, failed, duplicates } = result.data;
+  const { success, failed, duplicates, autoTransferDetails: transfers } = result.data;
 
   // Show summary
   let message = '';
@@ -1242,6 +1300,7 @@ const handleImportSuccess = (result) => {
   if (failed.length > 0) message += `${failed.length} failed.`;
 
   toast.success(message || 'Import completed');
+  if (transfers?.length > 0) showAutoTransferNotification(transfers);
 
   // Check if we should show pattern detection
   if (completedMappings.length >= 3) {
@@ -4208,6 +4267,94 @@ const handleDelete = async (id) => {
             </div>
           )}
         </div>
+      )}
+      {/* AUTO TRANSFER DETAILS MODAL */}
+      {showAutoTransferModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col">
+                  {/* Header */}
+                  <div className="bg-gradient-to-r from-amber-400 to-orange-400 px-6 py-4 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                          <div className="bg-white bg-opacity-30 p-2 rounded-lg">
+                              <span className="text-2xl">🔄</span>
+                          </div>
+                          <div>
+                              <h2 className="text-lg font-bold text-white">Auto Internal Transfers</h2>
+                              <p className="text-amber-100 text-sm">
+                                  {autoTransferDetails.length} transfer{autoTransferDetails.length > 1 ? 's' : ''} performed during CSV import
+                              </p>
+                          </div>
+                      </div>
+                      <button onClick={() => setShowAutoTransferModal(false)}
+                          className="text-white hover:bg-white hover:bg-opacity-20 p-2 rounded-lg transition-colors">
+                          <FiX className="text-xl" />
+                      </button>
+                  </div>
+
+                  {/* Info Banner */}
+                  <div className="bg-amber-50 border-b border-amber-200 px-6 py-3">
+                      <p className="text-sm text-amber-800 flex items-center gap-2">
+                          <FiInfo className="flex-shrink-0" />
+                          Stock was automatically moved between accounts so these orders could be fulfilled.
+                          All transfers are logged in Transfer History.
+                      </p>
+                  </div>
+
+                  {/* Table */}
+                  <div className="overflow-y-auto flex-1">
+                      <table className="w-full text-sm">
+                          <thead className="bg-gray-50 sticky top-0">
+                              <tr>
+                                  <th className="px-4 py-3 text-left text-gray-600 font-semibold">Product</th>
+                                  <th className="px-4 py-3 text-left text-gray-600 font-semibold">From Account</th>
+                                  <th className="px-4 py-3 text-center text-gray-600 font-semibold">Qty</th>
+                                  <th className="px-4 py-3 text-left text-gray-600 font-semibold">To Account</th>
+                              </tr>
+                          </thead>
+                          <tbody>
+                              {autoTransferDetails.map((tr, i) => (
+                                  <tr key={i} className={`border-b border-gray-100 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50'} hover:bg-amber-50 transition-colors`}>
+                                      <td className="px-4 py-3">
+                                          <div className="font-medium text-gray-800">{tr.design}</div>
+                                          <div className="text-xs text-gray-500">{tr.color} · {tr.size}</div>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                          <span className="inline-flex items-center gap-1.5 bg-red-50 text-red-700 border border-red-200 px-2.5 py-1 rounded-full text-xs font-medium">
+                                              <span className="w-1.5 h-1.5 bg-red-500 rounded-full"></span>
+                                              {tr.fromAccount}
+                                          </span>
+                                      </td>
+                                      <td className="px-4 py-3 text-center">
+                                          <div className="flex items-center justify-center gap-1">
+                                              <FiArrowRight className="text-amber-500" />
+                                              <span className="bg-amber-100 text-amber-800 font-bold px-2.5 py-1 rounded-full text-xs border border-amber-200">
+                                                  {tr.quantity} units
+                                              </span>
+                                              <FiArrowRight className="text-amber-500" />
+                                          </div>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                          <span className="inline-flex items-center gap-1.5 bg-green-50 text-green-700 border border-green-200 px-2.5 py-1 rounded-full text-xs font-medium">
+                                              <span className="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
+                                              {tr.toAccount}
+                                          </span>
+                                      </td>
+                                  </tr>
+                              ))}
+                          </tbody>
+                      </table>
+                  </div>
+
+                  {/* Footer */}
+                  <div className="px-6 py-4 bg-gray-50 border-t flex justify-between items-center">
+                      <p className="text-xs text-gray-500">All transfers saved to Transfer History for audit</p>
+                      <button onClick={() => setShowAutoTransferModal(false)}
+                          className="px-5 py-2 bg-amber-400 hover:bg-amber-500 text-white font-semibold rounded-lg transition-colors text-sm">
+                          Got it ✓
+                      </button>
+                  </div>
+              </div>
+          </div>
       )}
       <ScrollToTop />
     </div>

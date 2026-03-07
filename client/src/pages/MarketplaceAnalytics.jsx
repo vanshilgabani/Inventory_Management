@@ -44,6 +44,7 @@ const MarketplaceAnalytics = () => {
   const [stockRecommendations, setStockRecommendations] = useState([]);
   const [colorDistribution, setColorDistribution] = useState([]);
   const [sizeDistribution, setSizeDistribution] = useState([]);
+  const [distributionTotal, setDistributionTotal] = useState(0);
   const [stockLevels, setStockLevels] = useState([]);
   const [turnoverRate, setTurnoverRate] = useState([]);
   const [stockValue, setStockValue] = useState({ main: {}, reserved: {}, total: {} });
@@ -212,6 +213,7 @@ const fetchReturnRateByAccount = async (account) => {
       const res = await analyticsService.getColorSizeDistribution(params);
       setColorDistribution(res.data?.colorDistribution || []);
       setSizeDistribution(res.data?.sizeDistribution || []);
+      setDistributionTotal(res.data?.totalSold || 0);
       if (res.data?.designs) setDistributionDesigns(res.data.designs);
       setActiveColor(0);
     } catch (error) {
@@ -975,6 +977,50 @@ const fetchReturnRateByAccount = async (account) => {
               <span className="text-xs text-gray-400 ml-auto">
                 {distributionDesigns.length} designs in period
               </span>
+            </div>
+
+            {/* ── Summary Strip ── */}
+            <div className="flex flex-wrap items-center gap-3 mb-5 p-4 bg-gray-50 rounded-xl border border-gray-200">
+
+              {/* Total Units */}
+              <div className="flex items-center gap-2 bg-white border border-indigo-200 rounded-lg px-4 py-2.5 shadow-sm">
+                <div className="w-2 h-2 rounded-full bg-indigo-500" />
+                <span className="text-xs text-gray-500 font-medium">Total Units</span>
+                <span className="text-lg font-bold text-indigo-600 ml-1">{distributionTotal.toLocaleString()}</span>
+              </div>
+
+              {/* Colors count */}
+              <div className="flex items-center gap-2 bg-white border border-purple-200 rounded-lg px-4 py-2.5 shadow-sm">
+                <div className="w-2 h-2 rounded-full bg-purple-500" />
+                <span className="text-xs text-gray-500 font-medium">Colors</span>
+                <span className="text-lg font-bold text-purple-600 ml-1">{colorDistribution.length}</span>
+              </div>
+
+              {/* Sizes count */}
+              <div className="flex items-center gap-2 bg-white border border-blue-200 rounded-lg px-4 py-2.5 shadow-sm">
+                <div className="w-2 h-2 rounded-full bg-blue-500" />
+                <span className="text-xs text-gray-500 font-medium">Sizes</span>
+                <span className="text-lg font-bold text-blue-600 ml-1">{sizeDistribution.length}</span>
+              </div>
+
+              {/* Design badge — shown only when a design is selected */}
+              {selectedDistributionDesign && (
+                <div className="flex items-center gap-2 bg-indigo-600 rounded-lg px-4 py-2.5 shadow-sm ml-auto">
+                  <span className="text-xs text-indigo-200 font-medium">Design</span>
+                  <span className="text-sm font-bold text-white">{selectedDistributionDesign}</span>
+                  <span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full ml-1">
+                    {distributionTotal.toLocaleString()} units
+                  </span>
+                </div>
+              )}
+
+              {/* All designs label — shown when no filter */}
+              {!selectedDistributionDesign && (
+                <div className="ml-auto text-xs text-gray-400 font-medium flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block" />
+                  All {distributionDesigns.length} designs combined
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
