@@ -27,30 +27,28 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, []);
 
-  const checkAuth = async () => {
+const checkAuth = async () => {
   const token = localStorage.getItem('token');
   const userData = localStorage.getItem('user');
-  
-  if (token && userData) {
+
+  // ✅ Add token validity check
+  if (token && token !== 'undefined' && token !== 'null' && userData) {
     try {
-      // ✅ Check if userData is valid JSON before parsing
       if (userData === 'undefined' || userData === 'null') {
-        console.log('Invalid user data in localStorage, clearing...');
         logout();
         return;
       }
-      
       const parsedUser = JSON.parse(userData);
       setUser(parsedUser);
-
     } catch (error) {
       console.error('Auth check failed:', error);
-      // ✅ Clear invalid data
       logout();
     }
   } else {
-    // No token or user data, ensure clean state
-    logout();
+    // ✅ Clear corrupted token if it exists
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setUser(null);
   }
   setLoading(false);
 };
@@ -65,6 +63,13 @@ const login = async (email, password) => {
       token, _id, id, name, email: userEmail, role, organizationId, 
       businessName, phone, isSupplier, isTenant, linkedSupplier, syncPreference
     } = response.data;
+
+    if (!token) {
+      console.error('No token received from server:', response.data);
+      return { success: false, message: 'Authentication failed. No token received.' };
+    }
+
+    localStorage.setItem('token', token);
 
     const userData = {
       _id: _id || id,
