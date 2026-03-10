@@ -107,6 +107,11 @@ const companySchema = new mongoose.Schema({
     branch: String
   },
   logo: String,
+    signature: {
+    image: { type: String, default: '' },        // Base64 PNG string
+    enabledForChallans: { type: Boolean, default: false },
+    enabledForBills: { type: Boolean, default: false }
+  },
   isDefault: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true }
 });

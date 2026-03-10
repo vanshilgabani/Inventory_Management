@@ -21,6 +21,12 @@ export const generateInvoice = async (order, options = {}) => {
     try {
       const settings = await settingsService.getSettings(); // ✅ CHANGED: Use settingsService
 
+      const sigCompany = (settings.companies || []).find(c => c.isDefault) 
+        || (settings.companies || [])[0] 
+        || null;
+      const challanSignatureImage = sigCompany?.signature?.image || null;
+      const attachSignatureInChallan = sigCompany?.signature?.enabledForChallans || false;
+
       const doc = new jsPDF('p', 'mm', 'a4');
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
@@ -242,6 +248,19 @@ export const generateInvoice = async (order, options = {}) => {
       doc.setFont('helvetica', 'normal');
       doc.text("Receiver's Signature", margin + 3, sigY);
       doc.text("Authorised Signature", totalBoxX - 5, sigY, { align: 'right' });
+
+      // ✅ NEW: Inject signature image above label if enabled
+      if (challanSignatureImage && attachSignatureInChallan) {
+        const sigImgW = 38;
+        const sigImgH = 14;
+        const sigImgX = totalBoxX - 5 - sigImgW;
+        const sigImgY = sigY - sigImgH - 2;
+        try {
+          doc.addImage(challanSignatureImage, 'PNG', sigImgX, sigImgY, sigImgW, sigImgH);
+        } catch (e) {
+          console.error('Challan signature image error:', e);
+        }
+      }
 
       // -- Right: Calculations --
       let calcY = finalY + 8;

@@ -1299,6 +1299,11 @@ const addCompany = async (req, res) => {
       contact: contact || { phone: '', email: '' },
       bank: bank || { name: '', accountNo: '', ifsc: '', branch: '' },
       logo: logo || '',
+      signature: {
+        image: req.body.signature?.image || '',
+        enabledForChallans: req.body.signature?.enabledForChallans || false,
+        enabledForBills: req.body.signature?.enabledForBills || false
+      },
       isDefault: isDefault || false,
       isActive: true
     };
@@ -1371,6 +1376,15 @@ const updateCompany = async (req, res) => {
     if (contact !== undefined) company.contact = contact;
     if (bank !== undefined) company.bank = bank;
     if (logo !== undefined) company.logo = logo;
+    if (req.body.signature !== undefined) {
+      if (!company.signature) company.signature = {};
+      if (req.body.signature.image !== undefined)
+        company.signature.image = req.body.signature.image;
+      if (req.body.signature.enabledForChallans !== undefined)
+        company.signature.enabledForChallans = req.body.signature.enabledForChallans;
+      if (req.body.signature.enabledForBills !== undefined)
+        company.signature.enabledForBills = req.body.signature.enabledForBills;
+    }
     if (isActive !== undefined) company.isActive = isActive;
 
     // If setting as default, unset all other defaults

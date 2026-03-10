@@ -99,6 +99,12 @@ export const generateMonthlyBillPDF = async (bill, options = {}) => {
   return new Promise(async (resolve, reject) => {
     try {
       const settings = await settingsService.getSettings();
+      const freshCompany = (settings.companies || []).find(
+        c => c.id === bill.company?.id || c.name === bill.company?.name
+      ) || (settings.companies || []).find(c => c.isDefault) || null;
+      
+      const billSignatureImage = freshCompany?.signature?.image || null;
+      const attachSignatureInBill = freshCompany?.signature?.enabledForBills || false;
       const doc = new jsPDF('p', 'mm', 'a4');
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
@@ -381,6 +387,30 @@ export const generateMonthlyBillPDF = async (bill, options = {}) => {
       doc.setFontSize(8);
       doc.text("Receiver's Signature", margin + 3, finalY + totalsHeight - 1);
       doc.text("Authorised Signature", totalsDividerX - 5, finalY + totalsHeight - 1, { align: 'right' });
+
+      if (billSignatureImage && attachSignatureInBill) {
+        const sigImgW = 38;
+        const sigImgH = 12;
+        // Position: right-aligned, inside the LEFT section of footer box
+        // Left section ends at totalsDividerX
+        const sigImgX = totalsDividerX - sigImgW - 3;
+        // Place it between the words text and the signature label
+        // sigLineY is finalY + totalsHeight - 6
+        // So image goes just above the line
+        const sigImgY = sigLineY - sigImgH - 2;
+
+        // Safety check — don't draw outside the footer box
+        if (sigImgY >= finalY + 2) {
+          try {
+            doc.addImage(billSignatureImage, 'PNG', sigImgX, sigImgY, sigImgW, sigImgH);
+            console.log('✅ Signature drawn at:', sigImgX, sigImgY, sigImgW, sigImgH);
+          } catch (e) {
+            console.error('Bill signature image error:', e);
+          }
+        } else {
+          console.warn('⚠️ Signature position out of bounds:', sigImgY, 'finalY:', finalY);
+        }
+      }
 
       // RIGHT SIDE - FINANCIAL SUMMARY
       let calcY = finalY + 8;
