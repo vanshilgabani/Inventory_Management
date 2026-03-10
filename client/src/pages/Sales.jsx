@@ -157,10 +157,10 @@ const Sales = () => {
   });
 
   // DATA STATES
-const [dateGroups, setDateGroups] = useState([]); // ✅ NEW: Array of {date, orders, count}
-const [hasMoreDates, setHasMoreDates] = useState(true); // ✅ NEW
-const [lastLoadedDate, setLastLoadedDate] = useState(null); // ✅ NEW
-const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [dateSummaries, setDateSummaries] = useState([]);   // Fast: [{date, count, accountBreakdown}]
+  const [loadedOrders, setLoadedOrders] = useState({});     // Lazy: { '2026-03-09': [...orders] }
+  const [loadingDates, setLoadingDates] = useState(new Set()); // Which dates are currently fetching
+  const [summariesLoading, setSummariesLoading] = useState(true);
 
 // ✅ NEW: Stats (separate from loaded orders)
 const [stats, setStats] = useState({
@@ -185,20 +185,61 @@ const [stats, setStats] = useState({
 
     // ============ HELPER FUNCTIONS ============
   
-    // ✅ Computed display groups — applies statusFilter when on returns tab
+    
+// Helper: Format date labels
+const formatDateLabel = (dateString) => {
+  const date = new Date(dateString);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  
+  const orderDate = new Date(dateString);
+  orderDate.setHours(0, 0, 0, 0);
+  
+  if (orderDate.getTime() === today.getTime()) {
+    return 'TODAY';
+  } else if (orderDate.getTime() === yesterday.getTime()) {
+    return 'YESTERDAY';
+  } else {
+    return date.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric'
+    });
+  }
+};
+
     const displayDateGroups = useMemo(() => {
-      const source = filteredOrders || dateGroups;
-      if (activeTab === 'returned' && statusFilter !== 'all') {
-        return source
-          .map(group => {
-            const orders = group.orders.filter(o => o.status === statusFilter);
-            if (!orders.length) return null;
-            return { ...group, orders, orderCount: orders.length };
-          })
-          .filter(Boolean);
+  // If date search is active, use filteredOrders
+  const source = (searchType === 'date' && filteredOrders) ? filteredOrders : dateSummaries;
+
+  return source.map(summary => {
+    const orders = loadedOrders[summary.date] || [];
+
+    // Apply tab + statusFilter on already-loaded orders (client-side, free)
+    let filteredGroupOrders = orders;
+    if (activeTab === 'dispatched') {
+      filteredGroupOrders = orders.filter(o => o.status === 'dispatched');
+    } else if (activeTab === 'delivered') {
+      filteredGroupOrders = orders.filter(o => o.status === 'delivered');
+    } else if (activeTab === 'returned') {
+      filteredGroupOrders = orders.filter(o => ['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(o.status));
+      if (statusFilter !== 'all') {
+        filteredGroupOrders = filteredGroupOrders.filter(o => o.status === statusFilter);
       }
-      return source;
-    }, [filteredOrders, dateGroups, activeTab, statusFilter]);
+    }
+
+    // ✅ FIX — shows filtered count when loaded, raw total before loading:
+    return {
+      ...summary,
+      orders: filteredGroupOrders,
+      orderCount: summary.count,
+      dateLabel: formatDateLabel(summary.date),
+    };
+  }).filter(Boolean);
+}, [dateSummaries, loadedOrders, filteredOrders, searchType, activeTab, statusFilter]);
 
   const formatDateCustom = (dateString) => {
     if (!dateString) return '-';
@@ -335,46 +376,34 @@ const [stats, setStats] = useState({
 
 const fetchInitialData = async () => {
   try {
-    const [productsData, settingsData] = await Promise.all([
-      inventoryService.getAllProducts(),
-      settingsService.getSettings()
-    ]);
-
-    setProducts(Array.isArray(productsData) ? productsData : (productsData?.products || []));
+    const settingsData = await settingsService.getSettings();
 
     if (settingsData.stockLockSettings) {
       setStockLockSettings({
         enabled: !!settingsData.stockLockSettings.enabled,
-        lockValue: Number(settingsData.stockLockSettings.lockValue || 0),
-        maxThreshold: Number(settingsData.stockLockSettings.maxStockLockThreshold || 0)
+        lockValue: Number(settingsData.stockLockSettings.lockValue) || 0,
+        maxThreshold: Number(settingsData.stockLockSettings.maxStockLockThreshold) || 0
       });
     }
 
-    const accounts = settingsData.marketplaceAccounts;
+    const accounts = settingsData.marketplaceAccounts || [];
     const activeAccounts = accounts.filter(acc => acc.isActive);
     setMarketplaceAccounts(activeAccounts);
 
     const defaultAccount = activeAccounts.find(acc => acc.isDefault);
-    setSaleFormData(prev => ({
-      ...prev,
-      accountName: defaultAccount?.accountName || activeAccounts[0]?.accountName || ''
-    }));
+    const firstAccountName = defaultAccount?.accountName || activeAccounts[0]?.accountName;
+    setSaleFormData(prev => ({ ...prev, accountName: firstAccountName }));
+    setSettlementFormData(prev => ({ ...prev, accountName: firstAccountName }));
 
-    setSettlementFormData(prev => ({
-      ...prev,
-      accountName: defaultAccount?.accountName || activeAccounts[0]?.accountName || ''
-    }));
-
+    // Settlements only for admin
     if (isAdmin || user?.role === 'sales') {
-      await fetchSettlements();
+      // Don't load here — load lazily on settlements tab click
     }
-
   } catch (error) {
     console.error(error);
     toast.error('Failed to load initial data');
-  } finally {
-    setLoading(false);
   }
+  // Note: setLoading(false) is now handled by fetchDateSummaries
 };
 
 // ✅ NEW: Fetch stats for cards
@@ -396,59 +425,64 @@ const fetchStats = async () => {
   }
 };
 
-// ✅ NEW: Fetch date groups (initial load)
-const fetchDateGroups = async (reset = true) => {
+// ── 1. Fast summaries: only counts per date ─────────────────────────────────
+const fetchDateSummaries = async () => {
+  setSummariesLoading(true);
   try {
-    if (reset) {
-      setIsLoadingMore(true);
-    } else {
-      setIsLoadingMore(true);
-    }
-
     const { start, end } = getEffectiveDateRange();
-    
-    const data = await salesService.getOrdersByDateGroups(
-      selectedAccount,
-      activeTab === 'dispatched' ? 'dispatched' :
-      activeTab === 'delivered' ? 'delivered' :
-      activeTab === 'returned' ? 'returned,cancelled,wrongreturn,RTO' :
-      'all',
-      start,
-      end,
-      5, // Load 5 dates at a time
-      reset ? null : lastLoadedDate
-    );
+    const statusParam =
+    activeTab === 'dispatched' ? 'dispatched' :
+    activeTab === 'delivered'  ? 'delivered' :
+    activeTab === 'returned'
+      ? (statusFilter !== 'all' ? statusFilter : 'returned,cancelled,wrongreturn,RTO')
+      : 'all';
 
-    // ✅ ADD THIS DEBUG CODE
-    console.log('🔍 FRONTEND RECEIVED DATE GROUPS:', data.dateGroups);
-    data.dateGroups.slice(0, 2).forEach((group, idx) => {
-      console.log(`\n  Frontend Group ${idx + 1}:`);
-      console.log(`    - date: ${group.date}`);
-      console.log(`    - dateLabel: ${group.dateLabel}`);
-      console.log(`    - First order displayDate: ${group.orders[0]?.displayDate}`);
-      console.log(`    - First order saleDate: ${group.orders[0]?.saleDate}`);
-    });
-
-    if (reset) {
-      setDateGroups(data.dateGroups);
-    } else {
-      setDateGroups(prev => [...prev, ...data.dateGroups]);
-    }
-
-    setHasMoreDates(data.pagination.hasMore);
-    setLastLoadedDate(data.pagination.nextBeforeDate);
-
+    const data = await salesService.getDateSummaries(selectedAccount, statusParam, start, end);
+    setDateSummaries(data || []);
+    setLoadedOrders({});  // clear stale loaded orders on every refresh
   } catch (error) {
-    toast.error('Failed to fetch orders');
+    console.error('Failed to fetch date summaries:', error);
+    toast.error('Failed to load orders');
   } finally {
-    setIsLoadingMore(false);
+    setSummariesLoading(false);
+    setLoading(false);
   }
 };
 
-// ✅ NEW: Load more dates (button click)
-const loadMoreDates = async () => {
-  if (!hasMoreDates || isLoadingMore) return;
-  await fetchDateGroups(false);
+// ── 2. Lazy orders: loads one date's orders on demand ───────────────────────
+const loadOrdersForDate = async (date) => {
+  if (loadedOrders[date] !== undefined || loadingDates.has(date)) return; // already loaded or loading
+
+  setLoadingDates(prev => new Set([...prev, date]));
+  try {
+    const statusParam =
+      activeTab === 'dispatched' ? 'dispatched' :
+      activeTab === 'delivered'  ? 'delivered' :
+      activeTab === 'returned'   ? 'returned,cancelled,wrongreturn,RTO' : 'all';
+
+    const orders = await salesService.getOrdersForDate(date, selectedAccount, statusParam);
+    setLoadedOrders(prev => ({ ...prev, [date]: orders || [] }));
+  } catch (error) {
+    console.error(`Failed to load orders for ${date}:`, error);
+    toast.error(`Failed to load orders for ${date}`);
+  } finally {
+    setLoadingDates(prev => {
+      const next = new Set(prev);
+      next.delete(date);
+      return next;
+    });
+  }
+};
+
+// ── 3. Lazy products: only load when New/Edit modal opens ───────────────────
+const ensureProductsLoaded = async () => {
+  if (products.length > 0) return;
+  try {
+    const productsData = await inventoryService.getAllProducts();
+    setProducts(Array.isArray(productsData) ? productsData : productsData?.products || []);
+  } catch (error) {
+    toast.error('Failed to load products');
+  }
 };
 
 const fetchSettlements = async () => {
@@ -466,6 +500,8 @@ const fetchSettlements = async () => {
 
   useEffect(() => {
     fetchInitialData();
+    fetchStats();         
+    fetchDateSummaries();
   }, []);
 
   // ✅ ADD THIS: Cleanup timeout on unmount
@@ -477,23 +513,19 @@ const fetchSettlements = async () => {
     };
   }, []);
 
-// ✅ ENHANCED: Re-apply search when tab changes
 useEffect(() => {
   if (!loading) {
     if (activeTab === 'settlements' && showSettlementsTab) {
       fetchSettlements();
-    } else if (activeTab !== 'settlements') {
+    } else {
       fetchStats();
-      fetchDateGroups(true);
-      
-      // ✅ ADD THIS: Re-trigger date search if one was active
+      fetchDateSummaries();
       if (searchQuery && searchType === 'date') {
-        console.log('🔄 Re-applying date search to new tab:', searchQuery);
         handleSearch(searchQuery);
       }
     }
   }
-}, [loading, selectedAccount, dateFilterType, customDateRange, activeTab, showSettlementsTab]);
+}, [loading, selectedAccount, dateFilterType, customDateRange, activeTab, showSettlementsTab, statusFilter]);
 
 const handleStatClick = (status) => {
   // Ignore Total Orders card
@@ -528,7 +560,7 @@ const handleStatClick = (status) => {
   };
 
   const handleSelectAll = () => {
-    const allOrders = dateGroups.flatMap(dg => dg.orders);
+    const allOrders = Object.values(loadedOrders).flat();
     if (selectedSales.length === allOrders.length) {
       setSelectedSales([]);
     } else {
@@ -567,31 +599,6 @@ const groupOrdersByDate = (orders) => {
   });
 
   return Array.from(grouped.values()).sort((a, b) => new Date(b.date) - new Date(a.date));
-};
-
-// Helper: Format date labels
-const formatDateLabel = (dateString) => {
-  const date = new Date(dateString);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  
-  const orderDate = new Date(dateString);
-  orderDate.setHours(0, 0, 0, 0);
-  
-  if (orderDate.getTime() === today.getTime()) {
-    return 'TODAY';
-  } else if (orderDate.getTime() === yesterday.getTime()) {
-    return 'YESTERDAY';
-  } else {
-    return date.toLocaleDateString('en-GB', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric'
-    });
-  }
 };
 
 // Enhanced search with date filtering
@@ -634,7 +641,7 @@ const handleSearch = useCallback(async (searchValue) => {
   if (matchedStatusKey) {
     const matchedStatus = STATUS_SEARCH_MAP[matchedStatusKey];
     setSearchType('order');
-    const allOrders = dateGroups.flatMap(dg => dg.orders);
+    const allOrders = Object.values(loadedOrders).flat();
 
     // ✅ Check locally first (only 5 date groups loaded)
     const localResults = allOrders.filter(sale => sale.status === matchedStatus);
@@ -686,7 +693,7 @@ const handleSearch = useCallback(async (searchValue) => {
     }
   }
 
-  const allOrders = dateGroups.flatMap(dg => dg.orders);
+  const allOrders = Object.values(loadedOrders).flat();
 
   if (isDateSearch && searchDate) {
     // ============ DATE SEARCH ============
@@ -766,7 +773,7 @@ const handleSearch = useCallback(async (searchValue) => {
       setIsSearching(false);
     }
   }
-}, [dateGroups, selectedAccount, activeTab]);
+}, [loadedOrders, selectedAccount, activeTab]);
 
 // ✅ ENHANCED: Clear search filter and refresh normal view
 const clearSearchFilter = () => {
@@ -782,7 +789,7 @@ const clearSearchFilter = () => {
   }
 
   // ✅ ADD THIS: Refresh the normal view after clearing
-  fetchDateGroups(true);
+  fetchDateSummaries();
   toast.success('Search cleared', { duration: 2000 });
 };
 
@@ -1280,7 +1287,7 @@ const handleFinalImportConfirm = async () => {
 
     // Refresh sales data
     fetchStats(); // Refresh stats
-    fetchDateGroups(true); // Refresh orders
+    fetchDateSummaries(); // Refresh orders
 
   } catch (error) {
     console.error('❌ Import error:', error);
@@ -1316,7 +1323,7 @@ const handleImportSuccess = (result) => {
   setIsImporting(false);
   setCompletedMappings([]);
 fetchStats(); // Refresh stats
-fetchDateGroups(true); // Refresh orders
+fetchDateSummaries(); // Refresh orders
 
   // Show failed orders modal if needed
   if (failed.length > 0 || duplicates.length > 0) {
@@ -1426,7 +1433,7 @@ const executeBulkAction = async () => {
   try {
     if (bulkAction === 'delivered') {
       // Get all the sales being marked as delivered
-      const allOrders = dateGroups.flatMap(dg => dg.orders);
+      const allOrders = Object.values(loadedOrders).flat();
       const salesToDeliver = allOrders.filter((s) => selectedSales.includes(s._id));
       
       // Ask if user wants to refill locked stock
@@ -1485,7 +1492,7 @@ const executeBulkAction = async () => {
       setSelectedSales([]);
       setBulkComments('');
 fetchStats(); // Refresh stats
-fetchDateGroups(true); // Refresh orders
+fetchDateSummaries(); // Refresh orders
     }
   } catch (error) {
     console.error('Bulk action error:', error);
@@ -1565,7 +1572,7 @@ const handleConfirmUseMainStock = async () => {
     
     // Refresh data
 fetchStats(); // Refresh stats
-fetchDateGroups(true); // Refresh orders
+fetchDateSummaries(); // Refresh orders
     
     // Refresh products to get updated stock
     const productsData = await inventoryService.getAllProducts();
@@ -1648,7 +1655,7 @@ const handleConfirmRefill = async () => {
         }
         
 fetchStats(); // Refresh stats
-fetchDateGroups(true); // Refresh orders
+fetchDateSummaries(); // Refresh orders
         
         // ✅ Refresh products to get updated lock values
         const productsData = await inventoryService.getAllProducts();
@@ -1699,7 +1706,7 @@ fetchDateGroups(true); // Refresh orders
     setRefillData(null);
     setPendingSettlement(null);
 fetchStats(); // Refresh stats
-fetchDateGroups(true); // Refresh orders
+fetchDateSummaries(); // Refresh orders
 
   } catch (error) {
     console.error('❌ Refill locked stock error (Sales):', error);
@@ -1739,7 +1746,7 @@ const handleSaleSubmit = async (e) => {
       setShowSaleModal(false);
       setIsSubmitting(false);
 fetchStats(); // Refresh stats
-fetchDateGroups(true); // Refresh orders
+fetchDateSummaries(); // Refresh orders
     } else {
       // NEW: Create new sale with reserved stock check
       console.log('Creating new sale:', saleFormData);
@@ -1753,7 +1760,7 @@ fetchDateGroups(true); // Refresh orders
         setShowSaleModal(false);
         setIsSubmitting(false);
 fetchStats(); // Refresh stats
-fetchDateGroups(true); // Refresh orders
+fetchDateSummaries(); // Refresh orders
       }
       // ✅ If modal is showing, handleConfirmUseMainStock will handle everything
     }
@@ -1826,7 +1833,7 @@ const handleConfirmLockRefill = async () => {
       }
       
 fetchStats(); // Refresh stats
-fetchDateGroups(true); // Refresh orders
+fetchDateSummaries(); // Refresh orders
       
       // Refresh products to get updated lock value
       const productsData = await inventoryService.getAllProducts();
@@ -1887,13 +1894,22 @@ const handleDelete = async (id) => {
     
     // ✅ Check if backend returned success
     if (response?.success || response?.message) {
-      // Remove from dateGroups
-      setDateGroups(prevGroups => 
-        prevGroups.map(group => ({
-          ...group,
-          orders: group.orders.filter(sale => sale._id !== id && sale.id !== id),
-          orderCount: group.orders.filter(sale => sale._id !== id && sale.id !== id).length
-        })).filter(group => group.orders.length > 0) // Remove empty date groups
+      // Remove from loadedOrders
+      setLoadedOrders(prev => {
+        const updated = { ...prev };
+        Object.keys(updated).forEach(date => {
+          updated[date] = updated[date].filter(sale => sale._id !== id && sale.id !== id);
+        });
+        return updated;
+      });
+      // Decrement count in dateSummaries
+      setDateSummaries(prev =>
+        prev.map(s => ({
+          ...s,
+          count: (loadedOrders[s.date] || []).some(o => o._id === id || o.id === id)
+            ? s.count - 1
+            : s.count
+        })).filter(s => s.count > 0)
       );
             
       // ✅ Show detailed success message with stock restoration info
@@ -1943,6 +1959,7 @@ const handleDelete = async (id) => {
     // ============ EDIT HANDLER ============
 
   const handleEdit = (sale) => {
+    ensureProductsLoaded(); 
     setEditingSale(sale);
     setSaleFormData({
       accountName: sale.accountName,
@@ -2022,7 +2039,7 @@ const handleDelete = async (id) => {
       setShowSearchModal(false); 
       setModalOrders([]);
       fetchStats();
-      fetchDateGroups(true);
+      fetchDateSummaries();
     } catch (error) {
       toast.error(error.response?.data?.message || 'Failed to update status');
     } finally {
@@ -2030,7 +2047,7 @@ const handleDelete = async (id) => {
     }
   };
 
-  const allOrders = dateGroups.flatMap(dg => dg.orders || []);
+  const allOrders = Object.values(loadedOrders).flat();
 
   // ============ LOADING STATE ============  
   if (loading) {
@@ -2134,6 +2151,7 @@ const handleDelete = async (id) => {
               <>
                 <button
                   onClick={() => {
+                    ensureProductsLoaded(); 
                     setEditingSale(null);
                     setSaleFormData((prev) => ({
                       ...prev,
@@ -2343,48 +2361,7 @@ const handleDelete = async (id) => {
         ) : (
           // ORDERS VIEW - GROUP BY DATE
           (() => {
-            // ✅ Calculate which orders to display
-            let displayOrders = searchType === 'date' && filteredOrders ? filteredOrders : dateGroups;
-            
-            // ✅ If it's a date search, filter by active tab
-            if (searchType === 'date' && filteredOrders) {
-              displayOrders = filteredOrders.map(dateGroup => {
-                let filteredGroupOrders = dateGroup.orders;
-                
-                // Filter by active tab
-                if (activeTab === 'dispatched') {
-                  filteredGroupOrders = dateGroup.orders.filter(order => order.status === 'dispatched');
-                } else if (activeTab === 'delivered') {
-                  filteredGroupOrders = dateGroup.orders.filter(order => order.status === 'delivered');
-                } else if (activeTab === 'returned') {
-                  filteredGroupOrders = dateGroup.orders.filter(order => 
-                    ['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(order.status)
-                  );
-                }
-                
-                // Only return date groups that have orders after filtering
-                if (filteredGroupOrders.length === 0) {
-                  return null;
-                }
-                
-                return {
-                  ...dateGroup,
-                  orders: filteredGroupOrders,
-                  orderCount: filteredGroupOrders.length,
-                };
-              }).filter(Boolean); // Remove null groups
-            }
-
-            // ✅ Apply statusFilter for returns tab (stat card click filtering)
-            if (activeTab === 'returned' && statusFilter !== 'all') {
-              displayOrders = displayOrders
-                .map(dateGroup => {
-                  const filtered = dateGroup.orders.filter(order => order.status === statusFilter);
-                  if (filtered.length === 0) return null;
-                  return { ...dateGroup, orders: filtered, orderCount: filtered.length };
-                })
-                .filter(Boolean);
-            }
+            const displayOrders = displayDateGroups;
 
             // ✅ Check if no orders
             if (displayOrders.length === 0) {
@@ -2425,21 +2402,12 @@ const handleDelete = async (id) => {
 
                 {/* Map through date groups */}
                 {displayOrders.map((dateGroup, idx) => {
-                  // ✅ FIX: Use dateGroup.date for consistent comparison
                   const isExpanded = expandedDate === dateGroup.date;
-                  
-                  const sortedOrders = [...dateGroup.orders].sort((a, b) => 
+
+                  const sortedOrders = [...dateGroup.orders].sort((a, b) =>
                     new Date(b.saleDate) - new Date(a.saleDate)
                   );
 
-                  // Account breakdown
-                  const accountBreakdown = dateGroup.orders.reduce((acc, order) => {
-                    if (!acc[order.accountName]) acc[order.accountName] = 0;
-                    acc[order.accountName]++;
-                    return acc;
-                  }, {});
-
-                  // Selection state
                   const allOrdersSelected = sortedOrders.every(order => selectedSales.includes(order._id));
                   const someOrdersSelected = sortedOrders.some(order => selectedSales.includes(order._id)) && !allOrdersSelected;
 
@@ -2452,10 +2420,15 @@ const handleDelete = async (id) => {
                             ? 'bg-gradient-to-r from-indigo-50 via-purple-50 to-pink-50 border-indigo-400 shadow-indigo-200'
                             : 'bg-white border-gray-200 hover:border-indigo-300'
                         }`}
-                        onClick={() => setExpandedDate(isExpanded ? null : dateGroup.date)}
+                        onClick={() => {
+                          const willExpand = expandedDate !== dateGroup.date;
+                          setExpandedDate(willExpand ? dateGroup.date : null);
+                          if (willExpand) loadOrdersForDate(dateGroup.date);
+                        }}
                       >
                         <div className="p-5">
                           <div className="flex items-center justify-between">
+
                             {/* Left: Date and Order Count */}
                             <div className="flex items-center gap-4">
                               <div className={`p-3 rounded-xl ${isExpanded ? 'bg-indigo-600' : 'bg-gray-100'}`}>
@@ -2472,12 +2445,18 @@ const handleDelete = async (id) => {
                                   </span>
                                   {dateGroup.dateLabel}
                                 </h3>
-                                <p className={`text-sm font-medium ${isExpanded ? 'text-indigo-600' : 'text-gray-500'}`}>
-                                  {dateGroup.orders.length} {dateGroup.orders.length === 1 ? 'Order' : 'Orders'}
-                                  {someOrdersSelected && (
-                                    <span className="ml-2 text-blue-600">
-                                      ({sortedOrders.filter(o => selectedSales.includes(o._id)).length} selected)
-                                    </span>
+                                <p className={`text-sm font-medium flex items-center gap-2 ${isExpanded ? 'text-indigo-600' : 'text-gray-500'}`}>
+                                  {summariesLoading ? (
+                                    <span className="inline-block w-16 h-4 bg-gray-200 animate-pulse rounded-md" />
+                                  ) : (
+                                    <>
+                                      {dateGroup.orderCount} {dateGroup.orderCount === 1 ? 'Order' : 'Orders'}
+                                      {someOrdersSelected && (
+                                        <span className="ml-2 text-blue-600">
+                                          ({sortedOrders.filter(o => selectedSales.includes(o._id)).length} selected)
+                                        </span>
+                                      )}
+                                    </>
                                   )}
                                 </p>
                               </div>
@@ -2486,7 +2465,8 @@ const handleDelete = async (id) => {
                             {/* Right: Account Breakdown */}
                             <div className="flex items-center gap-4">
                               <div className="flex items-center gap-3">
-                                {Object.entries(accountBreakdown).map(([account, count]) => (
+                                {/* ✅ FIX 1: dateGroup.accountBreakdown || {} */}
+                                {Object.entries(dateGroup.accountBreakdown || {}).map(([account, count]) => (
                                   <div
                                     key={account}
                                     onClick={(e) => {
@@ -2508,6 +2488,7 @@ const handleDelete = async (id) => {
                                 <FiChevronDown className="text-2xl text-gray-600" />
                               </div>
                             </div>
+
                           </div>
                         </div>
                       </div>
@@ -2516,218 +2497,200 @@ const handleDelete = async (id) => {
                       {isExpanded && (
                         <div className="animate-slideDown origin-top">
                           <div className="rounded-b-xl shadow-lg border-t-0 rounded-t-none border-2 border-indigo-200 bg-gradient-to-b from-indigo-50/30 to-white">
-                            
-                            {/* Sticky Header with Select All / Close */}
-                            <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm border-b-2 border-indigo-200 px-6 py-3 flex items-center justify-between rounded-t-xl">
-                              <div className="flex items-center gap-4">
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const orderIds = sortedOrders.map(o => o._id);
-                                    if (allOrdersSelected) {
-                                      setSelectedSales(prev => prev.filter(id => !orderIds.includes(id)));
-                                    } else {
-                                      setSelectedSales(prev => [...new Set([...prev, ...orderIds])]);
-                                    }
-                                  }}
-                                  className={`px-4 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
-                                    allOrdersSelected
-                                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                                      : someOrdersSelected
-                                      ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                  }`}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={allOrdersSelected}
-                                    readOnly
-                                    className="pointer-events-none"
-                                  />
-                                  {allOrdersSelected ? 'Deselect All' : someOrdersSelected ? 'Select All' : 'Select All'}
-                                </button>
-                                {(someOrdersSelected || allOrdersSelected) && (
-                                  <span className="text-sm font-medium text-gray-600">
-                                    {sortedOrders.filter(o => selectedSales.includes(o._id)).length}/{sortedOrders.length} selected
-                                  </span>
+
+                            {loadingDates.has(dateGroup.date) ? (
+                              <div className="flex flex-col items-center justify-center py-14 gap-3">
+                                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-500" />
+                                <p className="text-gray-500 text-sm font-medium">Loading orders...</p>
+                              </div>
+
+                            ) : loadedOrders[dateGroup.date] === undefined ? (
+                              <div className="text-center py-10 text-gray-400 text-sm">
+                                <FiPackage className="mx-auto text-3xl mb-2 opacity-40" />
+                                <p>Click the card to load orders</p>
+                              </div>
+
+                            ) : sortedOrders.length === 0 ? (
+                              <div className="flex flex-col items-center justify-center py-14 gap-2 text-gray-400">
+                                <FiPackage className="text-4xl opacity-40" />
+                                <p className="text-sm font-medium">No orders found for this date</p>
+                                {activeTab === 'returned' && statusFilter !== 'all' && (
+                                  <p className="text-xs text-gray-400">Try clearing the status filter</p>
                                 )}
                               </div>
-                              
-                              {/* Close Button */}
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setExpandedDate(null);
-                                }}
-                                className="px-4 py-2 bg-red-100 text-red-700 rounded-lg font-medium text-sm hover:bg-red-200 transition-all flex items-center gap-2"
-                              >
-                                <FiXCircle />
-                                Close
-                              </button>
-                            </div>
 
-                            {/* ORDERS LIST */}
-                            <div className="p-6 space-y-3">
-                              {sortedOrders.map((sale, saleIdx) => {
-                                const isHighlighted = highlightedAccount === sale.accountName;
-                                const isSelected = selectedSales.includes(sale._id);
-
-                                return (
-                                  <div
-                                    key={sale._id}
-                                    onClick={(e) => {
-                                      if (e.target.closest('button')) return;
-                                      handleSelectSale(sale._id);
-                                    }}
-                                    className={`border-2 rounded-xl p-4 transition-all duration-300 cursor-pointer ${
-                                      isHighlighted
-                                        ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-300 scale-1.01'
-                                        : isSelected
-                                        ? 'bg-blue-50 border-blue-400 shadow-md'
-                                        : 'bg-white border-gray-200 hover:border-indigo-300 hover:shadow-md'
-                                    }`}
-                                  >
-                                    {/* Your existing order card content here - keep everything the same */}
-                                    <div className="flex items-start justify-between gap-4">
-                                      {/* ... rest of your order card JSX ... */}
-                                      <div className="flex items-start gap-4 flex-1">
-                                        <div className="mt-1" onClick={(e) => e.stopPropagation()}>
-                                          <input
-                                            type="checkbox"
-                                            checked={isSelected}
-                                            onChange={() => handleSelectSale(sale._id)}
-                                            className="w-5 h-5 rounded border-gray-300 cursor-pointer"
-                                          />
-                                        </div>
-
-                                        <div className="flex-1">
-                                          {/* Account & Order ID */}
-                                          <div className="flex items-center gap-3 mb-2">
-                                            <span className="text-3xl">
-                                              {sale.accountName.includes('Flipkart') ? '🛒' : sale.accountName.includes('Amazon') ? '📦' : sale.accountName.includes('Meesho') ? '🛍️' : '🏪'}
-                                            </span>
-                                            <div>
-                                              <h4 className="font-bold text-gray-900 text-lg">{sale.accountName}</h4>
-                                              
-                                              {sale.marketplaceOrderId && (
-                                                <div className="flex items-center gap-2 mt-1">
-                                                  <span
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      handleCopyOrderId(sale.marketplaceOrderId);
-                                                    }}
-                                                    className="text-xs text-purple-700 font-mono bg-purple-100 px-2 py-1 rounded cursor-pointer hover:bg-purple-200 transition-colors"
-                                                    title="Click to copy"
-                                                  >
-                                                    🔖 {sale.marketplaceOrderId}
-                                                  </span>
-                                                </div>
-                                              )}
-                                              {sale.orderItemId && (
-                                                <div className="flex items-center gap-2 mt-1">
-                                                  <span
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      handleCopyOrderId(sale.orderItemId);
-                                                    }}
-                                                    className="text-xs text-blue-700 font-mono bg-blue-100 px-2 py-1 rounded cursor-pointer hover:bg-blue-200 transition-colors"
-                                                    title="Click to copy Order Item ID"
-                                                  >
-                                                    {sale.orderItemId}
-                                                  </span>
-                                                </div>
-                                              )}
-                                              
-                                              <p className="text-xs text-gray-500">
-                                                Order #{saleIdx + 1} • {format(new Date(sale.createdAt), 'hh:mm a')}
-                                              </p>
-                                            </div>
-                                          </div>
-
-                                          {/* Product Details */}
-                                          <div className="bg-gray-50 rounded-lg p-3 mb-2">
-                                            <div className="grid grid-cols-3 gap-4 text-sm">
-                                              <div>
-                                                <p className="text-xs text-gray-500 mb-1">Product</p>
-                                                <p className="font-semibold text-gray-900">{sale.design}</p>
-                                              </div>
-                                              <div>
-                                                <p className="text-xs text-gray-500 mb-1">Variant</p>
-                                                <p className="font-medium text-gray-700">{sale.color} {sale.size}</p>
-                                              </div>
-                                              <div>
-                                                <p className="text-xs text-gray-500 mb-1">Quantity</p>
-                                                <p className="font-bold text-gray-900">{sale.quantity}</p>
-                                              </div>
-                                            </div>
-
-                                            {['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(sale.status) && (
-                                              <div className="mt-3 pt-3 border-t border-gray-200">
-                                                <div className="flex items-center justify-between text-xs">
-                                                  <div className="flex items-center gap-2 text-gray-600">
-                                                    <FiPackage className="text-blue-600" />
-                                                    <span>Dispatched:</span>
-                                                    <span className="font-semibold text-gray-800">
-                                                      {formatDateCustom(sale.saleDate)}
-                                                    </span>
-                                                  </div>
-                                                  <div className="flex items-center gap-2 text-red-600">
-                                                    <FiRotateCcw />
-                                                    <span>
-                                                      {sale.status === 'returned' ? 'Returned' : sale.status === 'RTO' ? 'RTO' : 'Wrong Return'}:
-                                                    </span>
-                                                    <span className="font-semibold">
-                                                      {formatDateCustom(sale.displayDate || sale.saleDate)}
-                                                    </span>
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            )}
-                                          </div>
-
-                                          {sale.notes && (
-                                            <div className="bg-yellow-50 border-l-4 border-yellow-400 p-2 text-sm text-gray-700 italic rounded">
-                                              {sale.notes}
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-
-                                      {/* Right: Status & Actions */}
-                                      <div className="flex flex-col items-end gap-3">
-                                        {getStatusBadge(sale.status)}
-                                        
-                                        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                          <button
-                                            onClick={() => setViewingHistory(sale)}
-                                            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                                            title="View History"
-                                          >
-                                            <FiClock className="text-gray-600" />
-                                          </button>
-                                          <button
-                                            onClick={() => handleEdit(sale)}
-                                            className="p-2 hover:bg-indigo-100 rounded-lg transition-colors"
-                                            title="Edit Status"
-                                          >
-                                            <FiEdit2 className="text-indigo-600" />
-                                          </button>
-                                          {isAdmin && (
-                                            <button
-                                              onClick={() => handleDelete(sale._id)}
-                                              className="p-2 hover:bg-red-100 rounded-lg transition-colors"
-                                              title="Delete"
-                                            >
-                                              <FiTrash2 className="text-red-600" />
-                                            </button>
-                                          )}
-                                        </div>
-                                      </div>
-                                    </div>
+                            ) : (
+                              <>
+                                {/* Sticky Header */}
+                                <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm border-b-2 border-indigo-200 px-6 py-3 flex items-center justify-between rounded-t-xl">
+                                  <div className="flex items-center gap-4">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const orderIds = sortedOrders.map(o => o._id);
+                                        if (allOrdersSelected) {
+                                          setSelectedSales(prev => prev.filter(id => !orderIds.includes(id)));
+                                        } else {
+                                          setSelectedSales(prev => [...new Set([...prev, ...orderIds])]);
+                                        }
+                                      }}
+                                      className={`px-4 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+                                        allOrdersSelected
+                                          ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                          : someOrdersSelected
+                                          ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                      }`}
+                                    >
+                                      <input type="checkbox" checked={allOrdersSelected} readOnly className="pointer-events-none" />
+                                      {allOrdersSelected ? 'Deselect All' : 'Select All'}
+                                    </button>
+                                    {(someOrdersSelected || allOrdersSelected) && (
+                                      <span className="text-sm font-medium text-gray-600">
+                                        {sortedOrders.filter(o => selectedSales.includes(o._id)).length}/{sortedOrders.length} selected
+                                      </span>
+                                    )}
                                   </div>
-                                );
-                              })}
-                            </div>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setExpandedDate(null); }}
+                                    className="px-4 py-2 bg-red-100 text-red-700 rounded-lg font-medium text-sm hover:bg-red-200 transition-all flex items-center gap-2"
+                                  >
+                                    <FiXCircle />
+                                    Close
+                                  </button>
+                                </div>
+
+                                {/* Orders List */}
+                                <div className="p-6 space-y-3">
+                                  {sortedOrders.map((sale, saleIdx) => {
+                                    const isHighlighted = highlightedAccount === sale.accountName;
+                                    const isSelected = selectedSales.includes(sale._id);
+                                    return (
+                                      <div
+                                        key={sale._id}
+                                        onClick={(e) => { if (e.target.closest('button')) return; handleSelectSale(sale._id); }}
+                                        className={`border-2 rounded-xl p-4 transition-all duration-300 cursor-pointer ${
+                                          isHighlighted
+                                            ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-300 scale-1.01'
+                                            : isSelected
+                                            ? 'bg-blue-50 border-blue-400 shadow-md'
+                                            : 'bg-white border-gray-200 hover:border-indigo-300 hover:shadow-md'
+                                        }`}
+                                      >
+                                        <div className="flex items-start justify-between gap-4">
+                                          <div className="flex items-start gap-4 flex-1">
+                                            <div className="mt-1" onClick={(e) => e.stopPropagation()}>
+                                              <input
+                                                type="checkbox"
+                                                checked={isSelected}
+                                                onChange={() => handleSelectSale(sale._id)}
+                                                className="w-5 h-5 rounded border-gray-300 cursor-pointer"
+                                              />
+                                            </div>
+                                            <div className="flex-1">
+                                              <div className="flex items-center gap-3 mb-2">
+                                                <span className="text-3xl">
+                                                  {sale.accountName.includes('Flipkart') ? '🛒'
+                                                    : sale.accountName.includes('Amazon') ? '📦'
+                                                    : sale.accountName.includes('Meesho') ? '🛍️'
+                                                    : '🏪'}
+                                                </span>
+                                                <div>
+                                                  <h4 className="font-bold text-gray-900 text-lg">{sale.accountName}</h4>
+                                                  {sale.marketplaceOrderId && (
+                                                    <div className="flex items-center gap-2 mt-1">
+                                                      <span
+                                                        onClick={(e) => { e.stopPropagation(); handleCopyOrderId(sale.marketplaceOrderId); }}
+                                                        className="text-xs text-purple-700 font-mono bg-purple-100 px-2 py-1 rounded cursor-pointer hover:bg-purple-200 transition-colors"
+                                                        title="Click to copy"
+                                                      >
+                                                        🔖 {sale.marketplaceOrderId}
+                                                      </span>
+                                                    </div>
+                                                  )}
+                                                  {sale.orderItemId && (
+                                                    <div className="flex items-center gap-2 mt-1">
+                                                      <span
+                                                        onClick={(e) => { e.stopPropagation(); handleCopyOrderId(sale.orderItemId); }}
+                                                        className="text-xs text-blue-700 font-mono bg-blue-100 px-2 py-1 rounded cursor-pointer hover:bg-blue-200 transition-colors"
+                                                        title="Click to copy Order Item ID"
+                                                      >
+                                                        {sale.orderItemId}
+                                                      </span>
+                                                    </div>
+                                                  )}
+                                                  <p className="text-xs text-gray-500">
+                                                    Order #{saleIdx + 1} • {format(new Date(sale.createdAt), 'hh:mm a')}
+                                                  </p>
+                                                </div>
+                                              </div>
+                                              <div className="bg-gray-50 rounded-lg p-3 mb-2">
+                                                <div className="grid grid-cols-3 gap-4 text-sm">
+                                                  <div>
+                                                    <p className="text-xs text-gray-500 mb-1">Product</p>
+                                                    <p className="font-semibold text-gray-900">{sale.design}</p>
+                                                  </div>
+                                                  <div>
+                                                    <p className="text-xs text-gray-500 mb-1">Variant</p>
+                                                    <p className="font-medium text-gray-700">{sale.color} {sale.size}</p>
+                                                  </div>
+                                                  <div>
+                                                    <p className="text-xs text-gray-500 mb-1">Quantity</p>
+                                                    <p className="font-bold text-gray-900">{sale.quantity}</p>
+                                                  </div>
+                                                </div>
+                                                {['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(sale.status) && (
+                                                  <div className="mt-3 pt-3 border-t border-gray-200">
+                                                    <div className="flex items-center justify-between text-xs">
+                                                      <div className="flex items-center gap-2 text-gray-600">
+                                                        <FiPackage className="text-blue-600" />
+                                                        <span>Dispatched:</span>
+                                                        <span className="font-semibold text-gray-800">{formatDateCustom(sale.saleDate)}</span>
+                                                      </div>
+                                                      <div className="flex items-center gap-2 text-red-600">
+                                                        <FiRotateCcw />
+                                                        <span>
+                                                          {sale.status === 'returned' ? 'Returned'
+                                                            : sale.status === 'RTO' ? 'RTO'
+                                                            : sale.status === 'wrongreturn' ? 'Wrong Return'
+                                                            : 'Cancelled'}:
+                                                        </span>
+                                                        <span className="font-semibold">{formatDateCustom(sale.displayDate || sale.saleDate)}</span>
+                                                      </div>
+                                                    </div>
+                                                  </div>
+                                                )}
+                                              </div>
+                                              {sale.notes && (
+                                                <div className="bg-yellow-50 border-l-4 border-yellow-400 p-2 text-sm text-gray-700 italic rounded">
+                                                  {sale.notes}
+                                                </div>
+                                              )}
+                                            </div>
+                                          </div>
+                                          <div className="flex flex-col items-end gap-3">
+                                            {getStatusBadge(sale.status)}
+                                            <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                              <button onClick={() => setViewingHistory(sale)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors" title="View History">
+                                                <FiClock className="text-gray-600" />
+                                              </button>
+                                              <button onClick={() => handleEdit(sale)} className="p-2 hover:bg-indigo-100 rounded-lg transition-colors" title="Edit Status">
+                                                <FiEdit2 className="text-indigo-600" />
+                                              </button>
+                                              {isAdmin && (
+                                                <button onClick={() => handleDelete(sale._id)} className="p-2 hover:bg-red-100 rounded-lg transition-colors" title="Delete">
+                                                  <FiTrash2 className="text-red-600" />
+                                                </button>
+                                              )}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            )}
                           </div>
                         </div>
                       )}
@@ -4219,55 +4182,7 @@ const handleDelete = async (id) => {
           </div>
         </div>
       )}
-      
-      {/* ✅ ADD: Infinite Scroll Loading Indicators */}
-      {activeTab !== 'settlements' && (
-        <>
-          {isLoadingMore && (
-            <div className="text-center py-8 mt-4">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-3 border-indigo-500 mx-auto"></div>
-              <p className="text-gray-500 mt-3 text-sm font-medium">Loading more orders...</p>
-            </div>
-          )}
 
-          {!hasMoreDates && dateGroups.flatMap(dg => dg.orders).length > 0 && !isLoadingMore && (
-            <div className="text-center py-6 mt-4">
-              <div className="inline-block px-6 py-2 bg-gray-100 text-gray-500 rounded-full text-sm font-medium">
-                ✓ End of list — All {dateGroups.flatMap(dg => dg.orders).length} orders loaded
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* ✅ ADD THE BUTTON RIGHT HERE - After dateGroups.map() closes */}
-      {activeTab !== 'settlements' && dateGroups.length > 0 && (
-        <div className="mt-6 text-center">
-          {hasMoreDates ? (
-            <button
-              onClick={loadMoreDates}
-              disabled={isLoadingMore}
-              className="px-8 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 mx-auto"
-            >
-              {isLoadingMore ? (
-                <>
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                  <span>Loading...</span>
-                </>
-              ) : (
-                <>
-                  <FiArrowRight className="w-5 h-5" />
-                  <span>Load More Dates</span>
-                </>
-              )}
-            </button>
-          ) : (
-            <div className="inline-block px-6 py-3 bg-gray-100 text-gray-500 rounded-lg text-sm font-medium">
-              ✓ End of list — All dates loaded
-            </div>
-          )}
-        </div>
-      )}
       {/* AUTO TRANSFER DETAILS MODAL */}
       {showAutoTransferModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">

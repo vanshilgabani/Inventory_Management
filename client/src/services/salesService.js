@@ -163,6 +163,26 @@ export const salesService = {
     return response.data.data;
   },
 
+  // ✅ NEW: Fast date summaries — aggregation only, zero order documents
+  getDateSummaries: async (accountName, status, startDate, endDate) => {
+    const params = {};
+    if (accountName && accountName !== 'all') params.accountName = accountName;
+    if (status && status !== 'all') params.status = status;
+    if (startDate) params.startDate = startDate;
+    if (endDate) params.endDate = endDate;
+    const response = await api.get('/sales/date-summaries', { params });
+    return response.data.data;
+  },
+
+  // ✅ NEW: Lazy orders — loads one specific date's orders on demand
+  getOrdersForDate: async (date, accountName, status) => {
+    const params = { date };
+    if (accountName && accountName !== 'all') params.accountName = accountName;
+    if (status && status !== 'all') params.status = status;
+    const response = await api.get('/sales/orders-for-date', { params });
+    return response.data.data;
+  },
+
     searchByDate: async (date, accountName = 'all', status = 'all') => {
   const response = await api.get('/sales/search-by-date', {
     params: { date, accountName, status }

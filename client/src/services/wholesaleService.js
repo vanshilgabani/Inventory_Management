@@ -1,9 +1,9 @@
 import api from './api';
 
 // Get all wholesale orders
-const getAllOrders = async () => {
-  const response = await api.get('/wholesale');
-  return response.data;
+const getAllOrders = async (queryString = '') => {
+  const response = await api.get(`/wholesale?${queryString}`);
+  return response.data; 
 };
 
 // Get single order by ID
@@ -175,6 +175,11 @@ const getBuyerTenantInfo = async (buyerId) => {
   return response.data.data;
 };
 
+const getOrderSyncStatus = async (orderId) => {
+  const response = await api.get(`/wholesale/orders/${orderId}/sync-status`);
+  return response.data;
+};
+
 export const wholesaleService = {
   getAllOrders,
   getOrderById,
@@ -203,5 +208,6 @@ export const wholesaleService = {
   deleteOrderPayment,
   getTenantUsers,           // ✅ ADD
   linkBuyerToTenant,        // ✅ ADD
-  getBuyerTenantInfo
+  getBuyerTenantInfo,
+  getOrderSyncStatus,
 };

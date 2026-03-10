@@ -396,9 +396,9 @@ const fetchReturnRateByAccount = async (account) => {
                       <div className="w-full bg-gray-200 rounded-full h-2">
                         <div
                           className={`h-2 rounded-full ${
-                            ((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100 < 10
+                            ((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100 < 20
                               ? 'bg-green-500'
-                              : ((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100 < 20
+                              : ((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100 < 30
                               ? 'bg-yellow-500'
                               : 'bg-red-500'
                           }`}
@@ -425,9 +425,9 @@ const fetchReturnRateByAccount = async (account) => {
                       <div className="w-full bg-gray-200 rounded-full h-2">
                         <div
                           className={`h-2 rounded-full ${
-                            (account.RTOCount / account.orderCount) * 100 < 5
+                            (account.RTOCount / account.orderCount) * 100 < 20
                               ? 'bg-green-500'
-                              : (account.RTOCount / account.orderCount) * 100 < 15
+                              : (account.RTOCount / account.orderCount) * 100 < 30
                               ? 'bg-yellow-500'
                               : 'bg-red-500'
                           }`}

@@ -44,6 +44,7 @@ const TransferHistory = () => {
   const [showModal, setShowModal] = useState(false);
   const [modalData, setModalData] = useState(null);
   const [modalTitle, setModalTitle] = useState('');
+  const [activeTab, setActiveTab] = useState('stock');
 
   // Filters
   const [filterType, setFilterType] = useState('all');
@@ -171,6 +172,17 @@ const TransferHistory = () => {
     return [...new Set(transfers.map(t => t.size))].filter(Boolean).sort();
   }, [transfers]);
 
+  // Split transfers into stock vs internal
+const stockTransfers = useMemo(() =>
+  transfers.filter(t => t.type !== 'internal_transfer'),
+  [transfers]
+);
+
+const internalTransfers = useMemo(() =>
+  transfers.filter(t => t.type === 'internal_transfer'),
+  [transfers]
+);
+
   // Export to CSV
   const handleExportCSV = () => {
     if (transfers.length === 0) {
@@ -221,69 +233,51 @@ const TransferHistory = () => {
 
   // Helper: Get transfer type info
   const getTransferTypeInfo = (type) => {
-    const types = {
-      'manual_refill': {
-        icon: <FiArrowDown className="w-5 h-5" />,
-        label: 'Manual Refill',
-        badge: 'bg-green-100 text-green-800 border-green-200',
-        borderColor: 'border-green-500',
-        bgColor: 'bg-green-50',
-        iconBg: 'bg-green-500',
-        description: 'Main → Reserved',
-        quantityColor: 'text-green-600'
-      },
-      'manual_return': {
-        icon: <FiArrowUp className="w-5 h-5" />,
-        label: 'Manual Return',
-        badge: 'bg-blue-100 text-blue-800 border-blue-200',
-        borderColor: 'border-blue-500',
-        bgColor: 'bg-blue-50',
-        iconBg: 'bg-blue-500',
-        description: 'Reserved → Main',
-        quantityColor: 'text-blue-600'
-      },
-      'marketplace_order': {
-        icon: <FiPackage className="w-5 h-5" />,
-        label: 'Marketplace Sale',
-        badge: 'bg-purple-100 text-purple-800 border-purple-200',
-        borderColor: 'border-purple-500',
-        bgColor: 'bg-purple-50',
-        iconBg: 'bg-purple-500',
-        description: 'Reserved → Sold',
-        quantityColor: 'text-purple-600'
-      },
-      'emergency_use': {
-        icon: <FiPackage className="w-5 h-5" />,
-        label: 'Emergency Use',
-        badge: 'bg-orange-100 text-orange-800 border-orange-200',
-        borderColor: 'border-orange-500',
-        bgColor: 'bg-orange-50',
-        iconBg: 'bg-orange-500',
-        description: 'Main → Sold',
-        quantityColor: 'text-orange-600'
-      },
-      'emergency_borrow': {
-        icon: <FiRepeat className="w-5 h-5" />,
-        label: 'Emergency Borrow',
-        badge: 'bg-red-100 text-red-800 border-red-200',
-        borderColor: 'border-red-500',
-        bgColor: 'bg-red-50',
-        iconBg: 'bg-red-500',
-        description: 'Reserved → Main',
-        quantityColor: 'text-red-600'
-      }
-    };
-    return types[type] || {
-      icon: <FiPackage className="w-5 h-5" />,
-      label: 'Transfer',
-      badge: 'bg-gray-100 text-gray-800 border-gray-200',
-      borderColor: 'border-gray-500',
-      bgColor: 'bg-gray-50',
-      iconBg: 'bg-gray-500',
-      description: 'Unknown',
-      quantityColor: 'text-gray-600'
-    };
+  const types = {
+    'manualrefill':     {
+      label: 'Manual Refill',
+      icon: <FiArrowDown className="w-4 h-4" />,
+      color: 'bg-blue-100 text-blue-800',
+      description: 'Main → Reserved'
+    },
+    'manualreturn':     {
+      label: 'Manual Return',
+      icon: <FiArrowUp className="w-4 h-4" />,
+      color: 'bg-green-100 text-green-800',
+      description: 'Reserved → Main'
+    },
+    'marketplaceorder': {
+      label: 'Marketplace Order',
+      icon: <FiPackage className="w-4 h-4" />,
+      color: 'bg-purple-100 text-purple-800',
+      description: 'Reserved stock dispatched'
+    },
+    'emergencyuse':     {
+      label: 'Emergency Use',
+      icon: <FiTrendingUp className="w-4 h-4" />,
+      color: 'bg-orange-100 text-orange-800',
+      description: 'Main → Reserved (auto)'
+    },
+    'emergencyborrow':  {
+      label: 'Emergency Borrow',
+      icon: <FiRepeat className="w-4 h-4" />,
+      color: 'bg-yellow-100 text-yellow-800',
+      description: 'Reserved → Main (auto)'
+    },
+    'internal_transfer':{
+      label: 'Internal Transfer',
+      icon: <FiRepeat className="w-4 h-4" />,
+      color: 'bg-indigo-100 text-indigo-800',
+      description: 'Account → Account'
+    },
   };
+  return types[type] || {
+    label: type ? type.replace(/_/g, ' ') : 'Unknown',
+    icon: <FiRepeat className="w-4 h-4" />,
+    color: 'bg-gray-100 text-gray-800',
+    description: 'Transfer'
+  };
+};
 
   // Format date
   const formatDate = (dateString) => {
@@ -537,271 +531,458 @@ const TransferHistory = () => {
         </>
       ) : null}
 
-      {/* Filters Section - Collapsible */}
-      <Card>
-        <div
-          className="flex items-center justify-between cursor-pointer"
-          onClick={() => setShowFilters(!showFilters)}
+      {/* ── Filters Section ─────────────────────────────────────────────────── */}
+<Card>
+  <div
+    className="flex items-center justify-between cursor-pointer"
+    onClick={() => setShowFilters(!showFilters)}
+  >
+    <div className="flex items-center gap-2">
+      <FiFilter className="text-xl text-gray-600" />
+      <h3 className="text-lg font-semibold text-gray-900">Filters</h3>
+      {(filterType !== 'all' || filterDesign !== 'all' || filterColor !== 'all' || filterSize !== 'all' || dateRange.startDate || dateRange.endDate) && (
+        <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded-full font-medium">
+          Active
+        </span>
+      )}
+    </div>
+    {showFilters ? (
+      <FiChevronUp className="text-xl text-gray-400" />
+    ) : (
+      <FiChevronDown className="text-xl text-gray-400" />
+    )}
+  </div>
+
+  {showFilters && (
+    <div className="mt-4 space-y-4">
+      {/* Row 1 */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <select
+          value={filterType}
+          onChange={(e) => setFilterType(e.target.value)}
+          className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
         >
-          <div className="flex items-center gap-2">
-            <FiFilter className="text-xl text-gray-600" />
-            <h3 className="text-lg font-semibold text-gray-900">Filters</h3>
-            {(filterType !== 'all' || filterDesign !== 'all' || filterColor !== 'all' || filterSize !== 'all' || dateRange.startDate || dateRange.endDate) && (
-              <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded-full font-medium">
-                Active
-              </span>
-            )}
-          </div>
-          {showFilters ? (
-            <FiChevronUp className="text-xl text-gray-400" />
-          ) : (
-            <FiChevronDown className="text-xl text-gray-400" />
-          )}
+          <option value="all">All Types</option>
+          <option value="manualrefill">Manual Refill</option>
+          <option value="manualreturn">Manual Return</option>
+          <option value="marketplaceorder">Marketplace Sale</option>
+          <option value="emergencyuse">Emergency Use</option>
+          <option value="emergencyborrow">Emergency Borrow</option>
+          <option value="internal_transfer">Internal Transfer</option>
+        </select>
+
+        <select
+          value={filterDesign}
+          onChange={(e) => setFilterDesign(e.target.value)}
+          className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">All Designs</option>
+          {uniqueDesigns.map(design => (
+            <option key={design} value={design}>{design}</option>
+          ))}
+        </select>
+
+        <select
+          value={filterColor}
+          onChange={(e) => setFilterColor(e.target.value)}
+          className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">All Colors</option>
+          {uniqueColors.map(color => (
+            <option key={color} value={color}>{color}</option>
+          ))}
+        </select>
+
+        <select
+          value={filterSize}
+          onChange={(e) => setFilterSize(e.target.value)}
+          className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">All Sizes</option>
+          {uniqueSizes.map(size => (
+            <option key={size} value={size}>{size}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Row 2 */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="relative">
+          <FiCalendar className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+          <input
+            type="date"
+            value={dateRange.startDate}
+            onChange={(e) => setDateRange({ ...dateRange, startDate: e.target.value })}
+            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
         </div>
 
-        {showFilters && (
-          <div className="mt-4 space-y-4">
-            {/* Row 1 */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <select
-                value={filterType}
-                onChange={(e) => setFilterType(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="all">All Types</option>
-                <option value="manual_refill">Manual Refill</option>
-                <option value="manual_return">Manual Return</option>
-                <option value="marketplace_order">Marketplace Sale</option>
-                <option value="emergency_use">Emergency Use</option>
-                <option value="emergency_borrow">Emergency Borrow</option>
-              </select>
-
-              <select
-                value={filterDesign}
-                onChange={(e) => setFilterDesign(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="all">All Designs</option>
-                {uniqueDesigns.map(design => (
-                  <option key={design} value={design}>{design}</option>
-                ))}
-              </select>
-
-              <select
-                value={filterColor}
-                onChange={(e) => setFilterColor(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="all">All Colors</option>
-                {uniqueColors.map(color => (
-                  <option key={color} value={color}>{color}</option>
-                ))}
-              </select>
-
-              <select
-                value={filterSize}
-                onChange={(e) => setFilterSize(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="all">All Sizes</option>
-                {uniqueSizes.map(size => (
-                  <option key={size} value={size}>{size}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Row 2 */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="relative">
-                <FiCalendar className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                <input
-                  type="date"
-                  value={dateRange.startDate}
-                  onChange={(e) => setDateRange({ ...dateRange, startDate: e.target.value })}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="From Date"
-                />
-              </div>
-
-              <div className="relative">
-                <FiCalendar className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                <input
-                  type="date"
-                  value={dateRange.endDate}
-                  onChange={(e) => setDateRange({ ...dateRange, endDate: e.target.value })}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="To Date"
-                />
-              </div>
-
-              <button
-                onClick={handleApplyFilters}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold"
-              >
-                Apply Filters
-              </button>
-
-              <button
-                onClick={handleClearFilters}
-                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-semibold"
-              >
-                Clear All
-              </button>
-            </div>
-          </div>
-        )}
-      </Card>
-
-      {/* Transfers List */}
-      <Card>
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-xl font-bold text-gray-900">Recent Transfers</h3>
-          <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-semibold">
-            {transfers.length} {transfers.length === 1 ? 'transfer' : 'transfers'}
-          </span>
+        <div className="relative">
+          <FiCalendar className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+          <input
+            type="date"
+            value={dateRange.endDate}
+            onChange={(e) => setDateRange({ ...dateRange, endDate: e.target.value })}
+            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
         </div>
 
-        {transfers.length === 0 ? (
-          <div className="text-center py-12">
-            <FiPackage className="mx-auto text-6xl text-gray-300 mb-4" />
-            <p className="text-gray-500 text-lg">No transfers found</p>
-            <p className="text-gray-400 text-sm">Try adjusting your filters or date range</p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {transfers.map((transfer, index) => {
-              const typeInfo = getTransferTypeInfo(transfer.type);
-              const isExpanded = expandedCards[index];
+        <button
+          onClick={handleApplyFilters}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold"
+        >
+          Apply Filters
+        </button>
 
-              return (
-                <div
-                  key={index}
-                  className={`border-l-4 ${typeInfo.borderColor} bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow`}
-                >
-                  <div className="p-4">
-                    <div className="flex items-center justify-between">
-                      {/* Left: Type Info */}
-                      <div className="flex items-center gap-4">
-                        <div className={`p-3 ${typeInfo.iconBg} rounded-full text-white`}>
-                          {typeInfo.icon}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-gray-900">{typeInfo.label}</span>
-                            <span className={`px-2 py-1 text-xs rounded-full ${typeInfo.badge} border`}>
-                              {typeInfo.description}
-                            </span>
-                          </div>
-                          <p className="text-sm text-gray-500 mt-1">{formatDate(transfer.createdAt)}</p>
-                        </div>
+        <button
+          onClick={handleClearFilters}
+          className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-semibold"
+        >
+          Clear All
+        </button>
+      </div>
+    </div>
+  )}
+</Card>
+
+{/* ── Transfers List ───────────────────────────────────────────────────── */}
+<Card>
+  {/* ── Tab Header ────────────────────────────────────────────────── */}
+  <div className="flex items-center justify-between mb-1">
+    <div className="flex gap-0 border-b border-gray-200 w-full">
+      <button
+        onClick={() => setActiveTab('stock')}
+        className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${
+          activeTab === 'stock'
+            ? 'border-blue-600 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'
+        }`}
+      >
+        <FiRepeat className="w-4 h-4" />
+        Stock Transfers
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+          activeTab === 'stock'
+            ? 'bg-blue-100 text-blue-700'
+            : 'bg-gray-100 text-gray-600'
+        }`}>
+          {stockTransfers.length}
+        </span>
+      </button>
+
+      <button
+        onClick={() => setActiveTab('internal')}
+        className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${
+          activeTab === 'internal'
+            ? 'border-indigo-600 text-indigo-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'
+        }`}
+      >
+        <FiArrowLeft className="w-4 h-4 rotate-180" />
+        Internal Transfers
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+          activeTab === 'internal'
+            ? 'bg-indigo-100 text-indigo-700'
+            : 'bg-gray-100 text-gray-600'
+        }`}>
+          {internalTransfers.length}
+        </span>
+      </button>
+    </div>
+  </div>
+
+  {/* ── Stock Transfers Tab ────────────────────────────────────────── */}
+  {activeTab === 'stock' && (
+    <div className="mt-4">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-xl font-bold text-gray-900">Stock Transfers</h3>
+        <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-semibold">
+          {stockTransfers.length} {stockTransfers.length === 1 ? 'transfer' : 'transfers'}
+        </span>
+      </div>
+
+      {stockTransfers.length === 0 ? (
+        <div className="text-center py-12">
+          <FiPackage className="mx-auto text-6xl text-gray-300 mb-4" />
+          <p className="text-gray-500 text-lg">No stock transfers found</p>
+          <p className="text-gray-400 text-sm">Try adjusting your filters or date range</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {stockTransfers.map((transfer, index) => {
+            const typeInfo = getTransferTypeInfo(transfer.type);
+            const isExpanded = expandedCards[`stock-${index}`];
+
+            return (
+              <div
+                key={transfer._id || index}
+                className={`border-l-4 ${typeInfo.borderColor} bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow`}
+              >
+                <div className="p-4">
+                  <div className="flex items-center justify-between">
+                    {/* Left: Type Info */}
+                    <div className="flex items-center gap-4">
+                      <div className={`p-3 ${typeInfo.iconBg} rounded-full text-white`}>
+                        {typeInfo.icon}
                       </div>
-
-                      {/* Center: Variant Info */}
-                      <div className="flex-1 mx-8">
-                        <div className="flex items-center gap-3">
-                          <div>
-                            <p className="font-bold text-gray-900">{transfer.design}</p>
-                            <div className="flex items-center gap-2 mt-1">
-                              <div
-                                className="w-4 h-4 rounded-full border-2 border-gray-300"
-                                style={{ backgroundColor: getColorCode(transfer.color) || '#9CA3AF' }}
-                              />
-                              <span className="text-sm text-gray-600">
-                                {transfer.color} - Size {transfer.size}
-                              </span>
-                            </div>
-                          </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-gray-900">{typeInfo.label}</span>
+                          <span className={`px-2 py-1 text-xs rounded-full ${typeInfo.badge} border`}>
+                            {typeInfo.description}
+                          </span>
                         </div>
-                      </div>
-
-                      {/* Right: Quantity & Actions */}
-                      <div className="text-right">
-                        <p className={`text-2xl font-bold ${typeInfo.quantityColor}`}>
-                          {transfer.type === 'manual_refill' || transfer.type === 'emergency_use' ? '+' : '-'}{transfer.quantity}
-                        </p>
-                        <p className="text-xs text-gray-500">units</p>
-                        <button
-                          onClick={() => toggleCardExpansion(index)}
-                          className="mt-2 text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
-                        >
-                          {isExpanded ? (
-                            <>
-                              <FiChevronUp className="w-4 h-4" />
-                              Hide Details
-                            </>
-                          ) : (
-                            <>
-                              <FiChevronDown className="w-4 h-4" />
-                              Show Details
-                            </>
-                          )}
-                        </button>
+                        <p className="text-sm text-gray-500 mt-1">{formatDate(transfer.createdAt)}</p>
                       </div>
                     </div>
 
-                    {/* Expanded Details */}
-                    {isExpanded && (
-                      <div className="mt-4 pt-4 border-t border-gray-200">
-                        <div className="grid grid-cols-3 gap-4">
-                          {/* Stock Changes */}
-                          <div className="bg-gray-50 p-3 rounded-lg">
-                            <p className="text-xs font-semibold text-gray-600 mb-2">Main Stock</p>
-                            <p className="text-sm">
-                              {transfer.mainStockBefore} → {transfer.mainStockAfter}
-                              <span className={`ml-2 font-semibold ${
-                                transfer.mainStockAfter > transfer.mainStockBefore
-                                  ? 'text-green-600'
-                                  : transfer.mainStockAfter < transfer.mainStockBefore
-                                  ? 'text-red-600'
-                                  : 'text-gray-600'
-                              }`}>
-                                ({transfer.mainStockAfter > transfer.mainStockBefore ? '+' : ''}
-                                {transfer.mainStockAfter - transfer.mainStockBefore})
-                              </span>
-                            </p>
-                          </div>
-
-                          <div className="bg-gray-50 p-3 rounded-lg">
-                            <p className="text-xs font-semibold text-gray-600 mb-2">Reserved Stock</p>
-                            <p className="text-sm">
-                              {transfer.reservedStockBefore} → {transfer.reservedStockAfter}
-                              <span className={`ml-2 font-semibold ${
-                                transfer.reservedStockAfter > transfer.reservedStockBefore
-                                  ? 'text-green-600'
-                                  : transfer.reservedStockAfter < transfer.reservedStockBefore
-                                  ? 'text-red-600'
-                                  : 'text-gray-600'
-                              }`}>
-                                ({transfer.reservedStockAfter > transfer.reservedStockBefore ? '+' : ''}
-                                {transfer.reservedStockAfter - transfer.reservedStockBefore})
-                              </span>
-                            </p>
-                          </div>
-
-                          <div className="bg-gray-50 p-3 rounded-lg">
-                            <p className="text-xs font-semibold text-gray-600 mb-2">Performed By</p>
-                            <div className="flex items-center gap-2">
-                              <FiUser className="w-4 h-4 text-gray-400" />
-                              <p className="text-sm">{transfer.performedBy?.name || 'System'}</p>
-                            </div>
+                    {/* Center: Variant Info */}
+                    <div className="flex-1 mx-8">
+                      <div className="flex items-center gap-3">
+                        <div>
+                          <p className="font-bold text-gray-900">{transfer.design}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <div
+                              className="w-4 h-4 rounded-full border-2 border-gray-300"
+                              style={{ backgroundColor: getColorCode(transfer.color) || '#9CA3AF' }}
+                            />
+                            <span className="text-sm text-gray-600">
+                              {transfer.color} - Size {transfer.size}
+                            </span>
                           </div>
                         </div>
-
-                        {transfer.notes && (
-                          <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                            <p className="text-xs font-semibold text-yellow-800 mb-1">Notes:</p>
-                            <p className="text-sm text-yellow-900">"{transfer.notes}"</p>
-                          </div>
-                        )}
                       </div>
-                    )}
+                    </div>
+
+                    {/* Right: Quantity & Toggle */}
+                    <div className="text-right">
+                      <p className={`text-2xl font-bold ${typeInfo.quantityColor}`}>
+                        {transfer.type === 'manualrefill' || transfer.type === 'emergencyuse' ? '+' : '-'}
+                        {transfer.quantity}
+                      </p>
+                      <p className="text-xs text-gray-500">units</p>
+                      <button
+                        onClick={() => toggleCardExpansion(`stock-${index}`)}
+                        className="mt-2 text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 ml-auto"
+                      >
+                        {isExpanded ? (
+                          <><FiChevronUp className="w-4 h-4" />Hide Details</>
+                        ) : (
+                          <><FiChevronDown className="w-4 h-4" />Show Details</>
+                        )}
+                      </button>
+                    </div>
                   </div>
+
+                  {/* Expanded Details */}
+                  {isExpanded && (
+                    <div className="mt-4 pt-4 border-t border-gray-200">
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="bg-gray-50 p-3 rounded-lg">
+                          <p className="text-xs font-semibold text-gray-600 mb-2">Main Stock</p>
+                          <p className="text-sm">
+                            {transfer.mainStockBefore} → {transfer.mainStockAfter}
+                            <span className={`ml-2 font-semibold ${
+                              transfer.mainStockAfter > transfer.mainStockBefore
+                                ? 'text-green-600'
+                                : transfer.mainStockAfter < transfer.mainStockBefore
+                                ? 'text-red-600'
+                                : 'text-gray-600'
+                            }`}>
+                              ({transfer.mainStockAfter > transfer.mainStockBefore ? '+' : ''}
+                              {transfer.mainStockAfter - transfer.mainStockBefore})
+                            </span>
+                          </p>
+                        </div>
+
+                        <div className="bg-gray-50 p-3 rounded-lg">
+                          <p className="text-xs font-semibold text-gray-600 mb-2">Reserved Stock</p>
+                          <p className="text-sm">
+                            {transfer.reservedStockBefore} → {transfer.reservedStockAfter}
+                            <span className={`ml-2 font-semibold ${
+                              transfer.reservedStockAfter > transfer.reservedStockBefore
+                                ? 'text-green-600'
+                                : transfer.reservedStockAfter < transfer.reservedStockBefore
+                                ? 'text-red-600'
+                                : 'text-gray-600'
+                            }`}>
+                              ({transfer.reservedStockAfter > transfer.reservedStockBefore ? '+' : ''}
+                              {transfer.reservedStockAfter - transfer.reservedStockBefore})
+                            </span>
+                          </p>
+                        </div>
+
+                        <div className="bg-gray-50 p-3 rounded-lg">
+                          <p className="text-xs font-semibold text-gray-600 mb-2">Performed By</p>
+                          <div className="flex items-center gap-2">
+                            <FiUser className="w-4 h-4 text-gray-400" />
+                            <p className="text-sm">{transfer.performedBy?.name || 'System'}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {transfer.notes && (
+                        <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                          <p className="text-xs font-semibold text-yellow-800 mb-1">Notes:</p>
+                          <p className="text-sm text-yellow-900">"{transfer.notes}"</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  )}
+
+  {/* ── Internal Transfers Tab ─────────────────────────────────────── */}
+  {activeTab === 'internal' && (
+    <div className="mt-4">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-xl font-bold text-gray-900">Internal Transfers Audit</h3>
+          <p className="text-sm text-gray-500 mt-0.5">Account-to-account stock movements within reserved pool</p>
+        </div>
+        <span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-sm font-semibold">
+          {internalTransfers.length} {internalTransfers.length === 1 ? 'transfer' : 'transfers'}
+        </span>
+      </div>
+
+      {internalTransfers.length === 0 ? (
+        <div className="text-center py-12">
+          <FiRepeat className="mx-auto text-6xl text-gray-300 mb-4" />
+          <p className="text-gray-500 text-lg">No internal transfers found</p>
+          <p className="text-gray-400 text-sm">Account-to-account transfers will appear here</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {internalTransfers.map((transfer, index) => {
+            const isExpanded = expandedCards[`internal-${index}`];
+
+            return (
+              <div
+                key={transfer._id || index}
+                className="border-l-4 border-indigo-500 bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow"
+              >
+                <div className="p-4">
+                  <div className="flex items-center justify-between">
+                    {/* Left: Type Icon + From→To accounts */}
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 bg-indigo-500 rounded-full text-white">
+                        <FiRepeat className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-gray-900">Internal Transfer</span>
+                          <span className="px-2 py-1 text-xs rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                            Account → Account
+                          </span>
+                        </div>
+                        {/* ✅ FROM → TO prominently */}
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <span className="text-xs font-semibold bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-md">
+                            {transfer.from}
+                          </span>
+                          <FiArrowLeft className="w-3.5 h-3.5 text-indigo-500 rotate-180 flex-shrink-0" />
+                          <span className="text-xs font-semibold bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded-md">
+                            {transfer.to}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-500 mt-1">{formatDate(transfer.createdAt)}</p>
+                      </div>
+                    </div>
+
+                    {/* Center: Variant Info */}
+                    <div className="flex-1 mx-8">
+                      <p className="font-bold text-gray-900">{transfer.design}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <div
+                          className="w-4 h-4 rounded-full border-2 border-gray-300"
+                          style={{ backgroundColor: getColorCode(transfer.color) || '#9CA3AF' }}
+                        />
+                        <span className="text-sm text-gray-600">
+                          {transfer.color} - Size {transfer.size}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Right: Quantity & Toggle */}
+                    <div className="text-right">
+                      <p className="text-2xl font-bold text-indigo-600">
+                        {transfer.quantity}
+                      </p>
+                      <p className="text-xs text-gray-500">units moved</p>
+                      <button
+                        onClick={() => toggleCardExpansion(`internal-${index}`)}
+                        className="mt-2 text-sm text-indigo-600 hover:text-indigo-800 flex items-center gap-1 ml-auto"
+                      >
+                        {isExpanded ? (
+                          <><FiChevronUp className="w-4 h-4" />Hide Details</>
+                        ) : (
+                          <><FiChevronDown className="w-4 h-4" />Show Details</>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Expanded Details */}
+                  {isExpanded && (
+                    <div className="mt-4 pt-4 border-t border-indigo-100">
+                      <div className="grid grid-cols-3 gap-4">
+                        {/* Source Account */}
+                        <div className="bg-red-50 border border-red-100 p-3 rounded-lg">
+                          <p className="text-xs font-semibold text-red-700 mb-2">Deducted From</p>
+                          <p className="text-sm font-bold text-red-800">{transfer.from}</p>
+                          <p className="text-xs text-red-600 mt-0.5">−{transfer.quantity} units</p>
+                        </div>
+
+                        {/* Destination Account */}
+                        <div className="bg-green-50 border border-green-100 p-3 rounded-lg">
+                          <p className="text-xs font-semibold text-green-700 mb-2">Added To</p>
+                          <p className="text-sm font-bold text-green-800">{transfer.to}</p>
+                          <p className="text-xs text-green-600 mt-0.5">+{transfer.quantity} units</p>
+                        </div>
+
+                        {/* Performed By */}
+                        <div className="bg-gray-50 p-3 rounded-lg">
+                          <p className="text-xs font-semibold text-gray-600 mb-2">Performed By</p>
+                          <div className="flex items-center gap-2">
+                            <FiUser className="w-4 h-4 text-gray-400" />
+                            <p className="text-sm">{transfer.performedBy?.name || 'System'}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Reserved Pool unchanged notice */}
+                      <div className="mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded-lg flex items-start gap-2">
+                        <FiLock className="w-4 h-4 text-indigo-500 mt-0.5 flex-shrink-0" />
+                        <div>
+                          <p className="text-xs font-semibold text-indigo-800">Reserved Pool Unchanged</p>
+                          <p className="text-xs text-indigo-600 mt-0.5">
+                            Total reserved stock stays at {transfer.reservedStockAfter} units — only allocation between accounts changed.
+                          </p>
+                        </div>
+                      </div>
+
+                      {transfer.notes && (
+                        <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                          <p className="text-xs font-semibold text-yellow-800 mb-1">Notes:</p>
+                          <p className="text-sm text-yellow-900">"{transfer.notes}"</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  )}
+</Card>
 
       {/* ✅ NEW: Modern Breakdown Modal - Pivot Table Style */}
       {showModal && (

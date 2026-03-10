@@ -54,59 +54,59 @@ const Dashboard = () => {
 
 const fetchData = async () => {
   try {
-    // Fetch all data in parallel
     const [
-      productsData, 
-      salesData, 
-      settlementsData, 
-      wholesaleData, 
-      directData, 
+      productsData,
+      salesData,
+      settlementsData,
+      wholesaleData,
+      directData,
       factoryData
     ] = await Promise.allSettled([
       inventoryService.getAllProducts(),
       salesService.getAllSales('all'),
-      settlementService.getAllSettlements('all'), // ✅ Pass 'all' explicitly
-      wholesaleService.getAllOrders(),
+      settlementService.getAllSettlements('all'),
+      wholesaleService.getAllOrders('all=true'),
       directSalesService.getAllDirectSales(),
       factoryService.getAllReceivings(),
     ]);
 
-    // Handle products
+    // ✅ Each handler is INDEPENDENT — not nested inside each other
     if (productsData.status === 'fulfilled') {
-      const products = Array.isArray(productsData.value) 
-        ? productsData.value 
+      const products = Array.isArray(productsData.value)
+        ? productsData.value
         : productsData.value?.products || [];
       setProducts(products);
     }
 
-    // Handle marketplace sales
     if (salesData.status === 'fulfilled') {
       setMarketplaceSales(salesData.value || []);
     }
 
-    // ✅ Handle settlements with explicit checks
     if (settlementsData.status === 'fulfilled') {
-      const settlements = Array.isArray(settlementsData.value) 
-        ? settlementsData.value 
+      const settlements = Array.isArray(settlementsData.value)
+        ? settlementsData.value
         : settlementsData.value?.data || [];
-      console.log('✅ Settlements loaded:', settlements.length, settlements);
       setSettlements(settlements);
     } else {
       console.error('❌ Settlements failed:', settlementsData.reason);
-      setSettlements([]); // Set empty array as fallback
+      setSettlements([]);
     }
 
-    // Handle wholesale
+    // ✅ Handles both plain array AND paginated { orders: [] } response
     if (wholesaleData.status === 'fulfilled') {
-      setWholesaleOrders(wholesaleData.value || []);
+      const orders = Array.isArray(wholesaleData.value)
+        ? wholesaleData.value
+        : wholesaleData.value?.orders || [];
+      setWholesaleOrders(orders);
+    } else {
+      console.error('❌ Wholesale failed:', wholesaleData.reason);
+      setWholesaleOrders([]);
     }
 
-    // Handle direct sales
     if (directData.status === 'fulfilled') {
       setDirectSales(directData.value || []);
     }
 
-    // Handle factory
     if (factoryData.status === 'fulfilled') {
       setFactoryReceivings(factoryData.value || []);
     }

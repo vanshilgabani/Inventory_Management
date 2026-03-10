@@ -383,6 +383,11 @@ wholesaleOrderSchema.index({ organizationId: 1, orderDate: -1 });
 wholesaleOrderSchema.index({ buyerId: 1, orderDate: -1 });
 wholesaleOrderSchema.index({ buyerId: 1, organizationId: 1, deletedAt: 1 });
 wholesaleOrderSchema.index({ organizationId: 1, deletedAt: 1, amountDue: 1 });
+
+wholesaleOrderSchema.index({ organizationId: 1, deletedAt: 1, createdAt: -1 });
+wholesaleOrderSchema.index({ organizationId: 1, paymentStatus: 1, deletedAt: 1 });
+wholesaleOrderSchema.index({ buyerName: 'text', businessName: 'text', challanNumber: 'text' });
+
 // ✅ TTL index for auto-deletion after 60 days
 wholesaleOrderSchema.index({ deletedAt: 1 }, { expireAfterSeconds: 5184000 }); // 60 days
 

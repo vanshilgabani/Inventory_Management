@@ -17,13 +17,17 @@ const {
   searchOrderGlobally,
   getStatsForCards,
   getOrdersByDateGroups,
-  searchByDate
+  searchByDate,
+  getDateSummaries,
+  getOrdersForDate
 } = require('../controllers/salesController');
 const { protect } = require('../middleware/auth');
 const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
 
 router.get('/stats-cards', protect, getStatsForCards);
 router.get('/by-date-groups', protect, getOrdersByDateGroups);
+router.get('/date-summaries', protect, getDateSummaries);
+router.get('/orders-for-date', protect, getOrdersForDate);
 router.get('/search-by-date', protect, searchByDate);
 
 router.get('/dates-summary', protect, getDateSummary);

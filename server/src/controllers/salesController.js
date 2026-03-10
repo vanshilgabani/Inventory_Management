@@ -815,6 +815,7 @@ exports.getOrdersByDateGroups = async (req, res) => {
     // ✅ Fetch ALL orders without date filtering
     const orders = await MarketplaceSale.find(filter)
       .sort({ saleDate: -1, createdAt: -1 })
+      .limit(500)
       .lean()
       .select('-__v -editHistory')
       .maxTimeMS(10000);
@@ -2647,5 +2648,151 @@ exports.searchByDate = async (req, res) => {
   } catch (error) {
     logger.error('Date search failed', { error: error.message });
     res.status(500).json({ success: false, message: 'Date search failed', error: error.message });
+  }
+};
+
+exports.getDateSummaries = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { accountName, status, startDate, endDate } = req.query;
+
+    const matchFilter = { organizationId, deletedAt: null };
+    if (accountName && accountName !== 'all') matchFilter.accountName = accountName;
+    if (status && status !== 'all') {
+      matchFilter.status = { $in: status.split(',').map(s => s.trim()) };
+    }
+
+    const pipeline = [
+      { $match: matchFilter },
+      {
+        $addFields: {
+          displayDate: {
+            $cond: {
+              if: { $in: ['$status', ['returned', 'cancelled', 'wrongreturn', 'RTO']] },
+              then: {
+                $let: {
+                  vars: {
+                    matchingHistory: {
+                      $filter: {
+                        input: { $ifNull: ['$statusHistory', []] },
+                        cond: { $in: ['$$this.newStatus', ['returned', 'cancelled', 'wrongreturn', 'RTO']] }
+                      }
+                    }
+                  },
+                  in: {
+                    $cond: {
+                      if: { $gt: [{ $size: '$$matchingHistory' }, 0] },
+                      then: {
+                        $dateToString: {
+                          format: '%Y-%m-%d',
+                          date: { $arrayElemAt: ['$$matchingHistory.changedAt', -1] }
+                        }
+                      },
+                      else: { $dateToString: { format: '%Y-%m-%d', date: '$saleDate' } }
+                    }
+                  }
+                }
+              },
+              else: { $dateToString: { format: '%Y-%m-%d', date: '$saleDate' } }
+            }
+          }
+        }
+      },
+      // Apply date range AFTER computing displayDate
+      ...(startDate || endDate ? [{
+        $match: {
+          displayDate: {
+            ...(startDate ? { $gte: startDate } : {}),
+            ...(endDate ? { $lte: endDate } : {})
+          }
+        }
+      }] : []),
+      {
+        $group: {
+          _id: '$displayDate',
+          count: { $sum: 1 },
+          accounts: { $push: '$accountName' }
+        }
+      },
+      { $sort: { _id: -1 } },
+      { $limit: 90 }
+    ];
+
+    const summaries = await MarketplaceSale.aggregate(pipeline, { maxTimeMS: 15000 });
+
+    const result = summaries.map(s => {
+      const accountBreakdown = {};
+      s.accounts.forEach(acc => {
+        accountBreakdown[acc] = (accountBreakdown[acc] || 0) + 1;
+      });
+      return { date: s._id, count: s.count, accountBreakdown };
+    });
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    logger.error('getDateSummaries failed', { error: error.message });
+    res.status(500).json({ success: false, message: 'Failed to fetch date summaries', error: error.message });
+  }
+};
+
+exports.getOrdersForDate = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { date, accountName, status } = req.query;
+
+    if (!date) return res.status(400).json({ message: 'date is required' });
+
+    const matchFilter = { organizationId, deletedAt: null };
+    if (accountName && accountName !== 'all') matchFilter.accountName = accountName;
+    if (status && status !== 'all') {
+      matchFilter.status = { $in: status.split(',').map(s => s.trim()) };
+    }
+
+    const pipeline = [
+      { $match: matchFilter },
+      {
+        $addFields: {
+          displayDate: {
+            $cond: {
+              if: { $in: ['$status', ['returned', 'cancelled', 'wrongreturn', 'RTO']] },
+              then: {
+                $let: {
+                  vars: {
+                    matchingHistory: {
+                      $filter: {
+                        input: { $ifNull: ['$statusHistory', []] },
+                        cond: { $in: ['$$this.newStatus', ['returned', 'cancelled', 'wrongreturn', 'RTO']] }
+                      }
+                    }
+                  },
+                  in: {
+                    $cond: {
+                      if: { $gt: [{ $size: '$$matchingHistory' }, 0] },
+                      then: {
+                        $dateToString: {
+                          format: '%Y-%m-%d',
+                          date: { $arrayElemAt: ['$$matchingHistory.changedAt', -1] }
+                        }
+                      },
+                      else: { $dateToString: { format: '%Y-%m-%d', date: '$saleDate' } }
+                    }
+                  }
+                }
+              },
+              else: { $dateToString: { format: '%Y-%m-%d', date: '$saleDate' } }
+            }
+          }
+        }
+      },
+      { $match: { displayDate: date } },
+      { $sort: { saleDate: -1, createdAt: -1 } },
+      { $project: { __v: 0, editHistory: 0 } }
+    ];
+
+    const orders = await MarketplaceSale.aggregate(pipeline, { maxTimeMS: 10000 });
+    res.json({ success: true, data: orders });
+  } catch (error) {
+    logger.error('getOrdersForDate failed', { error: error.message });
+    res.status(500).json({ success: false, message: 'Failed to fetch orders for date', error: error.message });
   }
 };

@@ -30,7 +30,8 @@ const {
   getTenantUsers,           // ✅ ADD
   linkBuyerToTenant,        // ✅ ADD
   getBuyerTenantInfo,
-  getOrderSyncStatus
+  getOrderSyncStatus,
+  getOrderStats
 } = require('../controllers/wholesaleController');
 
 // NEW: Import GST Profile Controller
@@ -52,6 +53,7 @@ const { isAdmin } = require('../middleware/roleCheck');
 
 // ✅ GST Verification Route (standalone, not tied to buyer)
 router.post('/verify-gst', protect, verifyGSTNumber);
+router.get('/orders/stats', protect, getOrderStats);
 
 // Stats & Summary Routes
 router.get('/stats', protect, getBuyerStats);

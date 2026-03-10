@@ -19,24 +19,68 @@ const { updateChallansAfterPayment } = require('./monthlyBillController');
 // ✅ ADD THIS - Global flag to disable locked stock
 const STOCK_LOCK_DISABLED = true;
 
-// Helper to check if we should use locked stock
-const shouldUseLockStock = () => {
-  if (STOCK_LOCK_DISABLED) return false; // Force disable
-  return false; // Always disabled
-};
-
 const getAllOrders = async (req, res) => {
   try {
     const { organizationId } = req.user;
-    // ✅ FEATURE 1: Filter out soft-deleted orders
-    const orders = await WholesaleOrder.find({ 
-      organizationId,
-      deletedAt: null // Only show active orders
-    })
-      .populate('buyerId', 'name mobile businessName')
-      .sort({ createdAt: -1 })
-      .lean();
-    res.json(orders);
+    const {
+      page = 1,
+      limit = 15,
+      search = '',
+      paymentStatus = 'all',
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+      all,              // ✅ add this
+    } = req.query;
+
+    const query = { organizationId, deletedAt: null };
+
+    if (search?.trim()) {
+      query.$or = [
+        { buyerName:     { $regex: search.trim(), $options: 'i' } },
+        { businessName:  { $regex: search.trim(), $options: 'i' } },
+        { buyerContact:  { $regex: search.trim(), $options: 'i' } },
+        { challanNumber: { $regex: search.trim(), $options: 'i' } },
+      ];
+    }
+
+    if (paymentStatus !== 'all') {
+      query.paymentStatus = { $regex: new RegExp(`^${paymentStatus}$`, 'i') };
+    }
+
+    // ✅ Dashboard calls with all=true — skip pagination, return everything
+    if (all === 'true') {
+      const orders = await WholesaleOrder.find(query)
+        .populate('buyerId', 'name mobile businessName')
+        .sort({ createdAt: -1 })
+        .lean();
+      return res.json({ orders, total: orders.length });
+    }
+
+    // existing paginated logic — unchanged below
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const sort = { [sortBy]: sortOrder === 'desc' ? -1 : 1 };
+
+    const [orders, total] = await Promise.all([
+      WholesaleOrder.find(query)
+        .populate('buyerId', 'name mobile businessName')
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      WholesaleOrder.countDocuments(query)
+    ]);
+
+    res.json({
+      orders,
+      pagination: {
+        total,
+        page:       parseInt(page),
+        limit:      parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        hasNext:    parseInt(page) < Math.ceil(total / parseInt(limit)),
+        hasPrev:    parseInt(page) > 1
+      }
+    });
   } catch (error) {
     logger.error('Failed to fetch orders', { error: error.message });
     res.status(500).json({ code: 'FETCH_FAILED', message: 'Failed to fetch orders', error: error.message });
@@ -375,12 +419,16 @@ const createOrder = async (req, res) => {
       logger.info('Factory direct order - skipping stock deduction', { organizationId });
     }
 
-    // Generate challan number
-    const challanNumber = await generateChallanNumber(businessName || buyerName, organizationId, session);
-
     // Calculate amount due
     const amountDue = calculatedTotalAmount - (amountPaid || 0);
     const paymentStatus = amountDue <= 0 ? 'Paid' : (amountPaid > 0 ? 'Partial' : 'Pending');
+
+    // ✅ Generate challan number before creating order
+    const challanNumber = await generateChallanNumber(
+      businessName || buyerName,
+      organizationId,
+      session
+    );
 
     // ⭐ STEP 3: Create order with RECALCULATED values
     const order = await WholesaleOrder.create([{
@@ -3052,6 +3100,44 @@ const getBuyerTenantInfo = async (req, res) => {
   }
 };
 
+// ✅ NEW: Dedicated order-level stats endpoint
+const getOrderStats = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+
+    const orders = await WholesaleOrder.find({
+      organizationId,
+      deletedAt: null,
+    }).lean();
+
+    const totalRevenue   = orders.reduce((s, o) => s + (o.totalAmount || 0), 0);
+    const totalCollected = orders.reduce((s, o) => s + (o.amountPaid  || 0), 0);
+    const totalDue       = orders.reduce((s, o) => s + (o.amountDue   || 0), 0);
+
+    // case-insensitive match for both 'Pending'/'pending', 'Partial'/'partial', 'Paid'/'paid'
+    const pendingCount = orders.filter(o => o.paymentStatus?.toLowerCase() === 'pending').length;
+    const partialCount = orders.filter(o => o.paymentStatus?.toLowerCase() === 'partial').length;
+    const paidCount    = orders.filter(o => o.paymentStatus?.toLowerCase() === 'paid').length;
+
+    res.json({
+      totalOrders:    orders.length,
+      totalRevenue:   parseFloat(totalRevenue.toFixed(2)),
+      totalCollected: parseFloat(totalCollected.toFixed(2)),
+      totalDue:       parseFloat(totalDue.toFixed(2)),
+      pendingCount,
+      partialCount,
+      paidCount,
+    });
+  } catch (error) {
+    logger.error('Failed to fetch order stats', { error: error.message });
+    res.status(500).json({
+      code: 'FETCH_FAILED',
+      message: 'Failed to fetch order stats',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAllOrders,
   getOrderById,
@@ -3082,5 +3168,6 @@ module.exports = {
   getTenantUsers,
   linkBuyerToTenant,
   getBuyerTenantInfo,
-  getOrderSyncStatus
+  getOrderSyncStatus,
+  getOrderStats
 };
