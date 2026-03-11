@@ -141,7 +141,7 @@ export const generateInvoice = async (order, options = {}) => {
       doc.setFont('helvetica', 'bold');
       doc.text('Date:', infoLabelX, billToY + 27);
       doc.setFont('helvetica', 'normal');
-      doc.text(formatDate(order.createdAt), infoValueX, billToY + 27, { align: 'right' });
+      doc.text(formatDate(order.orderDate || order.createdAt), infoValueX, billToY + 27, { align: 'right' });
 
       // ==========================================
       // 3. ITEMS TABLE (Box 3)
@@ -331,7 +331,7 @@ export const sendChallanViaWhatsApp = async (order) => {
       const challanNo = order.challanNumber || order._id.slice(-8).toUpperCase();
       const totalAmount = order.totalAmount.toFixed(2);
       const totalQty = order.items.reduce((sum, item) => sum + item.quantity, 0);
-      const orderDate = new Date(order.createdAt).toLocaleDateString('en-IN');
+      const orderDate = new Date(order.orderDate || order.createdAt).toLocaleDateString('en-IN');
 
       let message = `🧾 *DELIVERY CHALLAN*\n\nDear ${order.buyerName},\n\nYour challan has been generated successfully!\n\n📋 *Challan No:* ${challanNo}\n📅 *Date:* ${orderDate}\n📦 *Total Items:* ${totalQty}`;
 

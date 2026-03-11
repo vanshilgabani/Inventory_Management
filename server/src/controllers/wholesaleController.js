@@ -2753,7 +2753,8 @@ const getBuyerMonthlyHistory = async (req, res) => {
     // Get all orders for this buyer
     const orders = await WholesaleOrder.find({
       buyerId: id,
-      organizationId
+      organizationId,
+      deletedAt: null 
     })
       .select('challanNumber orderDate createdAt items totalAmount amountPaid amountDue')
       .sort({ createdAt: -1 })
