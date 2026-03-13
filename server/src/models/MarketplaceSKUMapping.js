@@ -37,7 +37,7 @@ const skuMappingSchema = new mongoose.Schema({
   
   size: {
     type: String,
-    enum: ['S', 'M', 'L', 'XL', 'XXL'],
+    trim: true,
     required: true
   },
   

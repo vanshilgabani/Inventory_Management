@@ -180,7 +180,6 @@ const settingsSchema = new mongoose.Schema({
 
   enabledSizes: {
     type: [String],
-    enum: ['S', 'M', 'L', 'XL', 'XXL'],
     default: ['S', 'M', 'L', 'XL', 'XXL']
   },
   marketplaceAccounts: { type: [marketplaceAccountSchema], default: [] },
