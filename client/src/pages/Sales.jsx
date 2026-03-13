@@ -475,12 +475,21 @@ const loadOrdersForDate = async (date) => {
 };
 
 // ── 3. Lazy products: only load when New/Edit modal opens ───────────────────
+const productsLoadedRef = useRef(false); // ADD this ref near other refs
+
 const ensureProductsLoaded = async () => {
-  if (products.length > 0) return;
+  if (products.length > 0) return; // already have data
+  if (productsLoadedRef.current) return; // already attempted, don't retry in same session
+  productsLoadedRef.current = true;
   try {
     const productsData = await inventoryService.getAllProducts();
-    setProducts(Array.isArray(productsData) ? productsData : productsData?.products || []);
+    const list = Array.isArray(productsData) ? productsData : productsData?.products ?? [];
+    setProducts(list);
+    if (list.length === 0) {
+      toast.error('No products found in inventory');
+    }
   } catch (error) {
+    productsLoadedRef.current = false; // allow retry on error
     toast.error('Failed to load products');
   }
 };
@@ -847,7 +856,21 @@ const parseFlipkartSKU = (sku) => {
     '36': 'XXL', '38': '3XL', '40': '4XL', '42': '5XL',
   };
 
-  const normalizeColor = (c) => c?.replace(/\./g, ' ').replace(/_/g, ' ').trim() || null;
+  const COLOR_MAP = {
+    'KHAKHI': 'Khaki', 'KHAKI': 'Khaki',
+    'BLACK': 'Black',
+    'GREEN': 'Green',
+    'LGREY': 'Light Grey', 'L.GREY': 'Light Grey', 'LIGHTGREY': 'Light Grey',
+    'DGREY': 'Dark Grey', 'D.GREY': 'Dark Grey', 'DARKGREY': 'Dark Grey',
+    'NAVY': 'Navy Blue', 'NAVYBLUE': 'Navy Blue',
+  };
+
+  const normalizeColor = c => {
+    if (!c) return null;
+    const cleaned = c.replace(/\./g, '').replace(/-/g, '').replace(/\s/g, '').trim().toUpperCase();
+    return COLOR_MAP[cleaned] || c.trim(); // mapped value or original
+  };
+
   const normalizeSize  = (s) => { const t = s?.trim(); return sizeMap[t] || t || null; };
   const cleaned        = sku.replace(/#/g, '').replace(/,/g, '').trim();
 
@@ -1109,6 +1132,8 @@ const handleImportSubmit = async () => {
 
   try {
     setIsImporting(true);
+    await ensureProductsLoaded();
+    console.log('✅ Products loaded count:', products.length);
 
     // ✅ NEW STEP 0: Check existing SKU mappings FIRST
     console.log('🗺️ STEP 0: Checking existing SKU mappings...');
@@ -1338,7 +1363,8 @@ fetchDateSummaries(); // Refresh orders
   }
 };
 
-const handleStartMapping = () => {
+const handleStartMapping = async () => {
+  await ensureProductsLoaded(); 
   setShowImportPreviewModal(false);
   setCurrentMappingIndex(0);
   setCompletedMappings([]);

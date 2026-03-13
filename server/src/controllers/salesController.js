@@ -1109,7 +1109,7 @@ exports.getSalesStats = async (req, res) => {
     const organizationId = req.user.organizationId;
     const { accountName, startDate, endDate } = req.query;
 
-    const filter = { organizationId };
+    const filter = { organizationId, deletedAt: null };
 
     if (accountName && accountName !== 'all') {
       filter.accountName = accountName;

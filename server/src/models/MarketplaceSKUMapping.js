@@ -37,8 +37,8 @@ const skuMappingSchema = new mongoose.Schema({
   
   size: {
     type: String,
-    trim: true,
-    required: true
+    required: true,
+    trim: true
   },
   
   // Metadata

@@ -1,27 +1,26 @@
 import { useState, useEffect } from 'react';
-import { FiX, FiCheck, FiAlertCircle } from 'react-icons/fi';
+import { FiX, FiCheck } from 'react-icons/fi';
 import { skuMappingService } from '../../services/skuMappingService';
 import toast from 'react-hot-toast';
 
-const SKUMappingModal = ({ 
-  isOpen, 
-  onClose, 
-  sku, 
+const SKUMappingModal = ({
+  isOpen,
+  onClose,
+  sku,
   accountName,
   availableProducts,
-  onMappingComplete 
+  onMappingComplete
 }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
-  const [formData, setFormData] = useState({
-    design: '',
-    color: '',
-    size: ''
-  });
+  const [formData, setFormData] = useState({ design: '', color: '', size: '' });
   const [availableColors, setAvailableColors] = useState([]);
   const [availableSizes, setAvailableSizes] = useState([]);
   const [stockInfo, setStockInfo] = useState(null);
+
+  // ✅ FIX 1: Derive design list directly from availableProducts (never empty if products loaded)
+  const availableDesigns = availableProducts?.map(p => p.design) || [];
 
   useEffect(() => {
     if (isOpen && sku) {
@@ -29,26 +28,35 @@ const SKUMappingModal = ({
     }
   }, [isOpen, sku]);
 
+  // ✅ FIX 2: Re-apply colors/sizes whenever availableProducts prop updates (race condition fix)
+  useEffect(() => {
+    if (availableProducts?.length > 0) {
+      if (formData.design) {
+        updateAvailableColors(formData.design);
+      }
+      if (formData.design && formData.color) {
+        updateAvailableSizes(formData.design, formData.color);
+      }
+    }
+  }, [availableProducts]);
+
   const fetchSuggestions = async () => {
     try {
       setLoading(true);
       const data = await skuMappingService.getSuggestions(sku, accountName);
       setSuggestions(data);
 
-      // Pre-fill suggestions
-      setFormData({
-        design: data.suggestions.design || '',
-        color: data.suggestions.color || '',
-        size: data.suggestions.size || ''
-      });
+      const suggestedDesign = data.suggestions?.design || '';
+      const suggestedColor = data.suggestions?.color || '';
+      const suggestedSize = data.suggestions?.size || '';
 
-      // Update available colors if design is suggested
-      if (data.suggestions.design) {
-        updateAvailableColors(data.suggestions.design);
-      }
+      setFormData({ design: suggestedDesign, color: suggestedColor, size: suggestedSize });
 
-      if (data.suggestions.design && data.suggestions.color) {
-        updateAvailableSizes(data.suggestions.design, data.suggestions.color);
+      // ✅ FIX 3: Only call these if availableProducts is already loaded
+      // If not loaded yet, the useEffect above will handle it when they arrive
+      if (availableProducts?.length > 0) {
+        if (suggestedDesign) updateAvailableColors(suggestedDesign);
+        if (suggestedDesign && suggestedColor) updateAvailableSizes(suggestedDesign, suggestedColor);
       }
     } catch (error) {
       console.error('Failed to fetch suggestions:', error);
@@ -59,33 +67,26 @@ const SKUMappingModal = ({
   };
 
   const updateAvailableColors = (design) => {
-    const product = availableProducts.find(p => p.design === design);
-    if (product) {
-      setAvailableColors(product.colors.map(c => c.color));
-    } else {
-      setAvailableColors([]);
-    }
+    const product = availableProducts?.find(p => p.design === design);
+    setAvailableColors(product ? product.colors.map(c => c.color) : []);
   };
 
   const updateAvailableSizes = (design, color) => {
-    const product = availableProducts.find(p => p.design === design);
+    const product = availableProducts?.find(p => p.design === design);
     if (product) {
       const colorVariant = product.colors.find(c => c.color === color);
       if (colorVariant) {
         setAvailableSizes(colorVariant.sizes.map(s => s.size));
-        
-        // Get stock info
         if (formData.size) {
           const sizeVariant = colorVariant.sizes.find(s => s.size === formData.size);
           if (sizeVariant) {
-            setStockInfo({
-              reserved: sizeVariant.reservedStock || 0,
-              main: sizeVariant.currentStock || 0
-            });
+            setStockInfo({ reserved: sizeVariant.reservedStock || 0, main: sizeVariant.currentStock || 0 });
           }
         }
+        return;
       }
     }
+    setAvailableSizes([]);
   };
 
   const handleDesignChange = (design) => {
@@ -103,18 +104,13 @@ const SKUMappingModal = ({
 
   const handleSizeChange = (size) => {
     setFormData(prev => ({ ...prev, size }));
-    
-    // Update stock info
-    const product = availableProducts.find(p => p.design === formData.design);
+    const product = availableProducts?.find(p => p.design === formData.design);
     if (product) {
       const colorVariant = product.colors.find(c => c.color === formData.color);
       if (colorVariant) {
         const sizeVariant = colorVariant.sizes.find(s => s.size === size);
         if (sizeVariant) {
-          setStockInfo({
-            reserved: sizeVariant.reservedStock || 0,
-            main: sizeVariant.currentStock || 0
-          });
+          setStockInfo({ reserved: sizeVariant.reservedStock || 0, main: sizeVariant.currentStock || 0 });
         }
       }
     }
@@ -125,7 +121,6 @@ const SKUMappingModal = ({
       toast.error('Please select design, color, and size');
       return;
     }
-
     try {
       setSaving(true);
       await skuMappingService.createMapping({
@@ -136,14 +131,8 @@ const SKUMappingModal = ({
         size: formData.size,
         mappingSource: 'manual'
       });
-
       toast.success('SKU mapped successfully!');
-      onMappingComplete({
-        sku,
-        design: formData.design,
-        color: formData.color,
-        size: formData.size
-      });
+      onMappingComplete({ sku, design: formData.design, color: formData.color, size: formData.size });
       onClose();
     } catch (error) {
       console.error('Failed to create mapping:', error);
@@ -155,11 +144,9 @@ const SKUMappingModal = ({
 
   const getWaistInfo = (size) => {
     const waistMap = {
-      'S': '28"',
-      'M': '30"',
-      'L': '32"',
-      'XL': '34"',
-      'XXL': '36"'
+      'S': '28"', 'M': '30"', 'L': '32"',
+      'XL': '34"', 'XXL': '36"',
+      '3XL': '38"', '4XL': '40"', '5XL': '42"'
     };
     return waistMap[size] || '';
   };
@@ -172,10 +159,7 @@ const SKUMappingModal = ({
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b">
           <h2 className="text-xl font-bold text-gray-800">🗺️ Map Marketplace SKU</h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
-          >
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
             <FiX size={24} />
           </button>
         </div>
@@ -201,23 +185,29 @@ const SKUMappingModal = ({
 
               <div className="border-t pt-4"></div>
 
-              {/* Design Selection */}
+              {/* ✅ FIX: Design dropdown now uses availableDesigns from products, not suggestions API */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Design: <span className="text-red-500">*</span>
                 </label>
-                <select
-                  value={formData.design}
-                  onChange={(e) => handleDesignChange(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                >
-                  <option value="">Select design</option>
-                  {suggestions?.available.designs.map(design => (
-                    <option key={design} value={design}>
-                      {design === suggestions?.suggestions.design ? `🌟 ${design} (Suggested)` : design}
-                    </option>
-                  ))}
-                </select>
+                {availableDesigns.length === 0 ? (
+                  <div className="w-full px-4 py-2 border border-yellow-300 bg-yellow-50 rounded-lg text-sm text-yellow-700">
+                    ⏳ Loading products... please wait
+                  </div>
+                ) : (
+                  <select
+                    value={formData.design}
+                    onChange={(e) => handleDesignChange(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  >
+                    <option value="">Select design</option>
+                    {availableDesigns.map(design => (
+                      <option key={design} value={design}>
+                        {design === suggestions?.suggestions?.design ? `🌟 ${design} (Suggested)` : design}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               {/* Color Selection */}
@@ -234,14 +224,12 @@ const SKUMappingModal = ({
                   <option value="">Select color</option>
                   {availableColors.map(color => (
                     <option key={color} value={color}>
-                      {color === suggestions?.suggestions.color ? `✓ ${color} (Auto-detected)` : color}
+                      {color === suggestions?.suggestions?.color ? `✓ ${color} (Auto-detected)` : color}
                     </option>
                   ))}
                 </select>
                 {formData.design && availableColors.length > 0 && (
-                  <p className="mt-1 text-sm text-gray-500">
-                    Available: {availableColors.join(', ')}
-                  </p>
+                  <p className="mt-1 text-sm text-gray-500">Available: {availableColors.join(', ')}</p>
                 )}
               </div>
 
@@ -259,15 +247,15 @@ const SKUMappingModal = ({
                   <option value="">Select size</option>
                   {availableSizes.map(size => (
                     <option key={size} value={size}>
-                      {size} (Waist {getWaistInfo(size)})
-                      {size === suggestions?.suggestions.size ? ' 🌟 Suggested' : ''}
+                      {size}{getWaistInfo(size) ? ` (Waist ${getWaistInfo(size)})` : ''}
+                      {size === suggestions?.suggestions?.size ? ' 🌟 Suggested' : ''}
                     </option>
                   ))}
                 </select>
               </div>
 
               {/* Size Mapping Info */}
-              {suggestions?.parsed.rawSize && formData.size && (
+              {suggestions?.parsed?.rawSize && formData.size && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <p className="text-sm text-blue-800">
                     💡 <strong>Size Mapping:</strong> {suggestions.parsed.rawSize}" (in CSV) = {formData.size} (in your inventory)
@@ -290,15 +278,9 @@ const SKUMappingModal = ({
               {/* Remember Checkbox */}
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={true}
-                    readOnly
-                    className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
-                  />
-                  <span className="text-sm text-gray-700">
-                    ☑️ Remember this mapping for future imports
-                  </span>
+                  <input type="checkbox" checked={true} readOnly
+                    className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500" />
+                  <span className="text-sm text-gray-700">☑️ Remember this mapping for future imports</span>
                 </label>
                 <p className="text-xs text-gray-500 mt-2">
                   This SKU will be automatically mapped in future CSV imports.
@@ -310,11 +292,8 @@ const SKUMappingModal = ({
 
         {/* Footer */}
         <div className="flex items-center justify-between p-6 border-t bg-gray-50">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
-            disabled={saving}
-          >
+          <button onClick={onClose} disabled={saving}
+            className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors">
             Skip This SKU
           </button>
           <button
@@ -323,14 +302,9 @@ const SKUMappingModal = ({
             className="flex items-center gap-2 px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
           >
             {saving ? (
-              <>
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                Saving...
-              </>
+              <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>Saving...</>
             ) : (
-              <>
-                <FiCheck /> Save & Continue
-              </>
+              <><FiCheck /> Save & Continue</>
             )}
           </button>
         </div>
