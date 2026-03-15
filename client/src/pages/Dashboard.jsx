@@ -28,6 +28,7 @@ import {
 import { format } from 'date-fns';
 import { useAuth } from '../context/AuthContext';
 import ScrollToTop from '../components/common/ScrollToTop';
+import MarketplaceProfitCalculator from '../components/MarketplaceProfitCalculator';
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -691,7 +692,7 @@ const { totalRevenue, revenueBreakdown } = useMemo(() => {
       </Modal>
 
       <ScrollToTop />
-      
+      <MarketplaceProfitCalculator />
     </div>
   );
 };

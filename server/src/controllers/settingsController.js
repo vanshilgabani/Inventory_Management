@@ -1977,6 +1977,156 @@ const reorderSizes = async (req, res) => {
   }
 };
 
+// ── NEW: Get Auto Allocation Settings ────────────────────────────────────────
+const getAutoAllocationSettings = async (req, res) => {
+  try {
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+    res.json({
+      enabled:                settings.autoAllocation?.enabled              ?? false,
+      periodDays:             settings.autoAllocation?.periodDays           ?? 7,
+      newAccountInitialStock: settings.autoAllocation?.newAccountInitialStock ?? 10,
+      rateLimitMinutes:       settings.autoAllocation?.rateLimitMinutes     ?? 60,
+      directMode:             settings.autoAllocation?.directMode           ?? true
+    });
+  } catch (error) {
+    console.error('getAutoAllocationSettings error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ── NEW: Update Auto Allocation Settings ─────────────────────────────────────
+const updateAutoAllocationSettings = async (req, res) => {
+  try {
+    const {
+      enabled,
+      periodDays,
+      newAccountInitialStock,
+      rateLimitMinutes,
+      directMode
+    } = req.body;
+
+    const settings = await Settings.findOne({ organizationId: req.organizationId });
+    if (!settings) {
+      return res.status(404).json({ message: 'Settings not found' });
+    }
+
+    // Initialize if first time
+    if (!settings.autoAllocation) {
+      settings.autoAllocation = {};
+    }
+
+    if (enabled              !== undefined) settings.autoAllocation.enabled               = Boolean(enabled);
+    if (periodDays           !== undefined) settings.autoAllocation.periodDays            = Math.max(1, Math.min(365, Number(periodDays)));
+    if (newAccountInitialStock !== undefined) settings.autoAllocation.newAccountInitialStock = Math.max(0, Number(newAccountInitialStock));
+    if (rateLimitMinutes     !== undefined) settings.autoAllocation.rateLimitMinutes      = Math.max(1, Number(rateLimitMinutes));
+    if (directMode           !== undefined) settings.autoAllocation.directMode            = Boolean(directMode);
+
+    settings.markModified('autoAllocation');
+    await settings.save();
+
+    res.json({
+      message: 'Auto allocation settings updated successfully',
+      autoAllocation: settings.autoAllocation
+    });
+  } catch (error) {
+    console.error('updateAutoAllocationSettings error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ── DESIGN-LEVEL: Exclude account from entire design ─────────────────────
+const excludeAccountFromDesign = async (req, res) => {
+  try {
+    const { design, accountName } = req.body;
+    const organizationId = req.user.organizationId || req.user.id;
+
+    const product = await Product.findOne({ design, organizationId });
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    if (!product.excludedAccounts) product.excludedAccounts = [];
+    if (!product.excludedAccounts.includes(accountName)) {
+      product.excludedAccounts.push(accountName);
+    }
+
+    await product.save();
+    res.json({ success: true, message: `${accountName} excluded from all variants of ${design}` });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ── DESIGN-LEVEL: Re-include account for entire design ────────────────────
+const includeAccountForDesign = async (req, res) => {
+  try {
+    const { design, accountName } = req.body;
+    const organizationId = req.user.organizationId || req.user.id;
+
+    const product = await Product.findOne({ design, organizationId });
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    product.excludedAccounts = (product.excludedAccounts || [])
+      .filter(a => a !== accountName);
+
+    await product.save();
+    res.json({ success: true, message: `${accountName} re-included for all variants of ${design}` });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ── VARIANT-LEVEL: Exclude account from specific variant ──────────────────
+const excludeAccountFromVariant = async (req, res) => {
+  try {
+    const { design, color, size, accountName } = req.body;
+    const organizationId = req.user.organizationId || req.user.id;
+
+    const product = await Product.findOne({ design, organizationId });
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    const colorVariant = product.colors.find(c => c.color === color);
+    const sizeVariant  = colorVariant?.sizes.find(s => s.size === size);
+    if (!sizeVariant) return res.status(404).json({ message: 'Variant not found' });
+
+    if (!sizeVariant.excludedFromAutoAllocation) sizeVariant.excludedFromAutoAllocation = [];
+    if (!sizeVariant.excludedFromAutoAllocation.includes(accountName)) {
+      sizeVariant.excludedFromAutoAllocation.push(accountName);
+    }
+
+    product.markModified('colors');
+    await product.save();
+    res.json({ success: true, message: `${accountName} excluded from ${design}-${color}-${size}` });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ── VARIANT-LEVEL: Re-include account for specific variant ────────────────
+const includeAccountForVariant = async (req, res) => {
+  try {
+    const { design, color, size, accountName } = req.body;
+    const organizationId = req.user.organizationId || req.user.id;
+
+    const product = await Product.findOne({ design, organizationId });
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    const colorVariant = product.colors.find(c => c.color === color);
+    const sizeVariant  = colorVariant?.sizes.find(s => s.size === size);
+    if (!sizeVariant) return res.status(404).json({ message: 'Variant not found' });
+
+    sizeVariant.excludedFromAutoAllocation = (sizeVariant.excludedFromAutoAllocation || [])
+      .filter(a => a !== accountName);
+
+    product.markModified('colors');
+    await product.save();
+    res.json({ success: true, message: `${accountName} re-included for ${design}-${color}-${size}` });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   getSettings,
   updateSettings,
@@ -2015,5 +2165,11 @@ module.exports = {
   addSize,
   toggleSize,
   reorderSizes,
-  syncProductsWithSizes
+  syncProductsWithSizes,
+  getAutoAllocationSettings,
+  updateAutoAllocationSettings,
+  excludeAccountFromDesign,
+  includeAccountForDesign,
+  excludeAccountFromVariant,
+  includeAccountForVariant
 };

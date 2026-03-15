@@ -47,7 +47,16 @@ const allocationChangeSchema = new mongoose.Schema({
   changeType: {
     type: String,
     required: true,
-    enum: ['manualallocation', 'emergencyborrow', 'marketplacesale', 'wholesaleborrow', 'manualreturn', 'internal_transfer_out', 'internal_transfer_in']
+    enum: [
+      'manualallocation',
+      'emergencyborrow',
+      'marketplacesale',
+      'wholesaleborrow',
+      'manualreturn',
+      'internal_transfer_out',
+      'internal_transfer_in',
+      'autoallocation'   // ← NEW
+    ]
   },
 
   // Related references

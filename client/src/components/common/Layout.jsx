@@ -7,6 +7,7 @@ import SyncRequestModal from '../sync/SyncRequestModal';
 import { useSyncContext } from '../../context/SyncContext';
 import { authService } from '../../services/authService';
 import { FiMenu, FiX, FiPackage, FiMaximize2, FiShield, FiUser, FiEdit2 } from 'react-icons/fi';
+import AutoAllocationBanner from '../AutoAllocationBanner';
 
 const Layout = () => {
   const navigate = useNavigate();
@@ -168,6 +169,9 @@ const Layout = () => {
             {/* Notification Bell 
             <NotificationDropdown />
             <LanguageSwitcher />*/}
+            
+            {/* Auto Allocation Banner */}
+            <AutoAllocationBanner />
 
             {/* User Info with Role */}
             <div className="flex items-center gap-3">

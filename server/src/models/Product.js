@@ -18,6 +18,7 @@ const sizeStockSchema = new mongoose.Schema({
   },
   // ✅ NEW: Account-wise allocations
   reservedAllocations: [{
+    excludedFromAutoAllocation: [{ type: String }],
     accountName: { type: String, required: true },
     quantity: { type: Number, default: 0, min: 0 },
     allocatedAt: { type: Date, default: Date.now }, // ✅ NEW FIELD
@@ -119,6 +120,7 @@ const productSchema = new mongoose.Schema(
         fsn: String
       }]
     },
+    excludedAccounts: [{ type: String }],
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

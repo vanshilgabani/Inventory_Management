@@ -10,7 +10,8 @@ import {
   FiArrowUp,
   FiArrowRight,
   FiLayers,
-  FiX
+  FiX,
+  FiZap
 } from 'react-icons/fi';
 import Card from '../components/common/Card';
 import SkeletonCard from '../components/common/SkeletonCard';
@@ -62,6 +63,7 @@ const ReservedInventory = () => {
 
   // Export Modal
   const [showExportModal, setShowExportModal] = useState(false);
+  const [autoAllocRunning, setAutoAllocRunning] = useState(false);
 
   // Fetch data
   useEffect(() => {
@@ -109,6 +111,46 @@ const fetchMarketplaceAccounts = async () => {
     setMarketplaceAccounts(activeAccounts);
   } catch (error) {
     console.error('Failed to fetch marketplace accounts:', error);
+  }
+};
+
+const handleManualAutoAllocation = async () => {
+  if (autoAllocRunning) return;
+  setAutoAllocRunning(true);
+  try {
+    const res = await fetch('/api/auto-allocation/run', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('token')}`
+      },
+      body: JSON.stringify({}) // empty body = run for ALL variants
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || 'Failed to run');
+
+    if (data.summary) {
+      const { ran, skipped, errors } = data.summary;
+      if (ran === 0 && skipped > 0) {
+        toast(`All variants skipped (rate limit or disabled)`, { icon: '⏳' });
+      } else if (errors > 0) {
+        toast.success(`Auto allocation done: ${ran} ran, ${skipped} skipped, ${errors} errors`);
+      } else {
+        toast.success(`Auto allocation complete — ${ran} variant${ran !== 1 ? 's' : ''} reallocated`);
+      }
+    } else {
+      // Single variant response
+      if (data.skipped) {
+        toast(`Skipped: ${data.reason}`, { icon: '⏳' });
+      } else {
+        toast.success('Auto allocation complete');
+      }
+    }
+    await fetchData(); // refresh inventory display
+  } catch (error) {
+    toast.error(error.message || 'Auto allocation failed');
+  } finally {
+    setAutoAllocRunning(false);
   }
 };
 
@@ -638,6 +680,18 @@ const handleInternalTransferSubmit = async () => {
           >
             <FiRefreshCw className="w-4 h-4" />
             Refresh
+          </button>
+          <button
+            onClick={handleManualAutoAllocation}
+            disabled={autoAllocRunning}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium transition-all
+              ${autoAllocRunning
+                ? 'bg-amber-400 cursor-not-allowed'
+                : 'bg-amber-500 hover:bg-amber-600'
+              }`}
+          >
+            <FiZap className={`w-4 h-4 ${autoAllocRunning ? 'animate-pulse' : ''}`} />
+            {autoAllocRunning ? 'Allocating...' : 'Auto Allocate'}
           </button>
           {/*<FlipkartSyncButton />*/}
         </div>

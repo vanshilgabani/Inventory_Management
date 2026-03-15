@@ -16,6 +16,57 @@ const supplierSyncController = require('./supplierSyncController');
 const User = require('../models/User');
 const { updateChallansAfterPayment } = require('./monthlyBillController');
 
+/**
+ * Proportionally deducts `amount` from reservedAllocations.
+ * Takes from largest accounts first to minimize rounding errors.
+ * Mutates sizeVariant.reservedAllocations in-place.
+ */
+const deductFromAllocationsProportionally = (sizeVariant, amountToDeduct) => {
+  const allocations = sizeVariant.reservedAllocations;
+  if (!allocations || allocations.length === 0) return;
+
+  const totalAllocated = allocations.reduce((sum, a) => sum + (a.quantity || 0), 0);
+  if (totalAllocated <= 0) return;
+
+  let remaining = amountToDeduct;
+
+  // Calculate proportional amounts
+  const deductions = allocations.map(alloc => {
+    if (alloc.quantity <= 0) return { accountName: alloc.accountName, deduct: 0 };
+    const proportion = alloc.quantity / totalAllocated;
+    const deduct = Math.min(Math.round(amountToDeduct * proportion), alloc.quantity);
+    return { accountName: alloc.accountName, deduct };
+  });
+
+  // Apply deductions
+  deductions.forEach(({ accountName, deduct }) => {
+    const alloc = allocations.find(a => a.accountName === accountName);
+    if (alloc && deduct > 0) {
+      alloc.quantity -= deduct;
+      remaining -= deduct;
+    }
+  });
+
+  // Handle rounding remainder — take from largest remaining allocation
+  if (remaining > 0) {
+    const sorted = [...allocations]
+      .filter(a => a.quantity > 0)
+      .sort((a, b) => b.quantity - a.quantity);
+
+    for (const ref of sorted) {
+      if (remaining <= 0) break;
+      const alloc = allocations.find(a => a.accountName === ref.accountName);
+      if (alloc && alloc.quantity > 0) {
+        const take = Math.min(alloc.quantity, remaining);
+        alloc.quantity -= take;
+        remaining -= take;
+      }
+    }
+  }
+
+  console.log(`✅ Allocation deduction done. Remaining deduction: ${remaining} (should be 0)`);
+};
+
 // ✅ ADD THIS - Global flag to disable locked stock
 const STOCK_LOCK_DISABLED = true;
 
@@ -382,7 +433,16 @@ const createOrder = async (req, res) => {
               const currentReserved = colorVariant.sizes[sizeIndex].reservedStock || 0;
               const actualReservedDeduction = Math.min(takeFromReserved, currentReserved);
               colorVariant.sizes[sizeIndex].reservedStock = Math.max(0, currentReserved - actualReservedDeduction);
+
+              // ✅ ADD: Proportionally deduct from allocations
+              deductFromAllocationsProportionally(
+                colorVariant.sizes[sizeIndex],
+                actualReservedDeduction
+              );
             }
+
+            // ✅ ADD markModified before save
+            productRef.markModified('colors');
 
             await productRef.save({ session });
           }
@@ -2298,7 +2358,7 @@ const createOrderWithReservedBorrow = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { orderData, borrowItems } = req.body;
+    const { borrowItems, ...orderData } = req.body;
     const { organizationId, id: userId } = req.user;
     const AllocationChange = require('../models/AllocationChange');
 
@@ -2484,55 +2544,22 @@ const createOrderWithReservedBorrow = async (req, res) => {
 
         // ✅ Apply borrowing to each account
         for (const breakdown of borrowBreakdown) {
-          const allocation = sizeVariant.reservedAllocations.find(
+          const alloc = sizeVariant.reservedAllocations?.find(
             a => a.accountName === breakdown.accountName
           );
-
-          if (!allocation) continue;
-
-          const quantityBefore = allocation.quantity;
-          const quantityAfter = quantityBefore - breakdown.borrowAmount;
-
-          allocation.quantity = quantityAfter;
-          allocation.updatedAt = new Date();
-
-          allocationChanges.push({
-            productId: product._id,
-            design: product.design,
-            color: color,
-            size: size,
-            accountName: breakdown.accountName,
-            quantityBefore: quantityBefore,
-            quantityAfter: quantityAfter,
-            amountChanged: -breakdown.borrowAmount,
-            changeType: 'emergencyborrow',
-            relatedOrderType: 'wholesale',
-            changedBy: userId,
-            notes: `Emergency borrow for wholesale order (${breakdown.borrowAmount} units)`,
-            organizationId: organizationId
-          });
-
-          logger.info('Reduced allocation', {
-            design, color, size,
-            accountName: breakdown.accountName,
-            before: quantityBefore,
-            after: quantityAfter,
-            borrowed: breakdown.borrowAmount
-          });
+          if (alloc) {
+            alloc.quantity -= breakdown.borrowAmount;
+            console.log(`✅ Deducted ${breakdown.borrowAmount} from account: ${breakdown.accountName}`);
+          }
         }
 
-        // Update reserved stock total
-        const totalBorrowed = borrowBreakdown.reduce((sum, b) => sum + b.borrowAmount, 0);
-        sizeVariant.reservedStock = Math.max(0, sizeVariant.reservedStock - totalBorrowed);
+        // ✅ FIX: Deduct from total reservedStock pool
+        sizeVariant.reservedStock = Math.max(0, (sizeVariant.reservedStock || 0) - borrowQty);
+        sizeVariant.currentStock = (sizeVariant.currentStock || 0) + borrowQty;
 
-        // ✅ ADD BORROWED STOCK TO MAIN INVENTORY
-        sizeVariant.currentStock = (sizeVariant.currentStock || 0) + totalBorrowed;
+        console.log(`✅ Reserved stock after borrow: ${sizeVariant.reservedStock}`);
 
-        // Remove allocations with 0 quantity
-        sizeVariant.reservedAllocations = sizeVariant.reservedAllocations.filter(
-          alloc => alloc.quantity > 0
-        );
-
+        // ✅ FIX: markModified — without this Mongoose ignores nested array changes
         product.markModified('colors');
         await product.save({ session });
 

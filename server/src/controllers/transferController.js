@@ -1,6 +1,7 @@
 const Transfer = require('../models/Transfer');
 const Product = require('../models/Product');
 const AllocationChange = require('../models/AllocationChange');
+const { runAutoAllocation } = require('./autoAllocationController');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 
@@ -150,6 +151,10 @@ const transferToReserved = async (req, res) => {
     logger.info('Transfer to reserved successful', { 
       design, color, size, quantity, transferId: transfer[0]._id 
     });
+
+    // Auto allocation trigger
+    runAutoAllocation(organizationId, design, color, size, 'transfer', null, userId)
+      .catch(err => logger.error('Auto allocation failed after transfer:', err.message));
 
     res.json({
       success: true,
@@ -306,6 +311,7 @@ const bulkTransferToReserved = async (req, res) => {
 
     const results = [];
     const transferLogs = [];
+    const successfulTransfers = [];
 
     for (const item of transfers) {
       const { design, color, size, quantity } = item;
@@ -318,6 +324,7 @@ const bulkTransferToReserved = async (req, res) => {
         results.push({ design, color, size, success: false, error: 'Product not found' });
         continue;
       }
+      successfulTransfers.push({ design, color, size });
 
       // Find variant
       const colorVariant = product.colors.find(c => c.color === color);
@@ -387,6 +394,10 @@ const bulkTransferToReserved = async (req, res) => {
       failed: transfers.length - successCount 
     });
 
+    for (const { design, color, size } of successfulTransfers) {
+      runAutoAllocation(organizationId, design, color, size, 'transfer', null, userId)
+        .catch(err => logger.error(`Auto allocation failed after bulk transfer [${design}-${color}-${size}]:`, err.message));
+    }
     res.json({
       success: true,
       message: `Bulk transfer completed. ${successCount}/${transfers.length} successful`,
@@ -662,17 +673,20 @@ const getTransferStats = async (req, res) => {
       .filter(t => t.type === 'emergencyborrow')
       .reduce((sum, t) => sum + t.quantity, 0);
 
+    const autoAllocations = transfers.filter(t => t.type === 'autoallocation').length;
+
     const totalTransferred = (manualRefills + emergencyUse) - (manualReturns + emergencyBorrow);
 
     const totalBreakdown = transfers
-      .filter(t => t.type === 'manualrefill' || t.type === 'emergencyuse')
+      .filter(t => ['manualrefill', 'emergencyuse', 'autoallocation'].includes(t.type))
       .map(t => ({
-        design: t.design,
-        color: t.color,
-        size: t.size,
+        design:   t.design,
+        color:    t.color,
+        size:     t.size,
         quantity: t.quantity,
-        date: t.createdAt,
-        type: t.type
+        date:     t.createdAt,
+        type:     t.type,
+        notes:    t.notes  // ← includes account breakdown string
       }));
 
     // ✅ PART 2: Calculate PER-ACCOUNT stats from AllocationChange
@@ -791,6 +805,7 @@ const getTransferStats = async (req, res) => {
         emergencyUse,
         manualReturns,
         emergencyBorrow,
+        autoAllocations,
         breakdown: totalBreakdown
       },
       accountStats,

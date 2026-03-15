@@ -59,6 +59,7 @@ const adminRoutes = require('./src/routes/adminRoutes');
 const paymentRoutes = require('./src/routes/paymentRoutes');
 const skuMappingRoutes = require('./src/routes/skuMappingRoutes');
 const flipkartRoutes = require('./src/routes/flipkartRoutes');
+const autoAllocationRoutes = require('./src/routes/autoAllocationRoutes');
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -87,6 +88,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/sku-mappings', skuMappingRoutes);
 app.use('/api/flipkart', flipkartRoutes);
+app.use('/api/auto-allocation', autoAllocationRoutes);
 
 // Test route
 app.get('/', (req, res) => {

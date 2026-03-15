@@ -11,6 +11,14 @@ router.put('/', protect, isAdmin, settingsController.updateSettings);
 // 🔒 NEW: Stock lock routes
 router.post('/reduce-stock-lock', protect, settingsController.reduceStockLock);
 
+// Auto allocation settings
+router.get('/auto-allocation',  protect, settingsController.getAutoAllocationSettings);
+router.put('/auto-allocation',  protect, settingsController.updateAutoAllocationSettings);
+router.post('/auto-allocation/exclude-design',  protect, settingsController.excludeAccountFromDesign);
+router.post('/auto-allocation/include-design',  protect, settingsController.includeAccountForDesign);
+router.post('/auto-allocation/exclude-variant', protect, settingsController.excludeAccountFromVariant);
+router.post('/auto-allocation/include-variant', protect, settingsController.includeAccountForVariant);
+
 // Marketplace account routes
 router.post('/marketplace-accounts', protect, isAdmin, settingsController.addMarketplaceAccount);
 router.put('/marketplace-accounts/:accountId', protect, isAdmin, settingsController.updateMarketplaceAccount);

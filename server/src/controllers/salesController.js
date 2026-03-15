@@ -11,6 +11,7 @@ const MarketplaceSKUMapping = require('../models/MarketplaceSKUMapping');
 const AllocationChange = require('../models/AllocationChange');
 const { parseMarketplaceSKU, matchColor, suggestDesign } = require('../utils/skuParser');
 const { convertSizeToLetter } = require('../utils/sizeMappings');
+const { runAutoAllocation } = require('./autoAllocationController');
 
 // ✅ ADD THIS HELPER AT THE TOP OF EACH CONTROLLER FILE
 const decrementEditSession = async (req, action, module, itemId) => {
@@ -419,6 +420,8 @@ exports.createSale = async (req, res) => {
     allocation.quantity -= quantity;
     colorVariant.sizes[sizeIndex].reservedStock -= quantity;
 
+    const allocationAfterDeduct = allocation.quantity; // NEW — capture before save
+
     logger.info('✅ Deducted from account allocation', {
       design,
       color,
@@ -492,6 +495,18 @@ exports.createSale = async (req, res) => {
     }
 
     await session.commitTransaction();
+    // If this account's allocation just hit 0, trigger auto reallocation
+    if (allocationAfterDeduct === 0) {
+      runAutoAllocation(
+        organizationId,
+        design,
+        color,
+        size,
+        'account_empty',
+        accountName,
+        userId
+      ).catch(err => logger.error('Auto allocation failed after sale:', err.message));
+    }
 
     logger.info('Marketplace sale created', {
       saleId: sale[0]._id,
@@ -568,16 +583,19 @@ exports.createSaleWithMainStock = async (req, res) => {
     const mainBefore = sizeVariant.currentStock;
     const reservedBefore = sizeVariant.reservedStock;
 
+    let mainSaleAccountHitZero = false;
     // ✅✅ Use account stock first, then main
     if (accountStock > 0) {
       // Use all available account stock
       allocation.quantity = 0;
+      mainSaleAccountHitZero = true;
       colorVariant.sizes[sizeIndex].reservedStock -= accountStock;
     }
 
     // Use main stock for the deficit
     colorVariant.sizes[sizeIndex].currentStock -= deficit;
 
+    product.markModified('colors'); 
     await product.save({ session });
 
     // Create sale
@@ -643,6 +661,19 @@ exports.createSaleWithMainStock = async (req, res) => {
     }], { session });
 
     await session.commitTransaction();
+    session.endSession();
+    // Account allocation hit 0 (all used + went to main), trigger reallocation
+    if (mainSaleAccountHitZero) {
+      runAutoAllocation(
+        organizationId,
+        design,
+        color,
+        size,
+        'account_empty',
+        accountName,
+        userId
+      ).catch(err => logger.error('Auto allocation failed after main stock sale:', err.message));
+    }
 
     logger.info('Marketplace sale created with main stock', {
       saleId: sale[0]._id,
@@ -664,15 +695,18 @@ exports.createSaleWithMainStock = async (req, res) => {
     });
 
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
     logger.error('Sale with main stock failed', { error: error.message });
     res.status(500).json({
       code: 'SALE_CREATION_FAILED',
       message: 'Failed to create sale',
       error: error.message
     });
-  } finally {
-    session.endSession();
+    } finally {
+    // ✅ Safe end — won't throw even if already ended
+    try { session.endSession(); } catch (_) {}
   }
 };
 
@@ -1222,23 +1256,14 @@ exports.updateSale = async (req, res) => {
     const organizationId = req.user.organizationId;
     const userRole = req.user.role;
 
-    const sale = await MarketplaceSale.findOne({
-      _id: id,
-      organizationId
-    }).session(session);
+    const sale = await MarketplaceSale.findOne({ _id: id, organizationId }).session(session);
 
     if (!sale) {
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: 'Sale not found'
-      });
+      return res.status(404).json({ success: false, message: 'Sale not found' });
     }
 
-    // Ensure tenantId is always present
-    if (!sale.tenantId) {
-      sale.tenantId = organizationId;
-    }
+    if (!sale.tenantId) sale.tenantId = organizationId;
 
     const oldStatus = sale.status;
     const oldQuantity = sale.quantity;
@@ -1248,31 +1273,177 @@ exports.updateSale = async (req, res) => {
     let stockRestored = 0;
     let stockDeducted = 0;
 
-    // Role-based update logic
+    // ─────────────────────────────────────────────
+    // SHARED STOCK LOGIC (used by both admin + salesperson)
+    // ─────────────────────────────────────────────
+    const applyStockChange = async (newStatus) => {
+      const product = await Product.findOne({
+        organizationId,
+        design: sale.design,
+        'colors.color': sale.color
+      }).session(session);
+
+      if (!product) {
+        console.warn(`⚠️ Product ${sale.design} not found for stock change`);
+        return;
+      }
+
+      const colorVariant = product.colors.find(c => c.color === sale.color);
+      if (!colorVariant) {
+        console.warn(`⚠️ Color ${sale.color} not found in product ${sale.design}`);
+        return;
+      }
+
+      const sizeVariant = colorVariant.sizes.find(s => s.size === sale.size);
+      if (!sizeVariant) {
+        console.warn(`⚠️ Size ${sale.size} not found in ${sale.design}-${sale.color}`);
+        return;
+      }
+
+      // Initialize if undefined/null/NaN
+      if (typeof sizeVariant.currentStock === 'undefined' || sizeVariant.currentStock === null || isNaN(sizeVariant.currentStock)) {
+        console.warn(`⚠️ currentStock was undefined for ${sale.design}-${sale.color}-${sale.size}, initializing to 0`);
+        sizeVariant.currentStock = 0;
+      }
+
+      const stockRestoringStatuses = ['returned', 'cancelled', 'RTO'];
+      const stockDeductingStatuses = ['dispatched'];
+      const noStockChangeStatuses  = ['wrongreturn', 'delivered'];
+
+      const oldStatusType = stockRestoringStatuses.includes(oldStatus)  ? 'restoring'  :
+                            stockDeductingStatuses.includes(oldStatus)   ? 'deducting'  :
+                            noStockChangeStatuses.includes(oldStatus)    ? 'none'       : 'unknown';
+
+      const newStatusType = stockRestoringStatuses.includes(newStatus)  ? 'restoring'  :
+                            stockDeductingStatuses.includes(newStatus)   ? 'deducting'  :
+                            noStockChangeStatuses.includes(newStatus)    ? 'none'       : 'unknown';
+
+      console.log(`📊 Status transition: ${oldStatus} (${oldStatusType}) → ${newStatus} (${newStatusType})`);
+      console.log(`📦 stockRestoredAmount on sale: ${sale.stockRestoredAmount || 0}`);
+
+      const inventoryMode = sale.inventoryModeUsed || 'reserved';
+
+      // ─── SCENARIO 1: dispatched/delivered → returned/cancelled/RTO ───
+      // Restore stock back to inventory (only once)
+      if (newStatusType === 'restoring') {
+        if ((sale.stockRestoredAmount || 0) === 0) {
+          console.log(`✅ SCENARIO 1 — Restoring ${sale.quantity} to ${inventoryMode.toUpperCase()}`);
+
+          if (inventoryMode === 'main') {
+            sizeVariant.currentStock = (sizeVariant.currentStock || 0) + sale.quantity;
+          } else {
+            // Restore to total reserved pool
+            sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+
+            // Also restore to account allocation
+            let allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
+            if (!allocation) {
+              if (!sizeVariant.reservedAllocations) sizeVariant.reservedAllocations = [];
+              allocation = { accountName: sale.accountName, quantity: 0 };
+              sizeVariant.reservedAllocations.push(allocation);
+            }
+            allocation.quantity += sale.quantity;
+            console.log(`✅ Restored ${sale.quantity} units to account: ${sale.accountName}`);
+          }
+
+          sale.stockRestoredAmount = sale.quantity;
+          stockRestored = sale.quantity;
+          product.markModified('colors'); // ✅ CRITICAL
+          await product.save({ session });
+        } else {
+          console.log(`⚠️ SCENARIO 1 skipped — stock already restored (${sale.stockRestoredAmount})`);
+        }
+      }
+
+      // ─── SCENARIO 2: returned/cancelled/RTO → dispatched or wrongreturn ───
+      // Un-restore stock (take it back from inventory)
+      else if (oldStatusType === 'restoring' && (newStatusType === 'deducting' || newStatusType === 'none')) {
+        if ((sale.stockRestoredAmount || 0) > 0) {
+          const amountToDeduct = sale.stockRestoredAmount;
+          const availableStock = inventoryMode === 'main'
+            ? (sizeVariant.currentStock || 0)
+            : (sizeVariant.reservedStock || 0);
+
+          if (availableStock < amountToDeduct) {
+            await session.abortTransaction();
+            throw new Error(`Insufficient ${inventoryMode} stock to undo restoration. Available: ${availableStock}, Required: ${amountToDeduct}`);
+          }
+
+          console.log(`✅ SCENARIO 2 — Undoing restoration from ${inventoryMode.toUpperCase()}: -${amountToDeduct}`);
+
+          if (inventoryMode === 'main') {
+            sizeVariant.currentStock -= amountToDeduct;
+          } else {
+            sizeVariant.reservedStock -= amountToDeduct;
+            const allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
+            if (allocation) {
+              allocation.quantity -= amountToDeduct;
+              console.log(`✅ Deducted ${amountToDeduct} from account allocation: ${sale.accountName}`);
+            }
+          }
+
+          sale.stockRestoredAmount = 0;
+          stockDeducted = amountToDeduct;
+          product.markModified('colors'); // ✅ CRITICAL
+          await product.save({ session });
+        } else {
+          console.log(`⚠️ SCENARIO 2 skipped — stockRestoredAmount is 0`);
+        }
+      }
+
+      // ─── SCENARIO 3: returned/cancelled/RTO → wrongreturn ───
+      // Same as Scenario 2 but destination is 'none' type
+      else if (newStatusType === 'none' && oldStatusType === 'restoring') {
+        if ((sale.stockRestoredAmount || 0) > 0) {
+          const amountToDeduct = sale.stockRestoredAmount;
+          const availableStock = inventoryMode === 'main'
+            ? (sizeVariant.currentStock || 0)
+            : (sizeVariant.reservedStock || 0);
+
+          if (availableStock < amountToDeduct) {
+            await session.abortTransaction();
+            throw new Error(`Insufficient ${inventoryMode} stock. Available: ${availableStock}, Required: ${amountToDeduct}`);
+          }
+
+          console.log(`✅ SCENARIO 3 (wrongreturn) — Undoing restoration: -${amountToDeduct}`);
+
+          if (inventoryMode === 'main') {
+            sizeVariant.currentStock -= amountToDeduct;
+          } else {
+            sizeVariant.reservedStock -= amountToDeduct;
+            const allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
+            if (allocation) {
+              allocation.quantity -= amountToDeduct;
+              console.log(`✅ Deducted ${amountToDeduct} from account: ${sale.accountName}`);
+            }
+          }
+
+          sale.stockRestoredAmount = 0;
+          stockDeducted = amountToDeduct;
+          product.markModified('colors'); // ✅ CRITICAL
+          await product.save({ session });
+        }
+      }
+
+      // ─── SCENARIO 4: All other transitions (no stock change needed) ───
+      else {
+        console.log(`ℹ️ SCENARIO 4 — No stock change needed for: ${oldStatusType} → ${newStatusType}`);
+      }
+    };
+
+    // ─────────────────────────────────────────────
+    // ADMIN BRANCH
+    // ─────────────────────────────────────────────
     if (userRole === 'admin') {
-      // Admin can update everything
       const {
-        accountName,
-        saleDate,
-        marketplaceOrderId,
-        orderItemId,
-        design,
-        color,
-        size,
-        quantity,
-        status,
-        notes,
-        comments,
-        changedAt
+        accountName, saleDate, marketplaceOrderId, orderItemId,
+        design, color, size, quantity, status, notes, comments, changedAt
       } = req.body;
 
-      // If product details changed, handle stock
+      // If product variant changed — restore old stock + deduct new stock
       if (design && color && size && (design !== oldDesign || color !== oldColor || size !== oldSize || quantity !== oldQuantity)) {
-        // Restore old stock (simplified - you can expand this)
         const oldProduct = await Product.findOne({
-          organizationId,
-          design: oldDesign,
-          'colors.color': oldColor
+          organizationId, design: oldDesign, 'colors.color': oldColor
         }).session(session);
 
         if (oldProduct) {
@@ -1280,268 +1451,86 @@ exports.updateSale = async (req, res) => {
           if (oldColorVariant) {
             const oldSizeVariant = oldColorVariant.sizes.find(s => s.size === oldSize);
             if (oldSizeVariant) {
-              // ✅✅ Restore to account allocation
               const inventoryMode = sale.inventoryModeUsed || 'reserved';
-              
               if (inventoryMode === 'reserved') {
-                const oldAccountName = sale.accountName;
-                let allocation = oldSizeVariant.reservedAllocations?.find(a => a.accountName === oldAccountName);
-                
+                let allocation = oldSizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
                 if (!allocation) {
-                  if (!oldSizeVariant.reservedAllocations) {
-                    oldSizeVariant.reservedAllocations = [];
-                  }
-                  allocation = { accountName: oldAccountName, quantity: 0 };
+                  if (!oldSizeVariant.reservedAllocations) oldSizeVariant.reservedAllocations = [];
+                  allocation = { accountName: sale.accountName, quantity: 0 };
                   oldSizeVariant.reservedAllocations.push(allocation);
                 }
-                
                 allocation.quantity += oldQuantity;
+                oldSizeVariant.reservedStock = (oldSizeVariant.reservedStock || 0) + oldQuantity;
+              } else {
+                oldSizeVariant.currentStock = (oldSizeVariant.currentStock || 0) + oldQuantity;
               }
-              
-              oldSizeVariant.currentStock = (oldSizeVariant.currentStock || 0) + oldQuantity;
+              oldProduct.markModified('colors'); // ✅ CRITICAL
               await oldProduct.save({ session });
               stockRestored = oldQuantity;
             }
           }
         }
 
-        // Deduct new stock
+        // Deduct new variant stock
         const newProduct = await Product.findOne({
-          organizationId,
-          design,
-          'colors.color': color
+          organizationId, design, 'colors.color': color
         }).session(session);
 
         if (!newProduct) {
           await session.abortTransaction();
-          return res.status(404).json({
-            success: false,
-            message: `Product ${design} with color ${color} not found`
-          });
+          return res.status(404).json({ success: false, message: `Product ${design} with color ${color} not found` });
         }
 
         const newColorVariant = newProduct.colors.find(c => c.color === color);
         if (!newColorVariant) {
           await session.abortTransaction();
-          return res.status(404).json({
-            success: false,
-            message: `Color ${color} not found`
-          });
+          return res.status(404).json({ success: false, message: `Color ${color} not found` });
         }
 
         const newSizeVariant = newColorVariant.sizes.find(s => s.size === size);
         if (!newSizeVariant) {
           await session.abortTransaction();
-          return res.status(404).json({
-            success: false,
-            message: `Size ${size} not found`
-          });
+          return res.status(404).json({ success: false, message: `Size ${size} not found` });
         }
 
         const currentStock = newSizeVariant.currentStock || 0;
         if (currentStock < quantity) {
           await session.abortTransaction();
-          return res.status(400).json({
-            success: false,
-            message: `Insufficient stock. Available: ${currentStock}`
-          });
+          return res.status(400).json({ success: false, message: `Insufficient stock. Available: ${currentStock}` });
         }
 
         newSizeVariant.currentStock = currentStock - quantity;
+        newProduct.markModified('colors'); // ✅ CRITICAL
         await newProduct.save({ session });
         stockDeducted = quantity;
 
-        // Update sale details
-        sale.design = design;
-        sale.color = color;
-        sale.size = size;
+        sale.design   = design;
+        sale.color    = color;
+        sale.size     = size;
         sale.quantity = quantity;
       }
 
       // Update other fields
-      if (accountName) sale.accountName = accountName;
-      if (saleDate) sale.saleDate = new Date(saleDate);
-      if (marketplaceOrderId !== undefined) sale.marketplaceOrderId = marketplaceOrderId;
-      if (orderItemId !== undefined) sale.orderItemId = orderItemId;
-      if (notes !== undefined) sale.notes = notes;
+      if (accountName)                  sale.accountName         = accountName;
+      if (saleDate)                     sale.saleDate            = new Date(saleDate);
+      if (marketplaceOrderId !== undefined) sale.marketplaceOrderId  = marketplaceOrderId;
+      if (orderItemId        !== undefined) sale.orderItemId         = orderItemId;
+      if (notes              !== undefined) sale.notes               = notes;
 
-      // Update status - HANDLE STOCK HERE
+      // Status change
       if (status && status !== oldStatus) {
         if (!VALID_STATUSES.includes(status)) {
           await session.abortTransaction();
-          return res.status(400).json({
-            success: false,
-            message: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}`
-          });
+          return res.status(400).json({ success: false, message: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` });
         }
 
-        // ✅ Stock change logic with ACCOUNT RESTORATION
-        const product = await Product.findOne({
-          organizationId,
-          design: sale.design,
-          'colors.color': sale.color
-        }).session(session);
-
-        if (product) {
-          const colorVariant = product.colors.find(c => c.color === sale.color);
-          if (colorVariant) {
-            const sizeVariant = colorVariant.sizes.find(s => s.size === sale.size);
-            if (sizeVariant) {
-              // Initialize currentStock if undefined
-              if (typeof sizeVariant.currentStock === 'undefined' ||
-                  sizeVariant.currentStock === null ||
-                  isNaN(sizeVariant.currentStock)) {
-                console.warn(`⚠️ Stock was undefined for ${sale.design}-${sale.color}-${sale.size}, initializing to 0`);
-                sizeVariant.currentStock = 0;
-              }
-
-              // Define status categories
-              const stockRestoringStatuses = ['returned', 'cancelled', 'RTO'];
-              const stockDeductingStatuses = ['dispatched'];
-              const noStockChangeStatuses = ['wrongreturn'];
-
-              const oldStatusType = stockRestoringStatuses.includes(oldStatus) ? 'restoring' :
-                                   stockDeductingStatuses.includes(oldStatus) ? 'deducting' :
-                                   noStockChangeStatuses.includes(oldStatus) ? 'none' : 'unknown';
-
-              const newStatusType = stockRestoringStatuses.includes(status) ? 'restoring' :
-                                   stockDeductingStatuses.includes(status) ? 'deducting' :
-                                   noStockChangeStatuses.includes(status) ? 'none' : 'unknown';
-
-              console.log(`📊 Status transition: ${oldStatus} (${oldStatusType}) → ${status} (${newStatusType})`);
-              console.log(`📦 Stock restored amount tracked: ${sale.stockRestoredAmount || 0}`);
-
-              // ✅ SCENARIO 1: Moving TO restoring status (returned/cancelled)
-              if (newStatusType === 'restoring') {
-                if ((sale.stockRestoredAmount || 0) === 0) {
-                  const inventoryMode = sale.inventoryModeUsed || 'reserved';
-                  console.log(`✅ Restoring stock to ${inventoryMode.toUpperCase()}: +${sale.quantity}`);
-
-                  if (inventoryMode === 'main') {
-                    sizeVariant.currentStock = (sizeVariant.currentStock || 0) + sale.quantity;
-                  } else {
-                    // ✅✅ Restore to RESERVED + ACCOUNT ALLOCATION
-                    sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
-
-                    // ✅✅ NEW: Also restore to account allocation
-                    const accountName = sale.accountName;
-                    let allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
-
-                    if (!allocation) {
-                      if (!sizeVariant.reservedAllocations) {
-                        sizeVariant.reservedAllocations = [];
-                      }
-                      allocation = { accountName, quantity: 0 };
-                      sizeVariant.reservedAllocations.push(allocation);
-                    }
-
-                    allocation.quantity += sale.quantity;
-                    console.log(`✅ Restored ${sale.quantity} units to ${accountName} account`);
-                  }
-
-                  sale.stockRestoredAmount = sale.quantity;
-                  stockRestored = sale.quantity;
-                  await product.save({ session });
-                } else {
-                  console.log(`⚠️ Stock already restored (${sale.stockRestoredAmount}), no change`);
-                }
-              }
-              // ✅ SCENARIO 2: Moving FROM restoring TO deducting/none
-              else if (oldStatusType === 'restoring' && (newStatusType === 'deducting' || newStatusType === 'none')) {
-                if ((sale.stockRestoredAmount || 0) > 0) {
-                  const amountToDeduct = sale.stockRestoredAmount;
-                  const inventoryMode = sale.inventoryModeUsed || 'reserved';
-                  const availableStock = inventoryMode === 'main'
-                    ? (sizeVariant.currentStock || 0)
-                    : (sizeVariant.reservedStock || 0);
-
-                  if (availableStock < amountToDeduct) {
-                    await session.abortTransaction();
-                    return res.status(400).json({
-                      success: false,
-                      message: `Insufficient ${inventoryMode} stock. Available: ${availableStock}, Required: ${amountToDeduct}`
-                    });
-                  }
-
-                  console.log(`🔄 Undoing stock restoration from ${inventoryMode.toUpperCase()}: -${amountToDeduct}`);
-
-                  if (inventoryMode === 'main') {
-                    sizeVariant.currentStock -= amountToDeduct;
-                  } else {
-                    sizeVariant.reservedStock -= amountToDeduct;
-
-                    // ✅✅ NEW: Also deduct from account allocation
-                    const accountName = sale.accountName;
-                    const allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
-
-                    if (allocation) {
-                      allocation.quantity -= amountToDeduct;
-                      console.log(`🔄 Deducted ${amountToDeduct} units from ${accountName} account`);
-                    }
-                  }
-
-                  sale.stockRestoredAmount = 0;
-                  stockDeducted = amountToDeduct;
-                  await product.save({ session });
-                }
-              }
-              // ✅ SCENARIO 3: Moving TO wrongreturn from restoring status
-              else if (newStatusType === 'none' && oldStatusType === 'restoring') {
-                if ((sale.stockRestoredAmount || 0) > 0) {
-                  const amountToDeduct = sale.stockRestoredAmount;
-                  const inventoryMode = sale.inventoryModeUsed || 'reserved';
-                  const availableStock = inventoryMode === 'main'
-                    ? (sizeVariant.currentStock || 0)
-                    : (sizeVariant.reservedStock || 0);
-
-                  if (availableStock < amountToDeduct) {
-                    await session.abortTransaction();
-                    return res.status(400).json({
-                      success: false,
-                      message: `Insufficient ${inventoryMode} stock. Available: ${availableStock}, Required: ${amountToDeduct}`
-                    });
-                  }
-
-                  console.log(`🔄 Wrong return - undoing restoration from ${inventoryMode.toUpperCase()}: -${amountToDeduct}`);
-
-                  if (inventoryMode === 'main') {
-                    sizeVariant.currentStock -= amountToDeduct;
-                  } else {
-                    sizeVariant.reservedStock -= amountToDeduct;
-
-                    // ✅✅ NEW: Deduct from account allocation
-                    const accountName = sale.accountName;
-                    const allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
-
-                    if (allocation) {
-                      allocation.quantity -= amountToDeduct;
-                    }
-                  }
-
-                  sale.stockRestoredAmount = 0;
-                  stockDeducted = amountToDeduct;
-                  await product.save({ session });
-                }
-              }
-              // SCENARIO 4: All other transitions
-              else {
-                console.log(`⚠️ No stock change needed for ${oldStatusType} → ${newStatusType}`);
-              }
-            } else {
-              console.warn(`⚠️ Size ${sale.size} not found in product ${sale.design}-${sale.color}`);
-            }
-          } else {
-            console.warn(`⚠️ Color ${sale.color} not found in product ${sale.design}`);
-          }
-        } else {
-          console.warn(`⚠️ Product ${sale.design} not found`);
-        }
+        await applyStockChange(status); // ✅ shared logic
 
         sale.statusHistory.push({
           previousStatus: oldStatus,
           newStatus: status,
           changedBy: {
-            userId: req.user._id,
+            userId:   req.user._id,
             userName: req.user.name || req.user.email,
             userRole: req.user.role
           },
@@ -1552,42 +1541,34 @@ exports.updateSale = async (req, res) => {
         sale.status = status;
       }
 
+    // ─────────────────────────────────────────────
+    // SALESPERSON BRANCH
+    // ─────────────────────────────────────────────
     } else {
-      // Sales person: Can only update status (same logic as admin but restricted fields)
       const { status, comments, changedAt } = req.body;
 
       if (!status) {
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: 'Status is required'
-        });
+        return res.status(400).json({ success: false, message: 'Status is required' });
       }
 
       if (status === oldStatus) {
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: 'New status is same as current status'
-        });
+        return res.status(400).json({ success: false, message: 'New status is same as current status' });
       }
 
       if (!VALID_STATUSES.includes(status)) {
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}`
-        });
+        return res.status(400).json({ success: false, message: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` });
       }
 
-      // Same stock logic as admin (copy from above)
-      // [Include the same stock change logic here for salesperson]
-      
+      await applyStockChange(status); // ✅ NOW ACTUALLY RUNS (was missing before)
+
       sale.statusHistory.push({
         previousStatus: oldStatus,
         newStatus: status,
         changedBy: {
-          userId: req.user._id,
+          userId:   req.user._id,
           userName: req.user.name || req.user.email,
           userRole: req.user.role
         },
@@ -1598,12 +1579,11 @@ exports.updateSale = async (req, res) => {
       sale.status = status;
     }
 
-    if (!sale.tenantId) {
-      sale.tenantId = organizationId;
-    }
+    if (!sale.tenantId) sale.tenantId = organizationId;
 
     await sale.save({ session });
     await session.commitTransaction();
+
     await decrementEditSession(req, 'edit', 'sales', req.params.id);
 
     res.json({
@@ -1618,7 +1598,7 @@ exports.updateSale = async (req, res) => {
     console.error('Update sale error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update sale',
+      message: error.message || 'Failed to update sale',
       error: error.message
     });
   } finally {

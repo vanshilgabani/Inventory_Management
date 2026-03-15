@@ -15,6 +15,7 @@ const AllocationModal = ({ isOpen, onClose, product, onSuccess }) => {
   const [loading, setLoading] = useState(false);
   const [allocations, setAllocations] = useState({}); // { "color-size": { accountName: quantity } }
   const [errors, setErrors] = useState({}); // { "color-size": "error message" }
+  const [localProduct, setLocalProduct] = useState(product);
 
   // Fetch marketplace accounts
   useEffect(() => {
@@ -34,6 +35,83 @@ const AllocationModal = ({ isOpen, onClose, product, onSuccess }) => {
       initializeAllocations();
     }
   }, [isOpen, product]);
+
+  useEffect(() => {
+    setLocalProduct(product);
+  }, [product]);
+
+  // ── Exclusion helpers ──────────────────────────────────────────────────────
+const isDesignExcluded = (accountName) =>
+  (localProduct?.excludedAccounts || []).includes(accountName);
+
+const isVariantExcluded = (accountName, color, size) => {
+  const cv = localProduct?.colors?.find(c => c.color === color);
+  const sv = cv?.sizes?.find(s => s.size === size);
+  return (sv?.excludedFromAutoAllocation || []).includes(accountName);
+};
+
+const handleDesignExclusion = async (accountName, exclude) => {
+  try {
+    await fetch(`/api/settings/auto-allocation/${exclude ? 'exclude' : 'include'}-design`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('token')}`
+      },
+      body: JSON.stringify({ design: localProduct.design, accountName })
+    });
+    // Update local state immediately — no full refresh needed
+    setLocalProduct(prev => ({
+      ...prev,
+      excludedAccounts: exclude
+        ? [...(prev.excludedAccounts || []), accountName]
+        : (prev.excludedAccounts || []).filter(a => a !== accountName)
+    }));
+    toast.success(exclude
+      ? `${accountName} excluded from all ${localProduct.design} variants`
+      : `${accountName} re-included for ${localProduct.design}`
+    );
+  } catch (err) {
+    toast.error('Failed to update exclusion');
+  }
+};
+
+const handleVariantExclusion = async (accountName, color, size, exclude) => {
+  try {
+    await fetch(`/api/settings/auto-allocation/${exclude ? 'exclude' : 'include'}-variant`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('token')}`
+      },
+      body: JSON.stringify({ design: localProduct.design, color, size, accountName })
+    });
+    // Update local state immediately
+    setLocalProduct(prev => ({
+      ...prev,
+      colors: prev.colors.map(cv =>
+        cv.color !== color ? cv : {
+          ...cv,
+          sizes: cv.sizes.map(sv =>
+            sv.size !== size ? sv : {
+              ...sv,
+              excludedFromAutoAllocation: exclude
+                ? [...(sv.excludedFromAutoAllocation || []), accountName]
+                : (sv.excludedFromAutoAllocation || []).filter(a => a !== accountName)
+            }
+          )
+        }
+      )
+    }));
+    toast.success(exclude
+      ? `${accountName} excluded from ${color}-${size}`
+      : `${accountName} re-included for ${color}-${size}`
+    );
+  } catch (err) {
+    toast.error('Failed to update exclusion');
+  }
+};
+// ───────────────────────────────────────────────────────────────────────────
 
   // Initialize allocations from existing data
   const initializeAllocations = () => {
@@ -256,7 +334,7 @@ const handleSubmit = async () => {
   if (!product) return null;
 
   // Get active colors for this product
-  const activeColors = product.colors?.filter(colorData => 
+  const activeColors = localProduct.colors?.filter(colorData => 
     colorPalette.some(c => c.colorName === colorData.color)
   ) || [];
 
@@ -323,8 +401,26 @@ const handleSubmit = async () => {
                       <th className="px-4 py-2 text-center font-medium text-gray-700 w-24">Reserved</th>
                       {marketplaceAccounts.map(account => (
                         <th key={account._id} className="px-4 py-2 text-center font-medium text-gray-700 w-32">
-                          {account.accountName}
-                        </th>
+                        <div className="space-y-1">
+                          <span>{account.accountName}</span>
+                          {/* Design-level exclusion toggle */}
+                          <div>
+                            <button
+                              onClick={() => handleDesignExclusion(account.accountName, !isDesignExcluded(account.accountName))}
+                              className={`text-[10px] px-1.5 py-0.5 rounded font-semibold transition-all ${
+                                isDesignExcluded(account.accountName)
+                                  ? 'bg-orange-100 text-orange-600 hover:bg-orange-200'
+                                  : 'bg-gray-100 text-gray-400 hover:bg-orange-50 hover:text-orange-500'
+                              }`}
+                              title={isDesignExcluded(account.accountName)
+                                ? `Re-include for all ${localProduct?.design} variants`
+                                : `Exclude from all ${localProduct?.design} variants`}
+                            >
+                              {isDesignExcluded(account.accountName) ? '🚫 Design Excl.' : '🚫 Excl. Design'}
+                            </button>
+                          </div>
+                        </div>
+                      </th>
                       ))}
                       {<th className="px-4 py-2 text-center font-medium text-gray-700 w-24">Pool</th>}
                       <th className="px-4 py-2 text-center font-medium text-gray-700 w-16">Status</th>
@@ -353,46 +449,83 @@ const handleSubmit = async () => {
 
                             {/* Account Inputs - UPDATED */}
                             {marketplaceAccounts.map(account => {
-                              // ✅ Get existing allocation for this account
                               const existingAlloc = sizeData.reservedAllocations?.find(
                                 a => a.accountName === account.accountName
                               );
-                              const currentQty = existingAlloc?.quantity || 0;
-                              const adding = allocations[key]?.[account.accountName] || 0;
+                              const currentQty  = existingAlloc?.quantity || 0;
+                              const adding      = allocations[key]?.[account.accountName] || 0;
+                              const dExcluded   = isDesignExcluded(account.accountName);
+                              const vExcluded   = isVariantExcluded(account.accountName, colorData.color, sizeData.size);
+
+                              // If design excluded — show badge, no input
+                              if (dExcluded) {
+                                return (
+                                  <td key={account._id} className="px-4 py-3 text-center">
+                                    <span className="text-[10px] bg-orange-100 text-orange-600 px-2 py-0.5 rounded font-semibold">
+                                      Design Excluded
+                                    </span>
+                                  </td>
+                                );
+                              }
 
                               return (
                                 <td key={account._id} className="px-4 py-3">
                                   <div className="space-y-1">
-                                    <div className="flex items-center gap-1">
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        value={allocations[key]?.[account.accountName] || ''}
-                                        onChange={(e) => handleAllocationChange(
-                                          colorData.color,
-                                          sizeData.size,
-                                          account.accountName,
-                                          e.target.value
-                                        )}
-                                        className="w-full px-2 py-1 border rounded text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                                        placeholder={currentQty > 0 ? `${currentQty}` : '0'} 
-                                      />
-                                      {stats.pool > 0 && (
+
+                                    {vExcluded ? (
+                                      // Variant excluded — show badge + re-include button
+                                      <div className="text-center space-y-1">
+                                        <span className="text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded font-semibold block">
+                                          Variant Excluded
+                                        </span>
                                         <button
-                                          onClick={() => handleQuickFill(colorData.color, sizeData.size, account.accountName)}
-                                          className="text-blue-500 hover:text-blue-700 text-xs"
-                                          title="Add all pool"
+                                          onClick={() => handleVariantExclusion(account.accountName, colorData.color, sizeData.size, false)}
+                                          className="text-[10px] text-blue-500 hover:underline"
                                         >
-                                          +
+                                          Re-include
                                         </button>
-                                      )}
-                                    </div>
-                                    {/* Show calculation when user types */}
-                                    {adding > 0 && (
-                                      <p className="text-xs text-gray-600 text-center">
-                                        {currentQty} + {adding} = {currentQty + adding}
-                                      </p>
+                                      </div>
+                                    ) : (
+                                      // Normal input + variant exclude button
+                                      <>
+                                        <div className="flex items-center gap-1">
+                                          <input
+                                            type="number"
+                                            min="0"
+                                            value={allocations[key]?.[account.accountName] || ''}
+                                            onChange={(e) => handleAllocationChange(
+                                              colorData.color, sizeData.size,
+                                              account.accountName, e.target.value
+                                            )}
+                                            className="w-full px-2 py-1 border rounded text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                            placeholder={currentQty > 0 ? `${currentQty}` : '0'}
+                                          />
+                                          {stats.pool > 0 && (
+                                            <button
+                                              onClick={() => handleQuickFill(colorData.color, sizeData.size, account.accountName)}
+                                              className="text-blue-500 hover:text-blue-700 text-xs"
+                                              title="Add all pool"
+                                            >
+                                              +
+                                            </button>
+                                          )}
+                                        </div>
+                                        {adding > 0 && (
+                                          <p className="text-xs text-gray-600 text-center">
+                                            {currentQty} + {adding} = {currentQty + adding}
+                                          </p>
+                                        )}
+                                        {/* Variant-level exclude button */}
+                                        <button
+                                          onClick={() => handleVariantExclusion(account.accountName, colorData.color, sizeData.size, true)}
+                                          className="text-[10px] text-gray-400 hover:text-red-500 block w-full text-center transition-colors"
+                                          title="Exclude this account from auto allocation for this variant only"
+                                        >
+                                          ⚡ Excl. Variant
+                                        </button>
+                                      </>
                                     )}
+
                                   </div>
                                 </td>
                               );

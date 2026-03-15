@@ -18,7 +18,8 @@ const transferSchema = new mongoose.Schema({
       'marketplaceorder',    // Reserved stock used for marketplace sale
       'emergencyuse',        // Main → Reserved (auto during marketplace order)
       'emergencyborrow',     // Reserved → Main (auto during wholesale/direct)
-      'internal_transfer'
+      'internal_transfer',
+      'autoallocation'
     ],
     required: true
   },

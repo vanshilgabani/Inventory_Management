@@ -11,18 +11,18 @@ const marketplaceAccountSchema = new mongoose.Schema({
     appSecret: { type: String, default: null },
     locationId: { type: String, default: null },
     syncTime: { type: String, default: '14:00' },
-    syncFrequency: { 
-      type: String, 
+    syncFrequency: {
+      type: String,
       enum: ['daily', 'twice_daily'],
-      default: 'daily' 
+      default: 'daily'
     },
     secondSyncTime: { type: String, default: '20:00' },
     autoSyncEnabled: { type: Boolean, default: false },
     lastSyncAt: { type: Date, default: null },
-    lastSyncStatus: { 
-      type: String, 
+    lastSyncStatus: {
+      type: String,
       enum: ['success', 'failed', null],
-      default: null 
+      default: null
     },
     lastSyncError: { type: String, default: null }
   }
@@ -45,11 +45,10 @@ const colorPaletteSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// ✅ NEW: Size Configuration Schema
 const sizeSchema = new mongoose.Schema({
-  name: { 
-    type: String, 
-    required: true, 
+  name: {
+    type: String,
+    required: true,
     trim: true,
     uppercase: true,
     maxlength: 10
@@ -107,8 +106,8 @@ const companySchema = new mongoose.Schema({
     branch: String
   },
   logo: String,
-    signature: {
-    image: { type: String, default: '' },        // Base64 PNG string
+  signature: {
+    image: { type: String, default: '' },
     enabledForChallans: { type: Boolean, default: false },
     enabledForBills: { type: Boolean, default: false }
   },
@@ -116,37 +115,48 @@ const companySchema = new mongoose.Schema({
   isActive: { type: Boolean, default: true }
 });
 
-// ✅ NEW: Permission configuration per salesperson
 const salespersonPermissionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   userName: String,
   email: String,
-  
-  // Permission limits
-  maxChanges: { type: Number, min: 1 },  // null = infinite
+  maxChanges: { type: Number, min: 1 },
   isInfinite: { type: Boolean, default: false },
   timeWindowMinutes: { type: Number, required: true, min: 1 },
-  
-  // Permission level (Feature 5)
-  permissionLevel: { 
-    type: String, 
+  permissionLevel: {
+    type: String,
     enum: ['level1', 'level2', 'level3'],
     default: 'level2'
   },
-  
-  // Status
   isActive: { type: Boolean, default: true },
-  
-  // Stats for smart auto-approve
   stats: {
     totalSessionsGranted: { type: Number, default: 0 },
     totalChangesUsed: { type: Number, default: 0 },
-    averageTimeUsage: { type: Number, default: 0 }, // 0-1 (percentage)
+    averageTimeUsage: { type: Number, default: 0 },
     extensionRequests: { type: Number, default: 0 },
     extensionApprovals: { type: Number, default: 0 },
     lastSessionDate: Date
   }
 });
+
+// ─── NEW: Auto Allocation config schema ───────────────────────────────────────
+const autoAllocationSchema = new mongoose.Schema({
+  enabled: { type: Boolean, default: false },
+
+  // How many past days of sales to analyse for share calculation
+  periodDays: { type: Number, default: 7, min: 1, max: 365 },
+
+  // Units given to a brand-new account that has zero sales history for a variant
+  newAccountInitialStock: { type: Number, default: 10, min: 0 },
+
+  // Minimum minutes that must pass between two auto-allocations for the same variant
+  // Prevents rapid re-triggers in edge cases
+  rateLimitMinutes: { type: Number, default: 60, min: 1 },
+
+  // true  → allocation runs immediately without any preview step
+  // false → (reserved for future preview flow, currently always runs direct)
+  directMode: { type: Boolean, default: true }
+});
+// ──────────────────────────────────────────────────────────────────────────────
 
 const settingsSchema = new mongoose.Schema({
   organizationId: {
@@ -163,10 +173,8 @@ const settingsSchema = new mongoose.Schema({
   phone: { type: String, default: '' },
   gstNumber: { type: String, default: '' },
 
-  // Global settings
   gstPercentage: { type: Number, default: 5, min: 0, max: 100 },
 
-  // ✅ NEW: Dynamic size configuration (replaces enabledSizes)
   sizes: {
     type: [sizeSchema],
     default: [
@@ -182,95 +190,94 @@ const settingsSchema = new mongoose.Schema({
     type: [String],
     default: ['S', 'M', 'L', 'XL', 'XXL']
   },
+
   marketplaceAccounts: { type: [marketplaceAccountSchema], default: [] },
+
   stockThresholds: {
     type: stockThresholdsSchema,
     default: { globalThreshold: 10, designOverrides: [] }
   },
+
   notifications: { type: notificationsSchema, default: {} },
+
   colorPalette: {
     type: [colorPaletteSchema],
     default: [
-      { colorName: 'Black', colorCode: '000000', isActive: true, displayOrder: 0 },
-      { colorName: 'Green', colorCode: '22c55e', isActive: true, displayOrder: 1 },
+      { colorName: 'Black',      colorCode: '000000', isActive: true, displayOrder: 0 },
+      { colorName: 'Green',      colorCode: '22c55e', isActive: true, displayOrder: 1 },
       { colorName: 'Light Grey', colorCode: 'd1d5db', isActive: true, displayOrder: 2 },
-      { colorName: 'Dark Grey', colorCode: '4b5563', isActive: true, displayOrder: 3 },
-      { colorName: 'Khaki', colorCode: 'a16207', isActive: true, displayOrder: 4 }
+      { colorName: 'Dark Grey',  colorCode: '4b5563', isActive: true, displayOrder: 3 },
+      { colorName: 'Khaki',      colorCode: 'a16207', isActive: true, displayOrder: 4 }
     ]
   },
 
-  // Stock lock
   stockLockEnabled: { type: Boolean, default: false },
-  stockLockValue: { type: Number, default: 0, min: 0 },
+  stockLockValue:   { type: Number,  default: 0, min: 0 },
   maxStockLockThreshold: { type: Number, default: 0, min: 0 },
 
-  // ✅ UPDATED: Edit permissions
   editPermissions: {
     enabled: { type: Boolean, default: false },
     salespersons: { type: [salespersonPermissionSchema], default: [] },
-    
-    // Global settings
     enableUndo: { type: Boolean, default: true },
     undoWindowSeconds: { type: Number, default: 30, min: 10, max: 300 },
     enableScreenshots: { type: Boolean, default: true },
     screenshotRetentionDays: { type: Number, default: 90, min: 30 },
     autoApproveExtensions: { type: Boolean, default: false },
-    extensionAutoApproveThreshold: { type: Number, default: 0.7, min: 0, max: 1 } // 70% usage
+    extensionAutoApproveThreshold: { type: Number, default: 0.7, min: 0, max: 1 }
   },
 
-  // Multi-company management
   companies: { type: [companySchema], default: [] },
 
-  // Billing settings
   billingSettings: {
-    autoGenerateBills: { type: Boolean, default: true },
-    billGenerationDay: { type: Number, default: 31 },
-    paymentTermDays: { type: Number, default: 7 },
-    defaultCompanyId: { type: String, default: 'company1' },
-    hsnCode: { type: String, default: '6203' },
-    gstRate: { type: Number, default: 5 },
-    billNumberPrefix: { type: String, default: 'VR' }
+    autoGenerateBills:  { type: Boolean, default: true },
+    billGenerationDay:  { type: Number,  default: 31 },
+    paymentTermDays:    { type: Number,  default: 7 },
+    defaultCompanyId:   { type: String,  default: 'company1' },
+    hsnCode:            { type: String,  default: '6203' },
+    gstRate:            { type: Number,  default: 5 },
+    billNumberPrefix:   { type: String,  default: 'VR' }
   },
 
-  // Bill counter for financial year based numbering
   billCounter: {
     currentFinancialYear: { type: Number, default: null },
-    currentSequence: { type: Number, default: 0 },
-    lastResetDate: { type: Date, default: null },
+    currentSequence:      { type: Number, default: 0 },
+    lastResetDate:        { type: Date,   default: null }
   },
 
-  // Flipkart Integration Settings
   flipkartSettings: {
-    enabled: { type: Boolean, default: false },
-    appId: { type: String, default: null },
-    appSecret: { type: String, default: null },
-    locationId: { type: String, default: null },
-    
-    // ✅ CHANGED: Time-based sync instead of interval
+    enabled:   { type: Boolean, default: false },
+    appId:     { type: String,  default: null },
+    appSecret: { type: String,  default: null },
+    locationId:{ type: String,  default: null },
     autoSyncEnabled: { type: Boolean, default: false },
-    syncTime: { type: String, default: '14:00' }, // Format: "HH:MM" (24-hour)
-    syncFrequency: { 
-      type: String, 
+    syncTime:  { type: String,  default: '14:00' },
+    syncFrequency: {
+      type: String,
       enum: ['daily', 'twice_daily', 'custom_interval'],
-      default: 'daily' 
+      default: 'daily'
     },
-    secondSyncTime: { type: String, default: '20:00' }, // For twice daily option
-    
+    secondSyncTime: { type: String, default: '20:00' },
     lastSyncAt: { type: Date, default: null },
     lastSyncResult: {
-      success: { type: Boolean, default: null },
-      totalProducts: { type: Number, default: 0 },
-      successCount: { type: Number, default: 0 },
-      failedCount: { type: Number, default: 0 },
-      message: { type: String, default: null }
+      success:      { type: Boolean, default: null },
+      totalProducts:{ type: Number,  default: 0 },
+      successCount: { type: Number,  default: 0 },
+      failedCount:  { type: Number,  default: 0 },
+      message:      { type: String,  default: null }
     },
-    
-    // Access token management
-    accessToken: { type: String, default: null },
-    tokenExpiresAt: { type: Date, default: null },
-    refreshToken: { type: String, default: null },
-    refreshTokenExpiresAt: { type: Date, default: null },
+    accessToken:             { type: String, default: null },
+    tokenExpiresAt:          { type: Date,   default: null },
+    refreshToken:            { type: String, default: null },
+    refreshTokenExpiresAt:   { type: Date,   default: null }
   },
+
+  // ─── NEW: Auto Allocation Settings ────────────────────────────────────────
+  autoAllocation: {
+    type: autoAllocationSchema,
+    default: () => ({})   // uses all field defaults defined in autoAllocationSchema
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('Settings', settingsSchema);

@@ -5,6 +5,57 @@ const Settings = require('../models/Settings');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 
+/**
+ * Proportionally deducts `amount` from reservedAllocations.
+ * Takes from largest accounts first to minimize rounding errors.
+ * Mutates sizeVariant.reservedAllocations in-place.
+ */
+const deductFromAllocationsProportionally = (sizeVariant, amountToDeduct) => {
+  const allocations = sizeVariant.reservedAllocations;
+  if (!allocations || allocations.length === 0) return;
+
+  const totalAllocated = allocations.reduce((sum, a) => sum + (a.quantity || 0), 0);
+  if (totalAllocated <= 0) return;
+
+  let remaining = amountToDeduct;
+
+  // Calculate proportional amounts
+  const deductions = allocations.map(alloc => {
+    if (alloc.quantity <= 0) return { accountName: alloc.accountName, deduct: 0 };
+    const proportion = alloc.quantity / totalAllocated;
+    const deduct = Math.min(Math.round(amountToDeduct * proportion), alloc.quantity);
+    return { accountName: alloc.accountName, deduct };
+  });
+
+  // Apply deductions
+  deductions.forEach(({ accountName, deduct }) => {
+    const alloc = allocations.find(a => a.accountName === accountName);
+    if (alloc && deduct > 0) {
+      alloc.quantity -= deduct;
+      remaining -= deduct;
+    }
+  });
+
+  // Handle rounding remainder — take from largest remaining allocation
+  if (remaining > 0) {
+    const sorted = [...allocations]
+      .filter(a => a.quantity > 0)
+      .sort((a, b) => b.quantity - a.quantity);
+
+    for (const ref of sorted) {
+      if (remaining <= 0) break;
+      const alloc = allocations.find(a => a.accountName === ref.accountName);
+      if (alloc && alloc.quantity > 0) {
+        const take = Math.min(alloc.quantity, remaining);
+        alloc.quantity -= take;
+        remaining -= take;
+      }
+    }
+  }
+
+  console.log(`✅ Allocation deduction done. Remaining deduction: ${remaining} (should be 0)`);
+};
+
 // ✅ ADD THIS - Global flag to disable locked stock
 const STOCK_LOCK_DISABLED = true;
 
@@ -768,16 +819,23 @@ const createSaleWithReservedBorrow = async (req, res) => {
         // All from main
         colorVariant.sizes[sizeIndex].currentStock -= remaining;
       } else {
-        // Partial from main, rest from reserved
         const fromMain = mainStock;
         const fromReserved = remaining - fromMain;
-        
+
         colorVariant.sizes[sizeIndex].currentStock = 0;
-        colorVariant.sizes[sizeIndex].reservedStock -= fromReserved;
-        
-        console.log(`✅ Borrowed ${fromReserved} units from Reserved for ${item.design}-${item.color}-${item.size}`);
+        colorVariant.sizes[sizeIndex].reservedStock = Math.max(
+          0, (colorVariant.sizes[sizeIndex].reservedStock || 0) - fromReserved
+        );
+
+        // ✅ FIX: Proportionally deduct from reservedAllocations
+        if (fromReserved > 0) {
+          deductFromAllocationsProportionally(colorVariant.sizes[sizeIndex], fromReserved);
+        }
+
+        console.log(`✅ Borrowed ${fromReserved} from Reserved for ${item.design}-${item.color}-${item.size}`);
       }
 
+      product.markModified('colors'); // ✅ ADD THIS
       await product.save({ session });
     }
 
