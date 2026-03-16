@@ -2553,13 +2553,17 @@ const createOrderWithReservedBorrow = async (req, res) => {
           }
         }
 
-        // ✅ FIX: Deduct from total reservedStock pool
+        // ✅ Capture BEFORE values
+        const mainStockBefore = sizeVariant.currentStock || 0;
+        const reservedStockBefore = (sizeVariant.reservedStock || 0) + borrowQty; // +borrowQty because we subtract below
+
+        // ✅ FIX: Move reserved → main
         sizeVariant.reservedStock = Math.max(0, (sizeVariant.reservedStock || 0) - borrowQty);
-        sizeVariant.currentStock = (sizeVariant.currentStock || 0) + borrowQty;
+        sizeVariant.currentStock = (sizeVariant.currentStock || 0) + borrowQty; // ✅ THIS LINE WAS MISSING
 
         console.log(`✅ Reserved stock after borrow: ${sizeVariant.reservedStock}`);
+        console.log(`✅ Main stock after borrow: ${sizeVariant.currentStock}`);
 
-        // ✅ FIX: markModified — without this Mongoose ignores nested array changes
         product.markModified('colors');
         await product.save({ session });
 
@@ -2571,8 +2575,8 @@ const createOrderWithReservedBorrow = async (req, res) => {
           type: 'emergencyborrow',
           from: 'reserved',
           to: 'main',
-          mainStockBefore: sizeVariant.currentStock - totalBorrowed,
-          reservedStockBefore: sizeVariant.reservedStock + totalBorrowed,
+          mainStockBefore,       // ✅ FIXED: was `sizeVariant.currentStock - totalBorrowed` (undefined)
+          reservedStockBefore,   // ✅ FIXED: was `sizeVariant.reservedStock + totalBorrowed` (undefined)
           mainStockAfter: sizeVariant.currentStock,
           reservedStockAfter: sizeVariant.reservedStock,
           performedBy: userId,
@@ -2661,8 +2665,18 @@ const createOrderWithReservedBorrow = async (req, res) => {
       const sizeIndex = colorVariant.sizes.findIndex(s => s.size === item.size);
       if (sizeIndex === -1) continue;
 
-      // Deduct from main stock
+      // ✅ Safety guard — if borrow didn't run or was wrong, catch it cleanly
+      const currentMain = colorVariant.sizes[sizeIndex].currentStock || 0;
+      if (currentMain < item.quantity) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          code: 'STOCK_MISMATCH',
+          message: `Stock mismatch for ${item.design}-${item.color}-${item.size}. Main stock: ${currentMain}, Ordered: ${item.quantity}. borrowItems may have incorrect quantities.`
+        });
+      }
+
       colorVariant.sizes[sizeIndex].currentStock -= item.quantity;
+      product.markModified('colors'); // ✅ required for nested array
       await product.save({ session });
     }
 

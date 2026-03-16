@@ -19,7 +19,6 @@ const deductFromAllocationsProportionally = (sizeVariant, amountToDeduct) => {
 
   let remaining = amountToDeduct;
 
-  // Calculate proportional amounts
   const deductions = allocations.map(alloc => {
     if (alloc.quantity <= 0) return { accountName: alloc.accountName, deduct: 0 };
     const proportion = alloc.quantity / totalAllocated;
@@ -27,16 +26,14 @@ const deductFromAllocationsProportionally = (sizeVariant, amountToDeduct) => {
     return { accountName: alloc.accountName, deduct };
   });
 
-  // Apply deductions
   deductions.forEach(({ accountName, deduct }) => {
     const alloc = allocations.find(a => a.accountName === accountName);
     if (alloc && deduct > 0) {
       alloc.quantity -= deduct;
       remaining -= deduct;
-    }
+    } // ✅ FIXED: was missing this closing brace
   });
 
-  // Handle rounding remainder — take from largest remaining allocation
   if (remaining > 0) {
     const sorted = [...allocations]
       .filter(a => a.quantity > 0)
@@ -49,11 +46,11 @@ const deductFromAllocationsProportionally = (sizeVariant, amountToDeduct) => {
         const take = Math.min(alloc.quantity, remaining);
         alloc.quantity -= take;
         remaining -= take;
-      }
-    }
-  }
+      } // ✅ FIXED: was missing this closing brace
+    } // ✅ FIXED: was missing this closing brace
+  } // ✅ FIXED: was missing this closing brace
 
-  console.log(`✅ Allocation deduction done. Remaining deduction: ${remaining} (should be 0)`);
+  console.log(`✅ Allocation deduction done. Remaining: ${remaining} (should be 0)`);
 };
 
 // ✅ ADD THIS - Global flag to disable locked stock

@@ -133,8 +133,18 @@ const deleteBulkPayment = async (buyerId, paymentId) => {
   return response.data;
 };
 
-const createOrderWithReservedBorrow = async (data) => {
-  const response = await api.post('/wholesale/with-reserved-borrow', {...data, borrowedFromReserved: true, allowBorrowFromReserved: true });
+const createOrderWithReservedBorrow = async (orderData, insufficientItems) => {
+  const borrowItems = insufficientItems.map(item => ({
+    design: item.design,
+    color: item.color,
+    size: item.size,
+    quantity: item.neededFromReserved  // ✅ what backend uses as borrowQty
+  }));
+
+  const response = await api.post('/wholesale/with-reserved-borrow', {
+    ...orderData,
+    borrowItems  // ✅ backend now receives it, borrowItemsCount won't be undefined
+  });
   return response.data;
 };
 

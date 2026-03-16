@@ -152,7 +152,7 @@ const Wholesale = () => {
 
   const handleBorrowConfirm = async () => {
     try {
-      await wholesaleService.createOrderWithReservedBorrow(pendingOrderData);
+      await wholesaleService.createOrderWithReservedBorrow(pendingOrderData, borrowData.insufficientItems);
       toast.success('Order created! Stock borrowed from Reserved.', { duration: 5000 });
       setShowBorrow(false); setBorrowData(null); setPendingOrderData(null);
       handleFormSuccess();
