@@ -18,15 +18,14 @@ const getSettings = async () => {
 };
 
 // ✅ UPDATED: Get enabled sizes (uses new API endpoint)
-const getEnabledSizes = async () => {
+const getEnabledSizes = async (design = null) => {
   try {
-    const response = await axios.get(`${API_URL}/settings/sizes/enabled`, {
-      headers: getAuthHeader()
-    });
+    const url = design
+      ? `${API_URL}/settings/sizes/enabled?design=${encodeURIComponent(design)}`
+      : `${API_URL}/settings/sizes/enabled`;
+    const response = await axios.get(url, { headers: getAuthHeader() });
     return response.data;
   } catch (error) {
-    console.error('Failed to fetch enabled sizes:', error);
-    // Fallback to default sizes
     return ['S', 'M', 'L', 'XL', 'XXL'];
   }
 };
@@ -50,10 +49,10 @@ const addSize = async (sizeName) => {
 };
 
 // ✅ NEW: Toggle size enable/disable
-const toggleSize = async (sizeName, isEnabled) => {
+const toggleSize = async (sizeName, isEnabled, design = null) => {
   const response = await axios.put(
     `${API_URL}/settings/sizes/${sizeName}/toggle`,
-    { isEnabled },
+    { isEnabled, ...(design && { design }) }, // ← passes design if provided
     { headers: getAuthHeader() }
   );
   return response.data;

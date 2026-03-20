@@ -55,6 +55,7 @@ const sizeSchema = new mongoose.Schema({
   },
   isEnabled: { type: Boolean, default: true },
   displayOrder: { type: Number, default: 0 },
+  disabledForDesigns: [{ type: String }],
   createdAt: { type: Date, default: Date.now }
 });
 

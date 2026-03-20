@@ -565,8 +565,8 @@ const fetchReturnRateByAccount = async (account) => {
                         </td>
                         <td className="py-3.5 px-4 text-center bg-red-50">
                           <span className={`text-base font-bold ${
-                            item.returnRate < 10 ? 'text-green-600'
-                            : item.returnRate < 20 ? 'text-yellow-600'
+                            item.returnRate < 20 ? 'text-green-600'
+                            : item.returnRate < 30 ? 'text-yellow-600'
                             : 'text-red-600'
                           }`}>
                             {item.returnRate}%
@@ -574,8 +574,8 @@ const fetchReturnRateByAccount = async (account) => {
                         </td>
                         <td className="py-3.5 px-4 text-center bg-gray-50">
                           <span className={`text-base font-bold ${
-                            item.rtoRate < 5 ? 'text-green-600'
-                            : item.rtoRate < 15 ? 'text-yellow-600'
+                            item.rtoRate < 15 ? 'text-green-600'
+                            : item.rtoRate < 25 ? 'text-yellow-600'
                             : 'text-red-600'
                           }`}>
                             {item.rtoRate}%

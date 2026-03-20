@@ -8,9 +8,9 @@ const migrateStatusChangedDate = async () => {
     await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to MongoDB');
 
-    const feb25Start = new Date('2026-02-25T00:00:00.000Z');
-    const feb25End   = new Date('2026-02-25T23:59:59.999Z');
-    const feb24      = new Date('2026-02-24T00:00:00.000Z');
+    const feb25Start = new Date('2026-03-18T00:00:00.000Z');
+    const feb25End   = new Date('2026-03-18T23:59:59.999Z');
+    const feb24      = new Date('2026-03-17T00:00:00.000Z');
 
     // Step 1: Find all orders that have a statusHistory entry with changedAt on Feb 25
     const orders = await MarketplaceSale.find({

@@ -59,6 +59,11 @@ const marketplaceSaleSchema = new mongoose.Schema({
     sparse: true,
     index: true,
   },
+  trackingId: {
+    type: String,
+    default: null,
+    trim: true
+  },
   design: {
     type: String,
     required: true
@@ -89,6 +94,12 @@ const marketplaceSaleSchema = new mongoose.Schema({
   stockRestoredAmount: {
     type: Number,
     default: 0
+  },
+  returnedProduct: {
+    design:   { type: String, default: null },
+    color:    { type: String, default: null },
+    size:     { type: String, default: null },
+    quantity: { type: Number, default: null }
   },
   statusHistory: {
     type: [statusHistorySchema],

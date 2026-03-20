@@ -2,10 +2,12 @@ import { useState } from 'react';
 import Modal from '../../common/Modal';
 import toast from 'react-hot-toast';
 import { useColorPalette } from '../../../hooks/useColorPalette';
+import { useEnabledSizes } from '../../../hooks/useEnabledSizes';
 
 const AddReceivingModal = ({ onClose, onSubmit, products, enabledSizes }) => {
   const { colors, getColorsForDesign, getColorCode, loading: colorsLoading } = useColorPalette();
-  
+  const { getSizesForDesign } = useEnabledSizes();
+
   const [designEntries, setDesignEntries] = useState([
     {
       id: Date.now(),
@@ -414,7 +416,7 @@ const AddReceivingModal = ({ onClose, onSubmit, products, enabledSizes }) => {
                           <span className="font-medium text-gray-800">{colorObj.colorName}</span>
                         </div>
                         <div className="grid grid-cols-5 gap-2">
-                          {enabledSizes.map((size) => (
+                          {getSizesForDesign(entry.selectedDesign || entry.newDesignName || null).map((size) => (
                             <div key={size}>
                               <label className="block text-xs text-gray-600 mb-1">
                                 {size}

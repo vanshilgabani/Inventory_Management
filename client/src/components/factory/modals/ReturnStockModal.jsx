@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import Modal from '../../common/Modal';
 import toast from 'react-hot-toast';
+import { useEnabledSizes } from '../../../hooks/useEnabledSizes';
 
 const ReturnStockModal = ({ receipt, onClose, onSubmit, products, enabledSizes }) => {
+  const { getSizesForDesign } = useEnabledSizes();
   const [returnType, setReturnType] = useState('same'); // 'same' or 'exchange'
   const [returnQuantities, setReturnQuantities] = useState({});
   const [returnNotes, setReturnNotes] = useState('');
@@ -159,7 +161,7 @@ const ReturnStockModal = ({ receipt, onClose, onSubmit, products, enabledSizes }
             Borrowed from: <strong>{receipt.sourceName}</strong>
           </p>
           <div className="mt-2 grid grid-cols-5 gap-2">
-            {enabledSizes.map((size) => {
+            {getSizesForDesign(receipt.design).map((size) => {
               const borrowed = quantities[size] || 0;
               const returned = returnedQuantities[size] || 0;
               const remaining = borrowed - returned;
@@ -220,7 +222,7 @@ const ReturnStockModal = ({ receipt, onClose, onSubmit, products, enabledSizes }
               Return Quantities *
             </label>
             <div className="grid grid-cols-5 gap-4">
-              {enabledSizes.map((size) => {
+              {getSizesForDesign(receipt.design).map((size) => {
                 const borrowed = quantities[size] || 0;
                 const returned = returnedQuantities[size] || 0;
                 const remaining = borrowed - returned;
@@ -312,7 +314,7 @@ const ReturnStockModal = ({ receipt, onClose, onSubmit, products, enabledSizes }
                       <div>
                         <label className="block text-sm text-gray-600 mb-2">Quantities</label>
                         <div className="grid grid-cols-5 gap-2">
-                          {enabledSizes.map((size) => (
+                          {getSizesForDesign(receipt.design).map((size) => (
                             <div key={size}>
                               <label className="block text-xs text-gray-500 mb-1">{size}</label>
                               <input

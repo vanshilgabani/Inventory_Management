@@ -3,8 +3,10 @@ import Modal from '../../common/Modal';
 import { FiChevronDown, FiChevronUp, FiCalendar } from 'react-icons/fi';
 import { format } from 'date-fns';
 import { useColorPalette } from '../../../hooks/useColorPalette';
+import { useEnabledSizes } from '../../../hooks/useEnabledSizes';
 
 const BorrowHistoryModal = ({ data, onClose, enabledSizes }) => {
+  const { getSizesForDesign } = useEnabledSizes();
   const [expandedItems, setExpandedItems] = useState({});
   const { getColorCode } = useColorPalette();
 
@@ -123,7 +125,7 @@ const BorrowHistoryModal = ({ data, onClose, enabledSizes }) => {
                               <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
                                 Color
                               </th>
-                              {enabledSizes.map((size) => (
+                              {getSizesForDesign(borrow.design).map((size) => (
                                 <th key={size} className="px-4 py-2 text-center text-xs font-semibold text-gray-600 uppercase">
                                   {size}
                                 </th>

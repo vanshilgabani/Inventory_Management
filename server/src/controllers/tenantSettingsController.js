@@ -17,7 +17,8 @@ exports.getSettings = async (req, res) => {
         userId,
         organizationId: req.user.organizationId || userId,
         enabledModules: ['inventory', 'marketplace-sales'],
-        inventoryMode: 'reserved'
+        inventoryMode: 'main',
+        allowedSidebarItems: []
       });
     }
 

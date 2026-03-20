@@ -86,7 +86,8 @@ const registerUser = async (req, res) => {
           userId: user._id,
           organizationId: user._id,
           enabledModules: ['inventory', 'marketplace-sales'],
-          inventoryMode: 'reserved'
+          inventoryMode: 'main',
+          allowedSidebarItems: []
         });
         
         // ✅ Mark user as tenant (keep role as admin)

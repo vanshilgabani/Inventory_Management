@@ -197,6 +197,13 @@ export const salesService = {
     return response.data;
   },
 
+  searchByTrackingId: async (trackingId, accountName) => {
+    const params = new URLSearchParams({ query: trackingId, field: 'trackingId' });
+    if (accountName && accountName !== 'all') params.append('accountName', accountName);
+    const response = await api.get(`/sales/search?${params.toString()}`);
+    return { found: response.data.data?.length > 0, orders: response.data.data || [] };
+  },
+
   // Import orders from CSV
   async importFromCSV(csvData, accountName, dispatchDate) {
     const payload = {

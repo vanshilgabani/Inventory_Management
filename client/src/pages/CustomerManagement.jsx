@@ -27,6 +27,7 @@ const formatDate = (dateString) => {
 const CustomerManagement = () => {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
+  const isDeveloper = user?.id === '69baa77ed43ec29b9968354b';
   
   const [customers, setCustomers] = useState([]);
   const [stats, setStats] = useState(null);
@@ -45,6 +46,9 @@ const CustomerManagement = () => {
   const [loadingRequests, setLoadingRequests] = useState(false);
   const [requestsFilter, setRequestsFilter] = useState('pending');
   const [generatingInvoiceFor, setGeneratingInvoiceFor] = useState(null);
+  const [indRequests, setIndRequests] = useState([]);
+  const [loadingIndRequests, setLoadingIndRequests] = useState(false);
+  const [indRequestsFilter, setIndRequestsFilter] = useState('pending');
 
   const availableSidebarItems = [
   // ── Main Menu ──────────────────────────────────────────
@@ -62,6 +66,7 @@ const CustomerManagement = () => {
     id: 'inventory',
     label: 'Inventory',
     icon: FiPackage,
+    locked: true,
     section: 'Main Menu',
     color: 'text-violet-600',
     bgColor: 'bg-violet-50',
@@ -71,6 +76,7 @@ const CustomerManagement = () => {
     id: 'factory-receiving',
     label: 'Factory Receiving',
     icon: FiTruck,
+    locked: true,
     section: 'Main Menu',
     color: 'text-green-600',
     bgColor: 'bg-green-50',
@@ -80,6 +86,7 @@ const CustomerManagement = () => {
     id: 'received-from-supplier',
     label: 'Received from Supplier',
     icon: FiTruck,
+    locked: true,
     section: 'Main Menu',
     color: 'text-teal-600',
     bgColor: 'bg-teal-50',
@@ -107,6 +114,7 @@ const CustomerManagement = () => {
     id: 'marketplace-sales',
     label: 'Marketplace Sales',
     icon: FiBarChart2,
+    locked: true,
     section: 'Main Menu',
     color: 'text-indigo-600',
     bgColor: 'bg-indigo-50',
@@ -134,6 +142,7 @@ const CustomerManagement = () => {
     id: 'analytics',
     label: 'Analytics',
     icon: FiBarChart2,
+    locked: true, // always visible, can't be removed
     section: 'Main Menu',
     color: 'text-red-600',
     bgColor: 'bg-red-50',
@@ -163,6 +172,7 @@ const CustomerManagement = () => {
     id: 'subscription',
     label: 'Subscription',
     icon: FiCreditCard,
+    locked: true,
     section: 'Subscription',
     color: 'text-indigo-600',
     bgColor: 'bg-indigo-50',
@@ -201,6 +211,7 @@ const CustomerManagement = () => {
     id: 'deleted-orders',
     label: 'Deleted Orders',
     icon: FiArchive,
+    locked: true,
     section: 'Admin',
     color: 'text-red-600',
     bgColor: 'bg-red-50',
@@ -210,6 +221,7 @@ const CustomerManagement = () => {
     id: 'users',
     label: 'User Management',
     icon: FiUsers,
+    locked: true,
     section: 'Admin',
     color: 'text-purple-600',
     bgColor: 'bg-purple-50',
@@ -219,6 +231,7 @@ const CustomerManagement = () => {
     id: 'settings',
     label: 'Settings',
     icon: FiSettings,
+    locked: true,
     section: 'Settings',
     color: 'text-slate-600',
     bgColor: 'bg-slate-50',
@@ -276,6 +289,12 @@ const CustomerManagement = () => {
     }
   }, [isAdmin, activeTab, requestsFilter]);
 
+  useEffect(() => {
+    if (isDeveloper && activeTab === 'independent-requests') {
+      fetchIndependentRequests(indRequestsFilter);
+    }
+  }, [isDeveloper, activeTab, indRequestsFilter]);
+
   const fetchCustomers = async () => {
     try {
       setLoading(true);
@@ -314,6 +333,27 @@ const CustomerManagement = () => {
       console.error(error);
     } finally {
       setLoadingRequests(false);
+    }
+  };
+
+  // After fetchPaymentRequests() function, ADD:
+  const fetchIndependentRequests = async (status = 'pending') => {
+    try {
+      setLoadingIndRequests(true);
+      const response = await fetch(
+        `${API_URL}/payment/dev/independent-payment-requests?status=${status}`,
+        { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }
+      );
+      const data = await response.json();
+      if (data.success) {
+        setIndRequests(data.data.requests || []);
+      } else {
+        toast.error(data.message || 'Failed to load requests');
+      }
+    } catch (error) {
+      toast.error('Failed to load independent requests');
+    } finally {
+      setLoadingIndRequests(false);
     }
   };
 
@@ -582,6 +622,24 @@ const CustomerManagement = () => {
             count={pendingCount}
             badge={pendingCount > 0}
           />
+          {user?.id === '69baa77ed43ec29b9968354b' && (
+            <button
+              onClick={() => setActiveTab('independent-requests')}
+              className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-all ${
+                activeTab === 'independent-requests'
+                  ? 'bg-purple-600 text-white shadow'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              <FiShield size={16} />
+              Independent Users
+              {indRequests.filter(r => r.status === 'pending').length > 0 && (
+                <span className="bg-purple-200 text-purple-800 text-xs px-2 py-0.5 rounded-full">
+                  {indRequests.filter(r => r.status === 'pending').length}
+                </span>
+              )}
+            </button>
+          )}
         </div>
 
         {/* Content */}
@@ -657,6 +715,12 @@ const CustomerManagement = () => {
             onFilterChange={setRequestsFilter}
             onApprove={handleApprovePayment}
             onReject={handleRejectPayment}
+            isDeveloper={isDeveloper}
+            activeTab={activeTab}
+            indRequests={indRequests}
+            indRequestsFilter={indRequestsFilter}
+            onIndFilterChange={setIndRequestsFilter}
+            loadingIndRequests={loadingIndRequests}
           />
         )}
 
@@ -942,7 +1006,7 @@ const CustomerCard = ({ customer, viewMode, onViewDetails, onEditPermissions, on
 };
 
 // Payment Requests Tab Component
-const PaymentRequestsTab = ({ requests, loading, filter, onFilterChange, onApprove, onReject }) => {
+const PaymentRequestsTab = ({ isDeveloper, requests, loading, filter, onFilterChange, onApprove, onReject, activeTab, indRequests, indRequestsFilter, onIndFilterChange, loadingIndRequests }) => {
   return (
     <div className="space-y-4">
       {/* Filter Buttons */}
@@ -1063,6 +1127,77 @@ const PaymentRequestsTab = ({ requests, loading, filter, onFilterChange, onAppro
               </div>
             </div>
           ))}
+        </div>
+      )}
+      {isDeveloper && activeTab === 'independent-requests' && (
+        <div>
+          {/* Filter buttons — reuse same pattern as payment-requests tab */}
+          <div className="flex gap-2 mb-4">
+            {['pending', 'approved', 'rejected'].map(s => (
+              <button
+                key={s}
+                onClick={() => setIndRequestsFilter(s)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium capitalize transition-all ${
+                  indRequestsFilter === s
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+
+          {loadingIndRequests ? (
+            <div className="text-center py-10 text-gray-500">Loading requests...</div>
+          ) : indRequests.length === 0 ? (
+            <div className="text-center py-10 text-gray-400">No {indRequestsFilter} requests</div>
+          ) : (
+            <div className="space-y-3">
+              {indRequests.map(request => (
+                <div key={request._id} className="bg-white border border-purple-100 rounded-xl p-4 flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold text-gray-800">
+                      {request.userId?.name || request.userDetails?.name}
+                    </p>
+                    <p className="text-sm text-gray-500">{request.userId?.email}</p>
+                    <p className="text-sm text-gray-500">{request.userId?.businessName}</p>
+                    <div className="flex gap-3 mt-1 text-xs text-gray-400">
+                      <span>Plan: <b>{request.planType}</b></span>
+                      <span>₹{request.amount}</span>
+                      <span>{request.paymentMethod?.toUpperCase()}</span>
+                      <span>{formatDate(request.createdAt)}</span>
+                    </div>
+                  </div>
+                  {request.status === 'pending' && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => onApprove(request._id)}
+                        className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => onReject(request._id)}
+                        className="px-3 py-1.5 bg-red-100 text-red-600 rounded-lg text-sm hover:bg-red-200"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  )}
+                  {request.status !== 'pending' && (
+                    <span className={`text-sm font-medium capitalize px-3 py-1 rounded-full ${
+                      request.status === 'approved'
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-red-100 text-red-700'
+                    }`}>
+                      {request.status}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

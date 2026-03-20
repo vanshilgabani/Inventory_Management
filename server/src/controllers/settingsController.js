@@ -1621,29 +1621,23 @@ const getAllSizes = async (req, res) => {
 // @access Private
 const getEnabledSizes = async (req, res) => {
   try {
+    const { design } = req.query; // ← ADD THIS
     let settings = await Settings.findOne({ organizationId: req.organizationId });
-    
-    if (!settings) {
-      return res.json(['S', 'M', 'L', 'XL', 'XXL']);
-    }
 
-    // Check if migration needed
+    if (!settings) return res.json(['S', 'M', 'L', 'XL', 'XXL']);
+
     if (!settings.sizes || settings.sizes.length === 0) {
-      if (settings.enabledSizes && settings.enabledSizes.length > 0) {
-        return res.json(settings.enabledSizes);
-      }
+      if (settings.enabledSizes?.length > 0) return res.json(settings.enabledSizes);
       return res.json(['S', 'M', 'L', 'XL', 'XXL']);
     }
 
-    // Return only enabled sizes, sorted by displayOrder
     const enabledSizes = settings.sizes
-      .filter(s => s.isEnabled)
+      .filter(s => s.isEnabled && (!design || !s.disabledForDesigns?.includes(design))) // ← MODIFIED
       .sort((a, b) => a.displayOrder - b.displayOrder)
       .map(s => s.name);
-    
+
     res.json(enabledSizes);
   } catch (error) {
-    console.error('Get enabled sizes error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -1760,7 +1754,7 @@ const addSize = async (req, res) => {
 const toggleSize = async (req, res) => {
   try {
     const { sizeName } = req.params;
-    const { isEnabled } = req.body;
+    const { isEnabled, design } = req.body;
 
     if (isEnabled === undefined) {
       return res.status(400).json({ message: 'isEnabled field is required' });
@@ -1778,6 +1772,22 @@ const toggleSize = async (req, res) => {
       return res.status(404).json({ message: 'Size not found' });
     }
 
+    if (design) {
+      // ← NEW BLOCK: per-design toggle, no global change
+      if (!size.disabledForDesigns) size.disabledForDesigns = [];
+      if (!isEnabled) {
+        if (!size.disabledForDesigns.includes(design)) size.disabledForDesigns.push(design);
+      } else {
+        size.disabledForDesigns = size.disabledForDesigns.filter(d => d !== design);
+      }
+      settings.markModified('sizes');
+      await settings.save();
+      return res.json({
+        message: `Size "${sizeName}" ${isEnabled ? 'enabled' : 'disabled'} for design "${design}"`,
+        size
+      });
+    }
+    
     // Check if at least one size will remain enabled
     if (!isEnabled) {
       const enabledCount = settings.sizes.filter(s => s.isEnabled).length;
@@ -1825,7 +1835,7 @@ const toggleSize = async (req, res) => {
         }
       }
     }
-
+    
     // Check if any products use this size (warning only)
     const Product = require('../models/Product');
     const productsUsingSize = await Product.countDocuments({

@@ -4,18 +4,19 @@ const User = require('../models/User');
 const protect = async (req, res, next) => {
   let token;
 
+  // Support both Authorization header (normal) and ?token= query param (SSE EventSource)
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    try {
-      // Get token from header
-      token = req.headers.authorization.split(' ')[1];
+    token = req.headers.authorization.split(' ')[1];
+  } else if (req.query.token) {
+    token = req.query.token;
+  }
 
-      // Verify token
+  if (token) {
+    try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-      // ✅ ADD THIS - Set userId from token
       req.userId = decoded.id;
 
-      // Get user from token (including role)
       req.user = await User.findById(decoded.id).select('-password');
 
       if (!req.user) {
@@ -26,16 +27,13 @@ const protect = async (req, res, next) => {
         return res.status(401).json({ message: 'Account is deactivated' });
       }
 
-      // Set organizationId for filtering
       req.organizationId = req.user.organizationId || req.user._id;
       next();
     } catch (error) {
       console.error('Auth middleware error:', error);
       res.status(401).json({ message: 'Not authorized, token failed' });
     }
-  }
-
-  if (!token) {
+  } else {
     res.status(401).json({ message: 'Not authorized, no token' });
   }
 };

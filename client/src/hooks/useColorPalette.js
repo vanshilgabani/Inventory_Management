@@ -11,6 +11,7 @@ export const useColorPalette = () => {
   }, []);
 
   const fetchColors = async () => {
+    
     setLoading(true);
     try {
       const data = await settingsService.getColorPalette();

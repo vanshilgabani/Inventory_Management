@@ -3,6 +3,14 @@ const router = express.Router();
 const paymentController = require('../controllers/paymentController');
 const manualPaymentController = require('../controllers/manualPaymentController'); // NEW
 const { protect } = require('../middleware/auth');
+const isDeveloper = require('../middleware/isDeveloper'); // NEW
+
+router.get(
+  '/dev/independent-payment-requests',
+  protect,
+  isDeveloper,
+  manualPaymentController.getIndependentUserPaymentRequests
+);
 
 // Existing routes
 router.get('/pricing', protect, paymentController.getPricing);

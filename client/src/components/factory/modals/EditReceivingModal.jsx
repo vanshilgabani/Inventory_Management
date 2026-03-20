@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import Modal from '../../common/Modal';
 import toast from 'react-hot-toast';
+import { useEnabledSizes } from '../../../hooks/useEnabledSizes';
 
 const EditReceivingModal = ({ receivings, onClose, onSubmit, enabledSizes }) => {
+  const { getSizesForDesign } = useEnabledSizes();
   const [editData, setEditData] = useState({
     quantities: {},
     batchId: '',
@@ -97,7 +99,7 @@ const EditReceivingModal = ({ receivings, onClose, onSubmit, enabledSizes }) => 
             Quantities *
           </label>
           <div className="grid grid-cols-5 gap-4">
-            {enabledSizes.map((size) => (
+            {getSizesForDesign(receiving.design).map((size) => (
               <div key={size}>
                 <label className="block text-sm text-gray-600 mb-1 font-medium">
                   {size}

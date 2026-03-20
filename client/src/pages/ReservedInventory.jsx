@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   FiLock, 
   FiSearch, 
@@ -11,7 +11,8 @@ import {
   FiArrowRight,
   FiLayers,
   FiX,
-  FiZap
+  FiZap,
+  FiChevronDown 
 } from 'react-icons/fi';
 import Card from '../components/common/Card';
 import SkeletonCard from '../components/common/SkeletonCard';
@@ -29,7 +30,7 @@ import ScrollToTop from '../components/common/ScrollToTop';
 import FlipkartSyncButton from '../components/sync/FlipkartSyncButton';
 
 const ReservedInventory = () => {
-  const { enabledSizes } = useEnabledSizes();
+  const { enabledSizes, getSizesForDesign } = useEnabledSizes();
   const { colors: activeColors, getColorCode } = useColorPalette();
   const navigate = useNavigate();
 
@@ -64,12 +65,25 @@ const ReservedInventory = () => {
   // Export Modal
   const [showExportModal, setShowExportModal] = useState(false);
   const [autoAllocRunning, setAutoAllocRunning] = useState(false);
+  const [showAutoAllocMenu, setShowAutoAllocMenu] = useState(false);
+  const [selectedDesigns, setSelectedDesigns] = useState([]); // [] = all
+  const autoAllocMenuRef = useRef(null);
 
   // Fetch data
   useEffect(() => {
     fetchData();
     fetchMarketplaceAccounts();
   }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (autoAllocMenuRef.current && !autoAllocMenuRef.current.contains(e.target)) {
+        setShowAutoAllocMenu(false);
+      }
+    };
+    if (showAutoAllocMenu) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showAutoAllocMenu]);
 
 const fetchData = async () => {
   setLoading(true);
@@ -104,55 +118,84 @@ const fetchData = async () => {
 };
 
   // ✅ NEW: Fetch marketplace accounts
-const fetchMarketplaceAccounts = async () => {
-  try {
-    const settings = await settingsService.getSettings();
-    const activeAccounts = settings.marketplaceAccounts?.filter(acc => acc.isActive) || [];
-    setMarketplaceAccounts(activeAccounts);
-  } catch (error) {
-    console.error('Failed to fetch marketplace accounts:', error);
-  }
-};
-
-const handleManualAutoAllocation = async () => {
-  if (autoAllocRunning) return;
-  setAutoAllocRunning(true);
-  try {
-    const res = await fetch('/api/auto-allocation/run', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${localStorage.getItem('token')}`
-      },
-      body: JSON.stringify({}) // empty body = run for ALL variants
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to run');
-
-    if (data.summary) {
-      const { ran, skipped, errors } = data.summary;
-      if (ran === 0 && skipped > 0) {
-        toast(`All variants skipped (rate limit or disabled)`, { icon: '⏳' });
-      } else if (errors > 0) {
-        toast.success(`Auto allocation done: ${ran} ran, ${skipped} skipped, ${errors} errors`);
-      } else {
-        toast.success(`Auto allocation complete — ${ran} variant${ran !== 1 ? 's' : ''} reallocated`);
-      }
-    } else {
-      // Single variant response
-      if (data.skipped) {
-        toast(`Skipped: ${data.reason}`, { icon: '⏳' });
-      } else {
-        toast.success('Auto allocation complete');
-      }
+  const fetchMarketplaceAccounts = async () => {
+    try {
+      const settings = await settingsService.getSettings();
+      const activeAccounts = settings.marketplaceAccounts?.filter(acc => acc.isActive) || [];
+      setMarketplaceAccounts(activeAccounts);
+    } catch (error) {
+      console.error('Failed to fetch marketplace accounts:', error);
     }
-    await fetchData(); // refresh inventory display
-  } catch (error) {
-    toast.error(error.message || 'Auto allocation failed');
-  } finally {
-    setAutoAllocRunning(false);
-  }
-};
+  };
+
+  const handleManualAutoAllocation = async (designs = []) => {
+    if (autoAllocRunning) return;
+    setAutoAllocRunning(true);
+    setShowAutoAllocMenu(false);
+
+    try {
+      // designs = [] means run ALL, otherwise run only selected designs
+      if (designs.length === 0) {
+        // Full run — all variants
+        const res = await fetch('/api/auto-allocation/run', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('token')}`
+          },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Failed to run');
+
+        const { ran, skipped, errors } = data.summary;
+        if (ran === 0 && skipped > 0) {
+          toast(`All variants skipped (rate limit or not eligible)`, { icon: '⏳' });
+        } else {
+          toast.success(`Auto allocation complete — ${ran} ran, ${skipped} skipped${errors > 0 ? `, ${errors} errors` : ''}`);
+        }
+
+      } else {
+        // Per-design run — fire one request per design, all variants inside it
+        let totalRan = 0, totalSkipped = 0, totalErrors = 0;
+
+        for (const design of designs) {
+          const product = products.find(p => p.design === design);
+          if (!product) continue;
+
+          for (const cv of (product.colors || [])) {
+            for (const sv of (cv.sizes || [])) {
+              if ((sv.reservedStock || 0) <= 0) continue;
+              try {
+                const res = await fetch('/api/auto-allocation/run', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${localStorage.getItem('token')}`
+                  },
+                  body: JSON.stringify({ design, color: cv.color, size: sv.size })
+                });
+                const data = await res.json();
+                if (data.skipped) totalSkipped++;
+                else totalRan++;
+              } catch {
+                totalErrors++;
+              }
+            }
+          }
+        }
+
+        toast.success(`Auto allocation complete — ${totalRan} ran, ${totalSkipped} skipped${totalErrors > 0 ? `, ${totalErrors} errors` : ''}`);
+      }
+
+      await fetchData();
+    } catch (error) {
+      toast.error(error.message || 'Auto allocation failed');
+    } finally {
+      setAutoAllocRunning(false);
+      setSelectedDesigns([]);
+    }
+  };
 
   // Helper: Time ago
   const getTimeAgo = (date) => {
@@ -216,7 +259,7 @@ const allVariants = useMemo(() => {
         .forEach(color => {
           if (color.sizes && Array.isArray(color.sizes)) {
             color.sizes
-              .filter(s => enabledSizes.includes(s.size))
+              .filter(s => getSizesForDesign(product.design).includes(s.size))
               .forEach(size => {
                 const currentStock = size.currentStock || 0;
                 const lockedStock = size.lockedStock || 0;
@@ -681,18 +724,96 @@ const handleInternalTransferSubmit = async () => {
             <FiRefreshCw className="w-4 h-4" />
             Refresh
           </button>
-          <button
-            onClick={handleManualAutoAllocation}
-            disabled={autoAllocRunning}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium transition-all
-              ${autoAllocRunning
-                ? 'bg-amber-400 cursor-not-allowed'
-                : 'bg-amber-500 hover:bg-amber-600'
-              }`}
-          >
-            <FiZap className={`w-4 h-4 ${autoAllocRunning ? 'animate-pulse' : ''}`} />
-            {autoAllocRunning ? 'Allocating...' : 'Auto Allocate'}
-          </button>
+          {/* Auto Allocate with design picker */}
+          <div className="relative" ref={autoAllocMenuRef}>
+
+            {/* Main button */}
+            <button
+              onClick={() => setShowAutoAllocMenu(prev => !prev)}
+              disabled={autoAllocRunning}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium transition-all
+                ${autoAllocRunning
+                  ? 'bg-amber-400 cursor-not-allowed'
+                  : 'bg-amber-500 hover:bg-amber-600'
+                }`}
+            >
+              <FiZap className={`w-4 h-4 ${autoAllocRunning ? 'animate-pulse' : ''}`} />
+              {autoAllocRunning ? 'Allocating...' : 'Auto Allocate'}
+              <FiChevronDown className="w-3.5 h-3.5 ml-1" />
+            </button>
+
+            {/* Dropdown */}
+            {showAutoAllocMenu && !autoAllocRunning && (
+              <div className="absolute right-0 top-full mt-2 w-72 bg-white rounded-xl shadow-2xl
+                              border border-gray-200 z-50 overflow-hidden">
+
+                {/* Header */}
+                <div className="px-4 py-3 bg-amber-50 border-b border-amber-200">
+                  <p className="text-sm font-bold text-amber-900">Select Designs to Allocate</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    Pick specific designs or run for all
+                  </p>
+                </div>
+
+                {/* Design list */}
+                <div className="max-h-60 overflow-y-auto divide-y divide-gray-100">
+                  {uniqueDesigns.map(design => (
+                    <label
+                      key={design}
+                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50
+                                cursor-pointer transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedDesigns.includes(design)}
+                        onChange={() =>
+                          setSelectedDesigns(prev =>
+                            prev.includes(design)
+                              ? prev.filter(d => d !== design)
+                              : [...prev, design]
+                          )
+                        }
+                        className="w-4 h-4 accent-amber-500 rounded"
+                      />
+                      <span className="text-sm font-medium text-gray-800">{design}</span>
+                      {/* Show reserved units for this design */}
+                      <span className="ml-auto text-xs text-gray-400">
+                        {allVariants
+                          .filter(v => v.design === design)
+                          .reduce((sum, v) => sum + v.reservedStock, 0)} R
+                      </span>
+                    </label>
+                  ))}
+                </div>
+
+                {/* Footer actions */}
+                <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 flex gap-2">
+                  <button
+                    onClick={() => handleManualAutoAllocation(selectedDesigns)}
+                    disabled={autoAllocRunning}
+                    className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 text-white
+                              rounded-lg text-sm font-semibold transition-colors"
+                  >
+                    {selectedDesigns.length === 0
+                      ? `Run All (${uniqueDesigns.length} designs)`
+                      : `Run ${selectedDesigns.length} design${selectedDesigns.length > 1 ? 's' : ''}`
+                    }
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedDesigns([]);
+                      setShowAutoAllocMenu(false);
+                    }}
+                    className="px-3 py-2 border border-gray-300 text-gray-600 rounded-lg
+                              text-sm hover:bg-gray-100 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+
+              </div>
+            )}
+          </div>
           {/*<FlipkartSyncButton />*/}
         </div>
       </div>
@@ -1103,8 +1224,7 @@ const handleInternalTransferSubmit = async () => {
 
                               {/* Size Input Grid */}
                               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-                                {colorData.sizes
-                                  ?.filter(s => enabledSizes.includes(s.size))
+                                {colorData.sizes?.filter(s => getSizesForDesign(product.design).includes(s.size))
                                   .map((sizeData) => {
                                     const key = `${product._id}-${colorData.color}-${sizeData.size}`;
                                     

@@ -23,8 +23,8 @@ import UseLockModal     from '../components/WholesaleOrder/modals/UseLockModal';
 import BuyerListModal   from '../components/WholesaleOrder/modals/BuyerListModal';
 
 const Wholesale = () => {
-  const { isAdmin }                                  = useAuth();
-  const { enabledSizes }                             = useEnabledSizes();
+  const { isAdmin } = useAuth();
+  const { enabledSizes, getSizesForDesign } = useEnabledSizes();
   const { colors, getColorsForDesign, getColorCode } = useColorPalette();
   const [autoOpenDrafts, setAutoOpenDrafts] = useState(false);
 
@@ -231,6 +231,7 @@ const Wholesale = () => {
         onUseLockNeeded={handleUseLockNeeded}
         onClose={() => { setShowForm(false); setEditingOrder(null); setAutoOpenDrafts(false);}}
         clearAllDrafts={clearAllDrafts}
+        getSizesForDesign={getSizesForDesign}
       />
 
       <OrderDetailModal

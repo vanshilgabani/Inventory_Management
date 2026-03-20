@@ -23,7 +23,7 @@ import { groupByDate, groupByBorrower, calculateStats } from '../components/fact
 
 const FactoryReceiving = () => {
   const { user } = useAuth();
-  const { enabledSizes, loading: sizesLoading } = useEnabledSizes();
+  const { enabledSizes, getSizesForDesign, loading: sizesLoading } = useEnabledSizes();
 
   // ===== STATE MANAGEMENT =====
   const [activeTab, setActiveTab] = useState('factory');
@@ -141,7 +141,7 @@ const handleAddReceiving = async (receivingData) => {
               color: color,
               wholesalePrice: receivingData.wholesalePrice || 0,
               retailPrice: receivingData.retailPrice || 0,
-              sizes: enabledSizes.map((size) => ({
+              sizes: getSizesForDesign(design).map((size) => ({
                 size: size,
                 currentStock: receivingData.quantities[size] || 0,
                 reorderPoint: 20,
@@ -164,7 +164,7 @@ const handleAddReceiving = async (receivingData) => {
               color: color,
               wholesalePrice: receivingData.wholesalePrice || 0,
               retailPrice: receivingData.retailPrice || 0,
-              sizes: enabledSizes.map((size) => ({
+              sizes: getSizesForDesign(design).map((size) => ({
                 size: size,
                 currentStock: receivingData.quantities[size] || 0,
                 reorderPoint: 20,
@@ -181,7 +181,7 @@ const handleAddReceiving = async (receivingData) => {
           const colorIndex = existingProduct.colors.findIndex((c) => c.color === color);
           const updatedColors = [...existingProduct.colors];
           
-          updatedColors[colorIndex].sizes = enabledSizes.map((size) => {
+          updatedColors[colorIndex].sizes = getSizesForDesign(design).map((size) => {
             const existingSize = updatedColors[colorIndex].sizes.find((s) => s.size === size);
             const currentStock = existingSize?.currentStock || 0;
             const addingQty = receivingData.quantities[size] || 0;
@@ -379,6 +379,7 @@ const handleAddReceiving = async (receivingData) => {
             onDelete={handleDeleteReceiving}
             filters={factoryFilters}
             onFilterChange={setFactoryFilters}
+            getSizesForDesign={getSizesForDesign}
           />
         )}
 
@@ -393,6 +394,7 @@ const handleAddReceiving = async (receivingData) => {
             products={products}
             filters={borrowedFilters}
             onFilterChange={setBorrowedFilters}
+            getSizesForDesign={getSizesForDesign}
           />
         )}
       </div>

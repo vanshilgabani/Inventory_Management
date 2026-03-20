@@ -5,7 +5,8 @@ const {
   triggerManualAllocation,
   getNotifications,
   dismissNotification,
-  dismissAllNotifications
+  dismissAllNotifications,
+  streamNotifications
 } = require('../controllers/autoAllocationController');
 
 // ── Manual trigger ────────────────────────────────────────────────────────────
@@ -13,6 +14,7 @@ const {
 // Body: { design, color, size } → single variant
 // Body: {}                      → all variants with reserved stock > 0
 router.post('/run', protect, triggerManualAllocation);
+router.get('/stream', protect, streamNotifications);
 
 // ── Fetch notifications ───────────────────────────────────────────────────────
 // GET /api/auto-allocation/notifications?dismissed=false   (active — default)

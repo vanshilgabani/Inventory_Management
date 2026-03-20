@@ -8,6 +8,7 @@ import {
   FiPlus, FiTrash2, FiCopy, FiChevronDown, FiChevronRight, FiCheckCircle
 } from 'react-icons/fi';
 import { useColorPalette } from '../../../hooks/useColorPalette';
+import { useEnabledSizes } from '../../../hooks/useEnabledSizes';
 
 // ✅ Convert hex color to subtle rgba background
 const hexToRgba = (hex = '#6b7280', alpha = 0.08) => {
@@ -20,12 +21,13 @@ const hexToRgba = (hex = '#6b7280', alpha = 0.08) => {
 };
 
 // ── Convert flat DB items → grouped form items ─────────────────
-const flatToGrouped = (flatItems, enabledSizes) => {
+const flatToGrouped = (flatItems, enabledSizes, getSizesForDesign) => {
   const map = {};
   flatItems.forEach(item => {
     if (!map[item.design]) {
+      const itemSizes = getSizesForDesign ? getSizesForDesign(item.design) : enabledSizes;
       const pieces = {};
-      enabledSizes.forEach(s => { pieces[s] = 0; });
+      itemSizes.forEach(s => { pieces[s] = 0; });
       map[item.design] = {
         design: item.design, pricePerUnit: item.pricePerUnit,
         selectedColors: [], colorData: {}, isCollapsed: false, isComplete: true,
@@ -34,8 +36,9 @@ const flatToGrouped = (flatItems, enabledSizes) => {
     const g = map[item.design];
     if (!g.selectedColors.includes(item.color)) {
       g.selectedColors.push(item.color);
+      const itemSizes = getSizesForDesign ? getSizesForDesign(item.design) : enabledSizes;
       const pieces = {};
-      enabledSizes.forEach(s => { pieces[s] = 0; });
+      itemSizes.forEach(s => { pieces[s] = 0; });
       g.colorData[item.color] = { mode: 'pieces', sets: 0, pieces };
     }
     if (g.colorData[item.color]?.pieces)
@@ -43,7 +46,6 @@ const flatToGrouped = (flatItems, enabledSizes) => {
   });
   return Object.values(map);
 };
-
 
 const emptyItem = () => ({
   design: '', selectedColors: [], pricePerUnit: 0,
@@ -68,6 +70,7 @@ export default function OrderFormModal({
 }) {
   // ✅ Color palette from hook directly
   const { getColorCode, getColorsForDesign, colors: paletteColors } = useColorPalette();
+  const { getSizesForDesign } = useEnabledSizes(); 
 
   const [formData,     setFormData]     = useState({ ...EMPTY_FORM });
   const [orderItems,   setOrderItems]   = useState([emptyItem()]);
@@ -192,7 +195,7 @@ const scrollToColorInput = (idx) => {
       setGstEnabled(editingOrder.gstEnabled !== false);
 
       if (editingOrder.items?.length > 0 && enabledSizes?.length > 0)
-        setOrderItems(flatToGrouped(editingOrder.items, enabledSizes));
+        setOrderItems(flatToGrouped(editingOrder.items, enabledSizes, getSizesForDesign));
 
       // ✅ FIX 1 — show buyer compact card in edit mode
       if (editingOrder.buyerContact) {
@@ -318,7 +321,7 @@ const debouncedLookup = useMemo(() => debounce(async (mobile) => {
 
   const getTotalPieces = item =>
     item.selectedColors.reduce((t, color) => {
-      const qty = getColorQty(item.colorData[color], enabledSizes || []);
+      const qty = getColorQty(item.colorData[color], getSizesForDesign(item.design) || enabledSizes || []);
       return t + Object.values(qty).reduce((s, q) => s + (Number(q) || 0), 0);
     }, 0);
 
@@ -328,7 +331,7 @@ const debouncedLookup = useMemo(() => debounce(async (mobile) => {
     orderItems.forEach(item => {
       if (!item.design) return;
       item.selectedColors.forEach(color => {
-        const qty = getColorQty(item.colorData[color], enabledSizes || []);
+        const qty = getColorQty(item.colorData[color], getSizesForDesign(item.design) || enabledSizes || []);
         Object.values(qty).forEach(q => { subtotal += (Number(q) || 0) * (item.pricePerUnit || 0); });
       });
     });
@@ -402,7 +405,7 @@ const handleAddItem = () => {
       }
       // ✅ Selecting — PREPEND so latest is always on top
       const pieces = {};
-      (enabledSizes || []).forEach(s => { pieces[s] = 0; });
+      (getSizesForDesign(item.design) || enabledSizes || []).forEach(s => { pieces[s] = 0; });
       return {
         ...item,
         selectedColors: [color, ...item.selectedColors],   // ✅ prepend
@@ -440,13 +443,15 @@ const handleAddItem = () => {
     ));
 
 
+  // ✅ FIXED
   const handleModeChange = (idx, color, mode) => {
-    const pieces = {};
-    (enabledSizes || []).forEach(s => { pieces[s] = 0; });
-    setOrderItems(prev => prev.map((item, i) =>
-      i !== idx ? item
-        : { ...item, colorData: { ...item.colorData, [color]: { mode, sets: 0, pieces } } }
-    ));
+    setOrderItems(prev => prev.map((item, i) => {
+      if (i !== idx) return item;
+      const itemSizes = getSizesForDesign(item.design) || enabledSizes || [];
+      const pieces = {};
+      itemSizes.forEach(s => { pieces[s] = 0; });
+      return { ...item, colorData: { ...item.colorData, [color]: { mode, sets: 0, pieces } } };
+    }));
   };
 
 
@@ -458,8 +463,8 @@ const handleAddItem = () => {
     for (const item of orderItems) {
       if (!item.design) continue;
       for (const color of item.selectedColors) {
-        const qty = getColorQty(item.colorData[color], enabledSizes || []);
-        for (const size of (enabledSizes || [])) {
+        const qty = getColorQty(item.colorData[color], getSizesForDesign(item.design) || enabledSizes || []);
+        for (const size of (getSizesForDesign(item.design) || enabledSizes || [])) {
           const q = Number(qty[size]) || 0;
           if (q > 0) flatItems.push({ design: item.design, color, size, quantity: q, pricePerUnit: item.pricePerUnit });
         }
@@ -502,10 +507,8 @@ const handleAddItem = () => {
 
   if (!show) return null;
 
-  const totals      = calcTotals();
+  const totals = calcTotals();
   const totalPieces = orderItems.reduce((s, item) => s + getTotalPieces(item), 0);
-  const sizes       = enabledSizes || [];
-
 
   return (
     <Modal
@@ -743,7 +746,8 @@ const handleAddItem = () => {
                 {item.isCollapsed && item.isComplete && (
                   <div className="px-4 py-2 bg-white flex flex-wrap gap-2">
                     {item.selectedColors.map(color => {
-                      const qty   = getColorQty(item.colorData[color], sizes);
+                      const itemSizes = getSizesForDesign(item.design) || enabledSizes || []; 
+                      const qty   = getColorQty(item.colorData[color], itemSizes);
                       const total = Object.values(qty).reduce((s, q) => s + q, 0);
                       return (
                         <span key={color} className="inline-flex items-center gap-1 bg-gray-100 rounded-full px-3 py-1 text-xs">
@@ -828,87 +832,94 @@ const handleAddItem = () => {
 
                     {/* Quantities per color */}
                     {item.selectedColors.length > 0 && (
-                    <div className="space-y-3" data-qty-section={idx}>
+                      <div className="space-y-3" data-qty-section={idx}>
                         {item.selectedColors.map(color => {
-                        const cd       = item.colorData[color] || { mode: 'pieces', sets: 0, pieces: {} };
-                        const qtyTotal = Object.values(getColorQty(cd, sizes)).reduce((s, q) => s + q, 0);
-                        const colorHex = getColorCode(color); // ✅ real hex from hook
-                        const isNew = lastAddedColor === color;  
+                          const itemSizes = getSizesForDesign(item.design) || enabledSizes || [];
+                          const cd        = item.colorData[color] || { mode: 'pieces', sets: 0, pieces: {} };
+                          const qtyTotal  = Object.values(getColorQty(cd, itemSizes)).reduce((s, q) => s + q, 0);
+                          const colorHex  = getColorCode(color);
+                          const isNew     = lastAddedColor === color;
 
-                        return (
-                            // ✅ Tinted background + matching border from actual color
+                          return (
                             <div
-                            key={color}
-                            className="border rounded-lg p-3 transition-colors"
-                            style={{
+                              key={color}
+                              className="border rounded-lg p-3 transition-colors"
+                              style={{
                                 backgroundColor: hexToRgba(colorHex, 0.07),
                                 borderColor:     hexToRgba(colorHex, 0.35),
-                                animation: isNew ? 'colorSlideIn 0.3s ease-out' : undefined,
-                                boxShadow: isNew ? `0 0 0 2px ${hexToRgba(colorHex, 0.5)}` : undefined,
-                            }}
+                                animation:       isNew ? 'colorSlideIn 0.3s ease-out' : undefined,
+                                boxShadow:       isNew ? `0 0 0 2px ${hexToRgba(colorHex, 0.5)}` : undefined,
+                              }}
                             >
-                            {/* Color header */}
-                            <div className="flex items-center justify-between mb-3">
+                              {/* Color header */}
+                              <div className="flex items-center justify-between mb-3">
                                 <div className="flex items-center gap-2">
-                                <span
+                                  <span
                                     className="w-4 h-4 rounded-full border border-white shadow-sm"
                                     style={{ background: colorHex }}
-                                />
-                                <span className="font-medium text-gray-800">{color}</span>
-                                <span className="text-xs text-gray-400">{qtyTotal} pcs</span>
+                                  />
+                                  <span className="font-medium text-gray-800">{color}</span>
+                                  <span className="text-xs text-gray-400">{qtyTotal} pcs</span>
                                 </div>
                                 <div className="flex rounded-lg overflow-hidden border border-gray-300">
-                                {['pieces', 'sets'].map(m => (
+                                  {['pieces', 'sets'].map(m => (
                                     <button key={m} type="button" onClick={() => handleModeChange(idx, color, m)}
-                                    className={`px-3 py-1 text-xs font-medium transition-colors ${
+                                      className={`px-3 py-1 text-xs font-medium transition-colors ${
                                         cd.mode === m ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-                                    }`}>
-                                    {m === 'pieces' ? 'Pieces' : 'Sets'}
+                                      }`}>
+                                      {m === 'pieces' ? 'Pieces' : 'Sets'}
                                     </button>
-                                ))}
+                                  ))}
                                 </div>
-                            </div>
+                              </div>
 
-                            {cd.mode === 'sets' ? (
+                              {cd.mode === 'sets' ? (
                                 <div className="flex items-center gap-3">
-                                <span className="text-sm text-gray-500">Sets (each size gets same qty)</span>
-                                <input type="number" min="0" value={cd.sets || ''}
+                                  <span className="text-sm text-gray-500">Sets (each size gets same qty)</span>
+                                  <input
+                                    type="number" min="0" value={cd.sets || ''}
                                     onChange={e => setColorField(idx, color, 'sets', Number(e.target.value) || 0)}
                                     className="w-24 px-2 py-1.5 border border-gray-300 rounded-lg text-center focus:ring-indigo-500 focus:border-indigo-500 bg-white"
                                     placeholder="0"
-                                />
-                                <span className="text-xs text-gray-400">× {sizes.length} = {(cd.sets || 0) * sizes.length} pcs</span>
+                                  />
+                                  <span className="text-xs text-gray-400">
+                                    × {itemSizes.length} = {(cd.sets || 0) * itemSizes.length} pcs
+                                  </span>
                                 </div>
-                            ) : (
-                                <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(sizes.length, 7)}, minmax(0, 1fr))` }}>
-                                {sizes.map(size => {
+                              ) : (
+                                <div
+                                  className="grid gap-2"
+                                  style={{ gridTemplateColumns: `repeat(${Math.min(itemSizes.length, 7)}, minmax(0, 1fr))` }}
+                                >
+                                  {itemSizes.map(size => {
                                     const stock = getStock(item.design, color, size);
                                     const qty   = Number(cd.pieces?.[size]) || 0;
                                     const over  = qty > stock && formData.fulfillmentType === 'warehouse';
                                     return (
-                                    <div key={size} className="text-center">
+                                      <div key={size} className="text-center">
                                         <div className="text-xs text-gray-500 mb-1 font-medium">{size}</div>
-                                        <input type="number" min="0" value={qty || ''}
-                                        onChange={e => setPiecesField(idx, color, size, e.target.value)}
-                                        className={`w-full px-1 py-1.5 border rounded-lg text-center text-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white ${
+                                        <input
+                                          type="number" min="0" value={qty || ''}
+                                          onChange={e => setPiecesField(idx, color, size, e.target.value)}
+                                          className={`w-full px-1 py-1.5 border rounded-lg text-center text-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white ${
                                             over ? 'border-red-400 bg-red-50' : 'border-gray-300'
-                                        }`}
-                                        placeholder="0"
+                                          }`}
+                                          placeholder="0"
                                         />
                                         {formData.fulfillmentType === 'warehouse' && (
-                                        <div className={`text-xs mt-0.5 ${over ? 'text-red-500 font-medium' : 'text-gray-400'}`}>
+                                          <div className={`text-xs mt-0.5 ${over ? 'text-red-500 font-medium' : 'text-gray-400'}`}>
                                             Stock: {stock}
-                                        </div>
+                                          </div>
                                         )}
-                                    </div>
+                                      </div>
                                     );
-                                })}
+                                  })}
                                 </div>
-                            )}
+                              )}
                             </div>
-                        );
+                          );
                         })}
-                    </div>
+                      </div>
                     )}
                   </div>
                 )}

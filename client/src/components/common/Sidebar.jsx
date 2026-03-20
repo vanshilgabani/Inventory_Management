@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { NavLink, Link } from 'react-router-dom';
 import {
   FiHome,
@@ -39,10 +39,14 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
   
   const [expandedSections, setExpandedSections] = useState({
     main: true,
-    subscription: true,
-    admin: true,
+    subscription: false,
+    admin: false,
     analytics: false,
   });
+
+  const subscriptionRef = useRef(null);
+  const adminRef = useRef(null);
+  const analyticsRef = useRef(null);
 
     useEffect(() => {
     if (user?.syncPreference) {
@@ -70,7 +74,7 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
       console.log('🔍 Full API Response:', response.data);
 
       if (response.data.success) {
-        const allowed = response.data.data.allowedSidebarItems || ['dashboard', 'inventory', 'marketplace-sales', 'settings'];
+        const allowed = response.data.data.allowedSidebarItems ?? [];
         setAllowedSidebarItems(allowed);
       }
     } catch (error) {
@@ -82,37 +86,48 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
   };
 
   const toggleSection = (section) => {
-    setExpandedSections((prev) => ({
-      ...prev,
-      [section]: !prev[section],
-    }));
+    const refs = {
+      subscription: subscriptionRef,
+      admin: adminRef,
+      analytics: analyticsRef,
+    };
+
+    setExpandedSections((prev) => {
+      const isExpanding = !prev[section];
+      if (isExpanding && refs[section]?.current) {
+        setTimeout(() => {
+          refs[section].current.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          });
+        }, 100);
+      }
+      return { ...prev, [section]: isExpanding };
+    });
   };
 
   const isItemAllowed = (itemKey) => {
-    // RULE 1: Admin-only items → Check admin role first
-    const item = [...menuItems, ...subscriptionItems, ...adminItems].find(
-      (i) => i.key === itemKey
-    );
-    if (item?.adminOnly && !isAdmin) {
-      return false; // ❌ Sales can't see admin items
-    }
+    // ✅ Developer always sees everything — no restrictions ever
+    if (user?.id === '69baa77ed43ec29b9968354b') return true;
+
+    // RULE 1: Admin-only items → Check role first
+    const allTopLevel = [...menuItems, ...subscriptionItems, ...adminItems];
+    const item =
+      allTopLevel.find((i) => i.key === itemKey) ||
+      allTopLevel.flatMap((i) => i.submenu || []).find((i) => i.key === itemKey);
+
+    if (item?.adminOnly && !isAdmin) return false;
 
     // RULE 2: Supplier → Always show everything
-    if (user?.isSupplier) {
-      return true; // ✅ Supplier sees all
+    if (user?.isSupplier) return true;
+
+    // RULE 3: Restrictions set → Apply them
+    if (allowedSidebarItems.length > 0) {
+      return allowedSidebarItems.includes(itemKey);
     }
 
-    // RULE 3: Customer with restrictions applied → Follow strictly
-    if (
-      user?.linkedSupplier &&
-      allowedSidebarItems &&
-      allowedSidebarItems.length > 0
-    ) {
-      return allowedSidebarItems.includes(itemKey); // ✅ Restricted
-    }
-
-    // RULE 4: Everyone else (independent users, no restrictions) → Show all
-    return true; // ✅ Show everything by default
+    // RULE 4: No restrictions → Show all
+    return true;
   };
 
   // ✅ Menu items with key field
@@ -284,7 +299,32 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
   ];
 
   // FIXED: Filter sections (organization-wide restrictions)
-  const visibleMenuItems = menuItems.filter((item) => isItemAllowed(item.key));
+  const visibleMenuItems = menuItems
+  .map((item) => {
+    if (item.hasSubmenu && item.submenu) {
+      const visibleSubs = item.submenu.filter((sub) => isItemAllowed(sub.key));
+
+      // ✅ Only 1 sub-item allowed → flatten it, replace parent directly
+      if (visibleSubs.length === 1) {
+        return {
+          ...visibleSubs[0],       // use sub-item's path, key, label, badge
+          icon: item.icon,          // keep parent's icon (FiActivity)
+          color: item.color,        // keep parent's color
+          hasSubmenu: false,        // render as plain NavLink, no expand needed
+        };
+      }
+
+      // Both visible → keep collapsible parent as before
+      return { ...item, submenu: visibleSubs };
+    }
+    return item;
+  })
+  .filter((item) => {
+    if (!isItemAllowed(item.key)) return false;
+    if (item.hasSubmenu && item.submenu?.length === 0) return false;
+    return true;
+  });
+
   const visibleSubscriptionItems = subscriptionItems.filter((item) => {
     // Admin-only items still need admin role
     if (item.adminOnly && !isAdmin) return false;
@@ -366,6 +406,7 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
                     <div key={item.key}>
                       {/* Analytics parent button */}
                       <button
+                        ref={analyticsRef}
                         onClick={() => toggleSection('analytics')}
                         className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100 transition-all duration-200"
                         style={{
@@ -463,6 +504,7 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
           {visibleSubscriptionItems.length > 0 && (
             <div className="px-3 mt-4">
               <button
+                ref={subscriptionRef}
                 onClick={() => toggleSection('subscription')}
                 className="flex items-center justify-between w-full px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-gray-700 transition-all duration-200 hover:translate-x-1"
               >
@@ -520,6 +562,7 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
           {visibleAdminItems.length > 0 && (
             <div className="px-3 mt-4 mb-4">
               <button
+                ref={adminRef}
                 onClick={() => toggleSection('admin')}
                 className="flex items-center justify-between w-full px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-gray-700 transition-all duration-200 hover:translate-x-1"
               >

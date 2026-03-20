@@ -8,7 +8,7 @@ import { inventoryService } from '../../services/inventoryService';
 import toast from 'react-hot-toast';
 
 const AllocationModal = ({ isOpen, onClose, product, onSuccess }) => {
-  const { enabledSizes } = useEnabledSizes();
+  const { enabledSizes } = useEnabledSizes(product?.design);
   const { colors: colorPalette, getColorCode } = useColorPalette();
   
   const [marketplaceAccounts, setMarketplaceAccounts] = useState([]);

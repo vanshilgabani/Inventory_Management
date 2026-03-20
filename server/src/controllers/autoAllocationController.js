@@ -7,6 +7,31 @@ const AllocationNotification = require('../models/AllocationNotification');
 const Transfer = require('../models/Transfer');
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SSE CONNECTION MANAGER
+// Keeps one Map of open SSE connections per organization.
+// Key: organizationId string  Value: Set of res objects
+// ─────────────────────────────────────────────────────────────────────────────
+const sseClients = new Map(); // orgId → Set<res>
+
+const addSSEClient = (orgId, res) => {
+  if (!sseClients.has(orgId)) sseClients.set(orgId, new Set());
+  sseClients.get(orgId).add(res);
+};
+
+const removeSSEClient = (orgId, res) => {
+  sseClients.get(orgId)?.delete(res);
+};
+
+const pushToOrg = (orgId, eventName, data) => {
+  const clients = sseClients.get(String(orgId));
+  if (!clients || clients.size === 0) return;
+  const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
+  clients.forEach(res => {
+    try { res.write(payload); } catch (_) { /* client disconnected */ }
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CORE ALGORITHM
 // Exported as a utility so salesController + transferController can call it
 // directly without going through HTTP.
@@ -322,6 +347,10 @@ await Transfer.create({
     periodDaysUsed: periodDays
   });
 
+  pushToOrg(orgId, 'new_allocation', {
+    notification: notification.toObject ? notification.toObject() : notification
+  });
+
   return { skipped: false, notification };
 };
 
@@ -468,10 +497,54 @@ const dismissAllNotifications = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/auto-allocation/stream
+ * SSE endpoint — browser connects once, receives push events instantly
+ */
+const streamNotifications = (req, res) => {
+  const organizationId = String(req.user.organizationId || req.user.id);
+
+  // SSE headers
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disables Nginx buffering on Render/Vercel
+  res.flushHeaders();
+
+  // Send a heartbeat comment every 25s to keep connection alive
+  // (proxies/load balancers drop idle connections after ~30s)
+  const heartbeat = setInterval(() => {
+    try { res.write(': heartbeat\n\n'); } catch (_) {}
+  }, 25000);
+
+  // Register this client
+  addSSEClient(organizationId, res);
+
+  // Send current undismissed notifications immediately on connect
+  // so the banner is populated instantly on page load
+  AllocationNotification.find({ organizationId, dismissed: false })
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .lean()
+    .then(existing => {
+      try {
+        res.write(`event: init\ndata: ${JSON.stringify({ notifications: existing })}\n\n`);
+      } catch (_) {}
+    })
+    .catch(() => {});
+
+  // Cleanup on disconnect
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    removeSSEClient(organizationId, res);
+  });
+};
+
 module.exports = {
   runAutoAllocation,         // utility — imported by salesController & transferController
   triggerManualAllocation,
   getNotifications,
   dismissNotification,
-  dismissAllNotifications
+  dismissAllNotifications,
+  streamNotifications
 };

@@ -4,7 +4,7 @@ const SettingsContext = createContext();
 
 export const SettingsProvider = ({ children }) => {
   const [settings, setSettings] = useState({
-    companyName: 'Veeraa Impex',
+    companyName: 'GarmentFlow',
   });
   const [loading, setLoading] = useState(true);
 

@@ -210,10 +210,12 @@ exports.createSale = async (req, res) => {
   session.startTransaction();
 
   try {
+    let allocationAfterDeduct = undefined;
     const {
       accountName,
       marketplaceOrderId,
       orderItemId,
+      trackingId,
       design,
       color,
       size,
@@ -442,6 +444,7 @@ exports.createSale = async (req, res) => {
       accountName,
       marketplaceOrderId: marketplaceOrderId || `MP-${Date.now()}`,
       orderItemId,
+      trackingId: trackingId || null,   
       design,
       color,
       size,
@@ -536,7 +539,7 @@ exports.createSaleWithMainStock = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { accountName, marketplaceOrderId, orderItemId, design, color, size, quantity, saleDate, status, notes, useMainStock } = req.body;
+    const { accountName, marketplaceOrderId, orderItemId, trackingId, design, color, size, quantity, saleDate, status, notes, useMainStock } = req.body;
     const { organizationId, id: userId } = req.user;
 
     // ✅ Validate flag first
@@ -603,6 +606,7 @@ exports.createSaleWithMainStock = async (req, res) => {
       accountName,
       marketplaceOrderId: marketplaceOrderId || `MP-${Date.now()}`,
       orderItemId: orderItemId,
+      trackingId: trackingId || null,   
       design,
       color,
       size,
@@ -1080,7 +1084,7 @@ exports.getAllSales = async (req, res) => {
 exports.searchSales = async (req, res) => {
   try {
     const organizationId = req.user.organizationId;
-    const { query, accountName, status } = req.query;
+    const { query, accountName, status, field } = req.query;
 
     if (!query || query.trim().length < 2) {
       return res.json({
@@ -1104,13 +1108,17 @@ exports.searchSales = async (req, res) => {
 
     // Search across multiple fields
     const searchTerm = query.trim();
-    filter.$or = [
-      { design: { $regex: searchTerm, $options: 'i' } },
-      { orderItemId: { $regex: searchTerm, $options: 'i' } },
-      { marketplaceOrderId: { $regex: searchTerm, $options: 'i' } },
-      { color: { $regex: searchTerm, $options: 'i' } },
-      { size: { $regex: searchTerm, $options: 'i' } }
-    ];
+    if (field === 'trackingId') {
+      filter.trackingId = { $regex: searchTerm, $options: 'i' };
+    } else {
+      filter.$or = [
+        { design: { $regex: searchTerm, $options: 'i' } },
+        { orderItemId: { $regex: searchTerm, $options: 'i' } },
+        { marketplaceOrderId: { $regex: searchTerm, $options: 'i' } },
+        { color: { $regex: searchTerm, $options: 'i' } },
+        { size: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
 
     // Limit search results to 200 for performance
     const results = await MarketplaceSale.find(filter)
@@ -1277,157 +1285,227 @@ exports.updateSale = async (req, res) => {
     // SHARED STOCK LOGIC (used by both admin + salesperson)
     // ─────────────────────────────────────────────
     const applyStockChange = async (newStatus) => {
-      const product = await Product.findOne({
-        organizationId,
-        design: sale.design,
-        'colors.color': sale.color
-      }).session(session);
-
-      if (!product) {
-        console.warn(`⚠️ Product ${sale.design} not found for stock change`);
-        return;
-      }
+      const product = await Product.findOne({ organizationId, design: sale.design, 'colors.color': sale.color }).session(session);
+      if (!product) { console.warn(`Product ${sale.design} not found for stock change`); return; }
 
       const colorVariant = product.colors.find(c => c.color === sale.color);
-      if (!colorVariant) {
-        console.warn(`⚠️ Color ${sale.color} not found in product ${sale.design}`);
-        return;
-      }
+      if (!colorVariant) { console.warn(`Color ${sale.color} not found in product ${sale.design}`); return; }
 
       const sizeVariant = colorVariant.sizes.find(s => s.size === sale.size);
-      if (!sizeVariant) {
-        console.warn(`⚠️ Size ${sale.size} not found in ${sale.design}-${sale.color}`);
-        return;
-      }
+      if (!sizeVariant) { console.warn(`Size ${sale.size} not found in ${sale.design}-${sale.color}`); return; }
 
-      // Initialize if undefined/null/NaN
       if (typeof sizeVariant.currentStock === 'undefined' || sizeVariant.currentStock === null || isNaN(sizeVariant.currentStock)) {
-        console.warn(`⚠️ currentStock was undefined for ${sale.design}-${sale.color}-${sale.size}, initializing to 0`);
+        console.warn(`currentStock was undefined for ${sale.design}-${sale.color}-${sale.size}, initializing to 0`);
         sizeVariant.currentStock = 0;
       }
 
       const stockRestoringStatuses = ['returned', 'cancelled', 'RTO'];
       const stockDeductingStatuses = ['dispatched'];
-      const noStockChangeStatuses  = ['wrongreturn', 'delivered'];
+      const noStockChangeStatuses = ['wrongreturn', 'delivered'];
 
-      const oldStatusType = stockRestoringStatuses.includes(oldStatus)  ? 'restoring'  :
-                            stockDeductingStatuses.includes(oldStatus)   ? 'deducting'  :
-                            noStockChangeStatuses.includes(oldStatus)    ? 'none'       : 'unknown';
+      const oldStatusType = stockRestoringStatuses.includes(oldStatus) ? 'restoring'
+        : stockDeductingStatuses.includes(oldStatus) ? 'deducting'
+        : noStockChangeStatuses.includes(oldStatus) ? 'none' : 'unknown';
 
-      const newStatusType = stockRestoringStatuses.includes(newStatus)  ? 'restoring'  :
-                            stockDeductingStatuses.includes(newStatus)   ? 'deducting'  :
-                            noStockChangeStatuses.includes(newStatus)    ? 'none'       : 'unknown';
+      const newStatusType = stockRestoringStatuses.includes(newStatus) ? 'restoring'
+        : stockDeductingStatuses.includes(newStatus) ? 'deducting'
+        : noStockChangeStatuses.includes(newStatus) ? 'none' : 'unknown';
 
-      console.log(`📊 Status transition: ${oldStatus} (${oldStatusType}) → ${newStatus} (${newStatusType})`);
-      console.log(`📦 stockRestoredAmount on sale: ${sale.stockRestoredAmount || 0}`);
+      console.log(`Status transition: ${oldStatus}(${oldStatusType}) → ${newStatus}(${newStatusType})`);
+      console.log(`stockRestoredAmount on sale: ${sale.stockRestoredAmount || 0}`);
 
       const inventoryMode = sale.inventoryModeUsed || 'reserved';
 
-      // ─── SCENARIO 1: dispatched/delivered → returned/cancelled/RTO ───
-      // Restore stock back to inventory (only once)
+      // ─── SCENARIO 1: dispatched/delivered → returned/cancelled/RTO ───────────────
+      // Restore stock — but for "returned", restore the product actually received back
       if (newStatusType === 'restoring') {
-        if ((sale.stockRestoredAmount || 0) === 0) {
-          console.log(`✅ SCENARIO 1 — Restoring ${sale.quantity} to ${inventoryMode.toUpperCase()}`);
+        if ((sale.stockRestoredAmount || 0) <= 0) {
 
-          if (inventoryMode === 'main') {
-            sizeVariant.currentStock = (sizeVariant.currentStock || 0) + sale.quantity;
-          } else {
-            // Restore to total reserved pool
-            sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+          // Check if user specified a different product received back
+          const rp = req.body.returnedProduct; // { design, color, size, quantity }
+          const hasDifferentProduct = ['returned', 'RTO'].includes(newStatus) && rp?.design && rp?.color && rp?.size;
 
-            // Also restore to account allocation
-            let allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
-            if (!allocation) {
-              if (!sizeVariant.reservedAllocations) sizeVariant.reservedAllocations = [];
-              allocation = { accountName: sale.accountName, quantity: 0 };
-              sizeVariant.reservedAllocations.push(allocation);
+          if (hasDifferentProduct) {
+            // ── Restore stock for the DIFFERENT product received back ──
+            const restoreQty = parseInt(rp.quantity) || 1;
+
+            const retProduct = await Product.findOne({ design: rp.design, organizationId }).session(session);
+            if (!retProduct) {
+              await session.abortTransaction();
+              throw new Error(`Returned product ${rp.design} not found in inventory`);
             }
-            allocation.quantity += sale.quantity;
-            console.log(`✅ Restored ${sale.quantity} units to account: ${sale.accountName}`);
+
+            const retColorVariant = retProduct.colors.find(c => c.color === rp.color);
+            if (!retColorVariant) {
+              await session.abortTransaction();
+              throw new Error(`Color ${rp.color} not found in ${rp.design}`);
+            }
+
+            const retSizeVariant = retColorVariant.sizes.find(s => s.size === rp.size);
+            if (!retSizeVariant) {
+              await session.abortTransaction();
+              throw new Error(`Size ${rp.size} not found in ${rp.design}-${rp.color}`);
+            }
+
+            if (inventoryMode === 'main') {
+              retSizeVariant.currentStock = (retSizeVariant.currentStock || 0) + restoreQty;
+            } else {
+              retSizeVariant.reservedStock = (retSizeVariant.reservedStock || 0) + restoreQty;
+              // Restore to the same account's allocation
+              let retAlloc = retSizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
+              if (!retAlloc) {
+                if (!retSizeVariant.reservedAllocations) retSizeVariant.reservedAllocations = [];
+                retAlloc = { accountName: sale.accountName, quantity: 0 };
+                retSizeVariant.reservedAllocations.push(retAlloc);
+              }
+              retAlloc.quantity += restoreQty;
+              console.log(`Restored ${restoreQty} units of ${rp.design}-${rp.color}-${rp.size} to account ${sale.accountName}`);
+            }
+
+            retProduct.markModified('colors');
+            await retProduct.save({ session });
+
+            // Save returnedProduct info to the sale document
+            sale.returnedProduct = { design: rp.design, color: rp.color, size: rp.size, quantity: restoreQty };
+            sale.stockRestoredAmount = restoreQty;
+            stockRestored = restoreQty;
+
+          } else {
+            // ── Restore stock for ORIGINAL product (normal return / cancelled / RTO) ──
+            console.log(`SCENARIO 1: Restoring ${sale.quantity} to ${inventoryMode.toUpperCase()}`);
+            if (inventoryMode === 'main') {
+              sizeVariant.currentStock = (sizeVariant.currentStock || 0) + sale.quantity;
+            } else {
+              sizeVariant.reservedStock = (sizeVariant.reservedStock || 0) + sale.quantity;
+              let allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
+              if (!allocation) {
+                if (!sizeVariant.reservedAllocations) sizeVariant.reservedAllocations = [];
+                allocation = { accountName: sale.accountName, quantity: 0 };
+                sizeVariant.reservedAllocations.push(allocation);
+              }
+              allocation.quantity += sale.quantity;
+              console.log(`Restored ${sale.quantity} units to account ${sale.accountName}`);
+            }
+            sale.stockRestoredAmount = sale.quantity;
+            stockRestored = sale.quantity;
+            product.markModified('colors');
+            await product.save({ session });
           }
 
-          sale.stockRestoredAmount = sale.quantity;
-          stockRestored = sale.quantity;
-          product.markModified('colors'); // ✅ CRITICAL
-          await product.save({ session });
         } else {
-          console.log(`⚠️ SCENARIO 1 skipped — stock already restored (${sale.stockRestoredAmount})`);
+          console.log(`SCENARIO 1 skipped - stock already restored: ${sale.stockRestoredAmount}`);
         }
       }
 
-      // ─── SCENARIO 2: returned/cancelled/RTO → dispatched or wrongreturn ───
-      // Un-restore stock (take it back from inventory)
+      // ─── SCENARIO 2: returned/cancelled/RTO → dispatched or wrongreturn ───────────
+      // Un-restore stock (undo the restoration)
       else if (oldStatusType === 'restoring' && (newStatusType === 'deducting' || newStatusType === 'none')) {
         if ((sale.stockRestoredAmount || 0) > 0) {
           const amountToDeduct = sale.stockRestoredAmount;
-          const availableStock = inventoryMode === 'main'
-            ? (sizeVariant.currentStock || 0)
-            : (sizeVariant.reservedStock || 0);
 
-          if (availableStock < amountToDeduct) {
-            await session.abortTransaction();
-            throw new Error(`Insufficient ${inventoryMode} stock to undo restoration. Available: ${availableStock}, Required: ${amountToDeduct}`);
-          }
-
-          console.log(`✅ SCENARIO 2 — Undoing restoration from ${inventoryMode.toUpperCase()}: -${amountToDeduct}`);
-
-          if (inventoryMode === 'main') {
-            sizeVariant.currentStock -= amountToDeduct;
-          } else {
-            sizeVariant.reservedStock -= amountToDeduct;
-            const allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
-            if (allocation) {
-              allocation.quantity -= amountToDeduct;
-              console.log(`✅ Deducted ${amountToDeduct} from account allocation: ${sale.accountName}`);
+          if (sale.returnedProduct?.design) {
+            // Stock was restored for a DIFFERENT product — un-restore from that product
+            const retProduct = await Product.findOne({ design: sale.returnedProduct.design, organizationId }).session(session);
+            if (retProduct) {
+              const retCV = retProduct.colors.find(c => c.color === sale.returnedProduct.color);
+              if (retCV) {
+                const retSV = retCV.sizes.find(s => s.size === sale.returnedProduct.size);
+                if (retSV) {
+                  if (inventoryMode === 'main') {
+                    retSV.currentStock = Math.max(0, (retSV.currentStock || 0) - amountToDeduct);
+                  } else {
+                    retSV.reservedStock = Math.max(0, (retSV.reservedStock || 0) - amountToDeduct);
+                    const retAlloc = retSV.reservedAllocations?.find(a => a.accountName === sale.accountName);
+                    if (retAlloc) retAlloc.quantity = Math.max(0, retAlloc.quantity - amountToDeduct);
+                  }
+                  retProduct.markModified('colors');
+                  await retProduct.save({ session });
+                  console.log(`SCENARIO 2: Un-restored ${amountToDeduct} from ${sale.returnedProduct.design}-${sale.returnedProduct.color}-${sale.returnedProduct.size}`);
+                }
+              }
             }
+            sale.returnedProduct = undefined; // clear it since we're undoing the return
+
+          } else {
+            // Un-restore from ORIGINAL product
+            const availableStock = inventoryMode === 'main' ? (sizeVariant.currentStock || 0) : (sizeVariant.reservedStock || 0);
+            if (availableStock < amountToDeduct) {
+              await session.abortTransaction();
+              throw new Error(`Insufficient ${inventoryMode} stock to undo restoration. Available: ${availableStock}, Required: ${amountToDeduct}`);
+            }
+            console.log(`SCENARIO 2: Undoing restoration from ${inventoryMode.toUpperCase()} -${amountToDeduct}`);
+            if (inventoryMode === 'main') {
+              sizeVariant.currentStock -= amountToDeduct;
+            } else {
+              sizeVariant.reservedStock -= amountToDeduct;
+              const allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
+              if (allocation) allocation.quantity -= amountToDeduct;
+              console.log(`Deducted ${amountToDeduct} from account ${sale.accountName}`);
+            }
+            product.markModified('colors');
+            await product.save({ session });
           }
 
           sale.stockRestoredAmount = 0;
           stockDeducted = amountToDeduct;
-          product.markModified('colors'); // ✅ CRITICAL
-          await product.save({ session });
+
         } else {
-          console.log(`⚠️ SCENARIO 2 skipped — stockRestoredAmount is 0`);
+          console.log(`SCENARIO 2 skipped - stockRestoredAmount is 0`);
         }
       }
 
-      // ─── SCENARIO 3: returned/cancelled/RTO → wrongreturn ───
-      // Same as Scenario 2 but destination is 'none' type
+      // ─── SCENARIO 3: returned/cancelled/RTO → wrongreturn ────────────────────────
       else if (newStatusType === 'none' && oldStatusType === 'restoring') {
         if ((sale.stockRestoredAmount || 0) > 0) {
           const amountToDeduct = sale.stockRestoredAmount;
-          const availableStock = inventoryMode === 'main'
-            ? (sizeVariant.currentStock || 0)
-            : (sizeVariant.reservedStock || 0);
 
-          if (availableStock < amountToDeduct) {
-            await session.abortTransaction();
-            throw new Error(`Insufficient ${inventoryMode} stock. Available: ${availableStock}, Required: ${amountToDeduct}`);
-          }
-
-          console.log(`✅ SCENARIO 3 (wrongreturn) — Undoing restoration: -${amountToDeduct}`);
-
-          if (inventoryMode === 'main') {
-            sizeVariant.currentStock -= amountToDeduct;
-          } else {
-            sizeVariant.reservedStock -= amountToDeduct;
-            const allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
-            if (allocation) {
-              allocation.quantity -= amountToDeduct;
-              console.log(`✅ Deducted ${amountToDeduct} from account: ${sale.accountName}`);
+          if (sale.returnedProduct?.design) {
+            const retProduct = await Product.findOne({ design: sale.returnedProduct.design, organizationId }).session(session);
+            if (retProduct) {
+              const retCV = retProduct.colors.find(c => c.color === sale.returnedProduct.color);
+              if (retCV) {
+                const retSV = retCV.sizes.find(s => s.size === sale.returnedProduct.size);
+                if (retSV) {
+                  if (inventoryMode === 'main') {
+                    retSV.currentStock = Math.max(0, (retSV.currentStock || 0) - amountToDeduct);
+                  } else {
+                    retSV.reservedStock = Math.max(0, (retSV.reservedStock || 0) - amountToDeduct);
+                    const retAlloc = retSV.reservedAllocations?.find(a => a.accountName === sale.accountName);
+                    if (retAlloc) retAlloc.quantity = Math.max(0, retAlloc.quantity - amountToDeduct);
+                  }
+                  retProduct.markModified('colors');
+                  await retProduct.save({ session });
+                }
+              }
             }
+            sale.returnedProduct = undefined;
+          } else {
+            const availableStock = inventoryMode === 'main' ? (sizeVariant.currentStock || 0) : (sizeVariant.reservedStock || 0);
+            if (availableStock < amountToDeduct) {
+              await session.abortTransaction();
+              throw new Error(`Insufficient ${inventoryMode} stock. Available: ${availableStock}, Required: ${amountToDeduct}`);
+            }
+            console.log(`SCENARIO 3: wrongreturn - Undoing restoration -${amountToDeduct}`);
+            if (inventoryMode === 'main') {
+              sizeVariant.currentStock -= amountToDeduct;
+            } else {
+              sizeVariant.reservedStock -= amountToDeduct;
+              const allocation = sizeVariant.reservedAllocations?.find(a => a.accountName === sale.accountName);
+              if (allocation) allocation.quantity -= amountToDeduct;
+              console.log(`Deducted ${amountToDeduct} from account ${sale.accountName}`);
+            }
+            product.markModified('colors');
+            await product.save({ session });
           }
 
           sale.stockRestoredAmount = 0;
           stockDeducted = amountToDeduct;
-          product.markModified('colors'); // ✅ CRITICAL
-          await product.save({ session });
         }
       }
 
-      // ─── SCENARIO 4: All other transitions (no stock change needed) ───
+      // ─── SCENARIO 4: All other transitions — no stock change ─────────────────────
       else {
-        console.log(`ℹ️ SCENARIO 4 — No stock change needed for: ${oldStatusType} → ${newStatusType}`);
+        console.log(`SCENARIO 4: No stock change needed for ${oldStatusType} → ${newStatusType}`);
       }
     };
 
@@ -1436,7 +1514,7 @@ exports.updateSale = async (req, res) => {
     // ─────────────────────────────────────────────
     if (userRole === 'admin') {
       const {
-        accountName, saleDate, marketplaceOrderId, orderItemId,
+        accountName, saleDate, marketplaceOrderId, orderItemId, trackingId,
         design, color, size, quantity, status, notes, comments, changedAt
       } = req.body;
 
@@ -1515,6 +1593,7 @@ exports.updateSale = async (req, res) => {
       if (saleDate)                     sale.saleDate            = new Date(saleDate);
       if (marketplaceOrderId !== undefined) sale.marketplaceOrderId  = marketplaceOrderId;
       if (orderItemId        !== undefined) sale.orderItemId         = orderItemId;
+      if (trackingId !== undefined) sale.trackingId = trackingId;   
       if (notes              !== undefined) sale.notes               = notes;
 
       // Status change
@@ -1948,7 +2027,7 @@ exports.importFromCSV = async (req, res) => {
     const unmappedSKUs = new Set(); // Track SKUs that need mapping
 
     for (const row of csvData) {
-      const { design, color, size, quantity, orderId, orderItemId, sku } = row;
+      const { design, color, size, quantity, orderId, orderItemId, trackingId, sku } = row;
 
       // Check duplicate
       if (existingOrderItemIds.has(orderItemId)) {
@@ -2196,6 +2275,7 @@ exports.importFromCSV = async (req, res) => {
         accountName,
         marketplaceOrderId: orderId,
         orderItemId,
+        trackingId: trackingId || null,   
         design: finalDesign,
         color: matchedColor,
         size: finalSize,

@@ -122,6 +122,10 @@ const Sales = () => {
     showPanel: false
   });
   const [isSearching, setIsSearching] = useState(false);
+  const [trackingInput, setTrackingInput] = useState('');
+  const [isSearchingTracking, setIsSearchingTracking] = useState(false);
+  const trackingTimeoutRef = useRef(null);
+  const [activeSearchField, setActiveSearchField] = useState('order'); 
   const [hoveredOrderId, setHoveredOrderId] = useState(null);
 
   // ============ TIMELINE VIEW ============
@@ -133,6 +137,7 @@ const Sales = () => {
     accountName: '',
     marketplaceOrderId: '',
     orderItemId: '',
+    trackingId: '',   
     design: '',
     color: '',
     size: '',
@@ -141,7 +146,8 @@ const Sales = () => {
     status: 'dispatched',
     notes: '',
     comments: '',
-    statusDate: new Date().toISOString().split('T')[0]
+    statusDate: new Date().toISOString().split('T')[0],
+    returnedProduct: { design: '', color: '', size: '', quantity: 1 } 
   });
 
   // ============ STOCK LOCK REFILL MODAL ============
@@ -784,6 +790,46 @@ const handleSearch = useCallback(async (searchValue) => {
   }
 }, [loadedOrders, selectedAccount, activeTab]);
 
+const handleTrackingSearch = useCallback(async (value) => {
+  if (!value || !value.trim()) {
+    setTrackingInput('');
+    return;
+  }
+  const q = value.trim().toLowerCase();
+
+  // Search locally first in loaded orders
+  const allOrders = Object.values(loadedOrders).flat();
+  const localResults = allOrders.filter(sale =>
+    sale.trackingId?.toLowerCase().includes(q)
+  );
+
+  if (localResults.length > 0) {
+    setActiveSearchField('tracking');
+    setModalOrders(localResults);
+    setShowSearchModal(true);
+    toast.success(`Found ${localResults.length} order(s)`);
+    return;
+  }
+
+  // Not found locally — search backend
+  setIsSearchingTracking(true);
+  try {
+    const result = await salesService.searchByTrackingId(value.trim(), selectedAccount);
+    if (result.found && result.orders.length > 0) {
+      setActiveSearchField('tracking');
+      setModalOrders(result.orders);
+      setShowSearchModal(true);
+      toast.success(`Found ${result.orders.length} order(s)`);
+    } else {
+      toast.error('No orders found for this tracking ID');
+    }
+  } catch (error) {
+    toast.error('Search failed');
+  } finally {
+    setIsSearchingTracking(false);
+  }
+}, [loadedOrders, selectedAccount]);
+
 // ✅ ENHANCED: Clear search filter and refresh normal view
 const clearSearchFilter = () => {
   setSearchInput('');
@@ -1060,6 +1106,7 @@ const handleCSVUpload = (e) => {
           quantity,
           orderId:     row['Order Id'],
           orderItemId: row['ORDER ITEM ID']?.replace(/\s/g, '').trim(),
+          trackingId: row['Tracking ID']?.trim() || null,
           sku,          // ← always include raw SKU so unmapped detection can key on it
         });
 
@@ -1073,22 +1120,6 @@ const handleCSVUpload = (e) => {
           } else {
             preview.productBreakdown.set(variantKey, { design, color, size, quantity, orderCount: 1 });
           }
-        }
-
-        // ✅ Product breakdown for preview
-        const variantKey = `${design}-${color}-${size}`;
-        if (preview.productBreakdown.has(variantKey)) {
-          const existing = preview.productBreakdown.get(variantKey);
-          existing.quantity += quantity;
-          existing.orderCount += 1;
-        } else {
-          preview.productBreakdown.set(variantKey, {
-            design,
-            color,
-            size,
-            quantity,
-            orderCount: 1
-          });
         }
       });
 
@@ -1754,26 +1785,36 @@ const handleSaleSubmit = async (e) => {
 
   try {
     if (editingSale) {
-      // Update existing sale logic (keep as is)
-      console.log('Updating sale:', editingSale._id);
-      const response = await salesService.updateSale(editingSale._id, {
+      console.log('Updating sale:', editingSale.id);
+
+      const updateData = {
         status: saleFormData.status,
         comments: saleFormData.comments,
         changedAt: saleFormData.statusDate,
-      });
+      };
 
-      if (response.stockRestored > 0) {
-        toast.success(`Stock restored: ${response.stockRestored}`);
-      } else if (response.stockDeducted > 0) {
-        toast.success(`Stock deducted: ${response.stockDeducted}`);
-      } else {
-        toast.success('Order updated');
+      // Only include returnedProduct when marking as returned AND all fields filled
+      if (
+        ['returned', 'RTO'].includes(saleFormData.status) &&
+        saleFormData.returnedProduct?.design &&
+        saleFormData.returnedProduct?.color &&
+        saleFormData.returnedProduct?.size
+      ) {
+        updateData.returnedProduct = saleFormData.returnedProduct;
       }
+
+      const response = await salesService.updateSale(editingSale._id, updateData);
+
+      if (response.stockRestored > 0) toast.success(`Stock restored: ${response.stockRestored}`);
+      else if (response.stockDeducted > 0) toast.success(`Stock deducted: ${response.stockDeducted}`);
+      else toast.success('Order updated');
+
       setShowSaleModal(false);
       setIsSubmitting(false);
-fetchStats(); // Refresh stats
-fetchDateSummaries(); // Refresh orders
-    } else {
+      fetchStats();
+      fetchDateSummaries();
+    }
+      else {
       // NEW: Create new sale with reserved stock check
       console.log('Creating new sale:', saleFormData);
       
@@ -1991,6 +2032,7 @@ const handleDelete = async (id) => {
       accountName: sale.accountName,
       marketplaceOrderId: sale.marketplaceOrderId || '',
       orderItemId: sale.orderItemId || '',
+      trackingId: sale.trackingId || '',
       design: sale.design,
       color: sale.color,
       size: sale.size,
@@ -1999,7 +2041,8 @@ const handleDelete = async (id) => {
       status: sale.status,
       notes: sale.notes || '',
       comments: '',
-      statusDate: new Date().toISOString().split('T')[0]
+      statusDate: new Date().toISOString().split('T')[0],
+      returnedProduct: { design: '', color: '', size: '', quantity: 1 }
     });
     setShowSaleModal(true);
   };
@@ -2121,48 +2164,76 @@ const handleDelete = async (id) => {
 
             {/* SEARCH BAR WITH COMPACT BUTTON */}
             <div className="flex items-center gap-2 flex-1 max-w-lg">
+              <div className="flex gap-2">
+
+              {/* Existing search bar — unchanged */}
               <div className="relative flex-1">
-                <FiSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
-                  type="text"
-                  placeholder="Search by Date(26/01/2026), ID"
                   value={searchInput}
-                  onChange={(e) => handleSearchInput(e.target.value)}
-                  onKeyPress={handleSearchKeyPress}
-                  className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  onChange={e => handleSearchInput(e.target.value)}
+                  onKeyDown={handleSearchKeyPress}
+                  placeholder="Order ID, design, color..."
+                  className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                 />
                 {searchInput && (
-                  <button
-                    onClick={clearSearchFilter}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                    title="Clear search"
-                  >
+                  <button onClick={clearSearchFilter} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
                     <FiX />
                   </button>
                 )}
               </div>
+
+              {/* NEW — Tracking ID search bar */}
+              <div className="relative w-52">
+                <FiTruck className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm" />
+                {isSearchingTracking
+                  ? <div className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                  : trackingInput && (
+                      <button
+                        onClick={() => { setTrackingInput(''); }}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      >
+                        <FiX />
+                      </button>
+                    )
+                }
+                <input
+                  value={trackingInput}
+                  onChange={e => setTrackingInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      if (trackingTimeoutRef.current) clearTimeout(trackingTimeoutRef.current);
+                      handleTrackingSearch(trackingInput);
+                    }
+                  }}
+                  placeholder="Tracking ID..."
+                  className="w-full pl-9 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                />
+              </div>
+
+            </div>
               
               {/* COMPACT SEARCH BUTTON */}
               <button
                 onClick={() => {
-                  if (searchTimeoutRef.current) {
-                    clearTimeout(searchTimeoutRef.current);
-                  }
-                  if (searchInput.trim()) {
+                  if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+                  if (trackingInput.trim()) {
+                    handleTrackingSearch(trackingInput);
+                  } else if (searchInput.trim()) {
                     handleSearch(searchInput);
                   }
                 }}
-                disabled={!searchInput.trim() || isSearching}
+                disabled={(!searchInput.trim() && !trackingInput.trim()) || isSearching || isSearchingTracking}
                 className={`
                   p-3 rounded-lg transition-all
-                  ${searchInput.trim() && !isSearching
+                  ${(searchInput.trim() || trackingInput.trim()) && !isSearching && !isSearchingTracking
                     ? 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'
                     : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                   }
                 `}
                 title="Search (or press Enter)"
               >
-                {isSearching ? (
+                {isSearching || isSearchingTracking ? (
                   <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent"></div>
                 ) : (
                   <FiSearch className="text-xl" />
@@ -2829,6 +2900,20 @@ const handleDelete = async (id) => {
                     placeholder="e.g., 336486744619210100"
                   />
                 </div>
+                {/* Tracking ID - shown for both new and edit */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Tracking ID
+                    <span className="text-xs text-gray-400 font-normal ml-1">(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={saleFormData.trackingId}
+                    onChange={e => setSaleFormData(prev => ({ ...prev, trackingId: e.target.value }))}
+                    placeholder="Enter tracking ID"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  />
+                </div>
               </div>
 
               {/* Product Selection */}
@@ -2938,6 +3023,119 @@ const handleDelete = async (id) => {
             </div>
           </div>
 
+          {/* ── Stock Restoration Section — only shows when editing + status = returned ── */}
+          {editingSale && ['returned', 'RTO'].includes(saleFormData.status) && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <FiRotateCcw className="text-red-600 text-sm" />
+                <h4 className="text-sm font-bold text-red-800">Stock Restoration</h4>
+              </div>
+              <p className="text-xs text-red-600 mb-1">
+                Select the product you actually received back. Stock will be restored
+                under <strong>{editingSale.accountName}</strong>'s allocation.
+              </p>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xs text-gray-500">Originally dispatched:</span>
+                <span className="text-xs font-bold bg-white border border-red-200 text-red-700 px-2 py-0.5 rounded-full">
+                  {editingSale.design} · {editingSale.color} · {editingSale.size}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                {/* Design */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Design <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={saleFormData.returnedProduct?.design || ''}
+                    onChange={e => setSaleFormData(prev => ({
+                      ...prev,
+                      returnedProduct: { design: e.target.value, color: '', size: '', quantity: prev.returnedProduct?.quantity || 1 }
+                    }))}
+                    className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm bg-white focus:ring-1 focus:ring-red-400"
+                  >
+                    <option value="">Select Design</option>
+                    {products.map(p => (
+                      <option key={p._id} value={p.design}>{p.design}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Color */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Color <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={saleFormData.returnedProduct?.color || ''}
+                    onChange={e => setSaleFormData(prev => ({
+                      ...prev,
+                      returnedProduct: { ...prev.returnedProduct, color: e.target.value, size: '' }
+                    }))}
+                    disabled={!saleFormData.returnedProduct?.design}
+                    className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm bg-white focus:ring-1 focus:ring-red-400 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                  >
+                    <option value="">Select Color</option>
+                    {products
+                      .find(p => p.design === saleFormData.returnedProduct?.design)
+                      ?.colors.map(c => (
+                        <option key={c.color} value={c.color}>{c.color}</option>
+                      ))}
+                  </select>
+                </div>
+
+                {/* Size */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Size <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={saleFormData.returnedProduct?.size || ''}
+                    onChange={e => setSaleFormData(prev => ({
+                      ...prev,
+                      returnedProduct: { ...prev.returnedProduct, size: e.target.value }
+                    }))}
+                    disabled={!saleFormData.returnedProduct?.color}
+                    className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm bg-white focus:ring-1 focus:ring-red-400 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                  >
+                    <option value="">Select Size</option>
+                    {products
+                      .find(p => p.design === saleFormData.returnedProduct?.design)
+                      ?.colors.find(c => c.color === saleFormData.returnedProduct?.color)
+                      ?.sizes.filter(s => enabledSizes.includes(s.size))
+                      .map(s => (
+                        <option key={s.size} value={s.size}>{s.size}</option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Quantity */}
+              <div className="mt-3 w-28">
+                <label className="block text-xs font-medium text-gray-700 mb-1">Qty to Restore</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={saleFormData.returnedProduct?.quantity || 1}
+                  onChange={e => setSaleFormData(prev => ({
+                    ...prev,
+                    returnedProduct: { ...prev.returnedProduct, quantity: parseInt(e.target.value) || 1 }
+                  }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-red-400"
+                />
+              </div>
+
+              {/* Validation hint */}
+              {(!saleFormData.returnedProduct?.design || !saleFormData.returnedProduct?.color || !saleFormData.returnedProduct?.size) && (
+                <p className="text-xs text-red-500 mt-2 flex items-center gap-1">
+                  <FiAlertCircle className="flex-shrink-0" />
+                  Fill all 3 fields above to enable Save
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Comments */}
           {editingSale && (
             <div>
@@ -2983,8 +3181,15 @@ const handleDelete = async (id) => {
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
-              className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+              disabled={
+                isSubmitting ||
+                (editingSale && ['returned', 'RTO'].includes(saleFormData.status) && (
+                  !saleFormData.returnedProduct?.design ||
+                  !saleFormData.returnedProduct?.color ||
+                  !saleFormData.returnedProduct?.size
+                ))
+              }
+              className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? 'Saving...' : 'Save Order'}
             </button>
@@ -3152,9 +3357,27 @@ const handleDelete = async (id) => {
                           {new Date(h.changedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </p>                        
                         {h.comments && (
-                          <p className="text-sm bg-yellow-50 p-2 mt-1 rounded text-gray-700 italic">
-                            {h.comments}
-                          </p>
+                          <p className="text-sm bg-yellow-50 p-2 mt-1 rounded text-gray-700 italic">{h.comments}</p>
+                        )}
+
+                        {/* Show different product stock restoration info */}
+                        {['returned', 'RTO'].includes(h.newStatus) && viewingHistory.returnedProduct?.design && (
+                          <div className="mt-2 bg-red-50 border border-red-100 rounded-lg p-2 space-y-1">
+                            <div className="flex items-center gap-2">
+                              <FiRotateCcw className="text-red-500 text-xs flex-shrink-0" />
+                              <span className="text-xs text-gray-500">Stock restored for:</span>
+                              <span className="text-xs font-bold text-red-700 bg-white border border-red-200 px-2 py-0.5 rounded-full">
+                                {viewingHistory.returnedProduct.design} · {viewingHistory.returnedProduct.color} · {viewingHistory.returnedProduct.size} × {viewingHistory.returnedProduct.quantity}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <FiPackage className="text-gray-400 text-xs flex-shrink-0" />
+                              <span className="text-xs text-gray-500">Original Order:</span>
+                              <span className="text-xs font-medium text-gray-600 bg-white border border-gray-200 px-2 py-0.5 rounded-full">
+                                {viewingHistory.design} · {viewingHistory.color} · {viewingHistory.size}
+                              </span>
+                            </div>
+                          </div>
                         )}
                       </div>
                     ))}
@@ -3556,7 +3779,7 @@ const handleDelete = async (id) => {
                 setShowSearchModal(false);
                 setModalOrders([]);
               }}
-              title={`Search Results: "${searchQuery}"`}
+              title={`Search Results: "${activeSearchField === 'tracking' ? trackingInput : searchQuery}"`}
               maxWidth="max-w-6xl"
             >
               <div className="space-y-4">
@@ -3569,7 +3792,7 @@ const handleDelete = async (id) => {
                         Found {modalOrders.length} {modalOrders.length === 1 ? 'Order' : 'Orders'}
                       </p>
                       <p className="text-sm text-blue-700">
-                        Searching for: "{searchQuery}"
+                        Searching for: "{activeSearchField === 'tracking' ? trackingInput : searchQuery}"
                       </p>
                     </div>
                   </div>
@@ -3603,7 +3826,7 @@ const handleDelete = async (id) => {
                             ? '0 4px 16px rgba(99,102,241,0.12)'
                             : '0 1px 3px rgba(0,0,0,0.06)',
                           transform: isHovered ? 'translateY(-1px)' : 'translateY(0)',
-                          transition: 'all 0.12s ease',   // was 0.2s — now snappy
+                          transition: 'all 0.1s ease',   // was 0.2s — now snappy
                         }}
                         onMouseEnter={() => setHoveredOrderId(sale._id)}
                         onMouseLeave={() => setHoveredOrderId(null)}
@@ -3625,26 +3848,53 @@ const handleDelete = async (id) => {
 
                               {/* Highlight matching text */}
                               <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                                {/* Order Item ID — clickable to copy */}
                                 <div>
-                                  <span className="text-gray-500">Order Item ID:</span>
-                                  <p className="font-semibold">
-                                    {sale.orderItemId?.toLowerCase().includes(searchQuery.toLowerCase()) ? (
-                                      <span className="bg-yellow-200 px-1 rounded">{sale.orderItemId}</span>
-                                    ) : (
-                                      sale.orderItemId || '-'
-                                    )}
+                                  <span className="text-gray-500">Order Item ID</span>
+                                  <p
+                                    className="font-semibold cursor-pointer hover:text-indigo-600 hover:underline transition-colors"
+                                    title="Click to copy Order Item ID"
+                                    onClick={() => { navigator.clipboard.writeText(sale.orderItemId); toast.success('Order Item ID copied!'); }}
+                                  >
+                                    {activeSearchField === 'order' && searchQuery && sale.orderItemId?.toLowerCase().includes(searchQuery.toLowerCase())
+                                      ? <span className="bg-yellow-200 px-1 rounded">{sale.orderItemId}</span>
+                                      : sale.orderItemId || '-'}
                                   </p>
                                 </div>
+
+                                {/* Marketplace Order ID — clickable to copy */}
                                 <div>
-                                  <span className="text-gray-500">Marketplace Order ID:</span>
-                                  <p className="font-semibold">
-                                    {sale.marketplaceOrderId?.toLowerCase().includes(searchQuery.toLowerCase()) ? (
-                                      <span className="bg-yellow-200 px-1 rounded">{sale.marketplaceOrderId}</span>
-                                    ) : (
-                                      sale.marketplaceOrderId || '-'
-                                    )}
+                                  <span className="text-gray-500">Order ID</span>
+                                  <p
+                                    className="font-semibold cursor-pointer hover:text-indigo-600 hover:underline transition-colors"
+                                    title="Click to copy Marketplace Order ID"
+                                    onClick={() => { navigator.clipboard.writeText(sale.marketplaceOrderId); toast.success('Marketplace Order ID copied!'); }}
+                                  >
+                                    {activeSearchField === 'order' && searchQuery && sale.marketplaceOrderId?.toLowerCase().includes(searchQuery.toLowerCase())
+                                      ? <span className="bg-yellow-200 px-1 rounded">{sale.marketplaceOrderId}</span>
+                                      : sale.marketplaceOrderId || '-'}
                                   </p>
                                 </div>
+                                {/* Tracking ID — shown if exists */}
+                                {sale.trackingId && (
+                                  <div className="mt-1">
+                                    <span className="text-xs text-gray-500">Tracking ID</span>
+                                    <p
+                                      className="font-semibold text-sm cursor-pointer hover:text-indigo-600 hover:underline transition-colors flex items-center gap-1"
+                                      title="Click to copy Tracking ID"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        navigator.clipboard.writeText(sale.trackingId);
+                                        toast.success('Tracking ID copied!');
+                                      }}
+                                    >
+                                      <FiTruck className="text-xs text-gray-400" />
+                                      {activeSearchField === 'tracking' && trackingInput && sale.trackingId?.toLowerCase().includes(trackingInput.toLowerCase())
+                                        ? <span className="bg-yellow-200 px-1 rounded">{sale.trackingId}</span>
+                                        : sale.trackingId}
+                                    </p>
+                                  </div>
+                                )}
                                 <div>
                                   <span className="text-gray-500">Product:</span>
                                   <p className="font-semibold">
@@ -3692,13 +3942,6 @@ const handleDelete = async (id) => {
                                 title="Delete Order"
                               >
                                 <FiTrash2 />
-                              </button>
-                              <button
-                                onClick={() => handleCopyOrderId(sale.orderItemId)}
-                                className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                                title="Copy Order Item ID"
-                              >
-                                <FiFileText />
                               </button>
                             </div>
                           </div>

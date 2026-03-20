@@ -616,10 +616,12 @@ const generateChallanNumber = async (businessName, organizationId, session) => {
       .replace(/ /g, '_')              // spaces → underscores
       .toUpperCase()
 
-    const existingOrders = await WholesaleOrder.find(
+    const query = WholesaleOrder.find(
       { businessName: businessName, organizationId, deletedAt: null },
       { challanNumber: 1 }
-    ).session(session).lean()
+    ).lean();
+    if (session) query.session(session);
+    const existingOrders = await query;
 
     const usedNumbers = existingOrders
       .map(order => {
@@ -1507,31 +1509,15 @@ const sendCreditWarning = async (req, res) => {
 // Preview challan number
 const previewChallanNumber = async (req, res) => {
   try {
-    const { businessName, buyerContact } = req.body;
+    const { businessName, buyerName } = req.body;
     const organizationId = req.user.organizationId;
 
-    const buyer = await WholesaleBuyer.findOne({ mobile: buyerContact, organizationId });
-
-    let nextNumber;
-    if (buyer && buyer.challanCounter) {
-      nextNumber = buyer.challanCounter + 1;
-    } else {
-      const count = await WholesaleOrder.countDocuments({ buyerContact, organizationId });
-      nextNumber = count + 1;
-    }
-
-    const businessCode = businessName.substring(0, 3).toUpperCase();
-    const buyerCode = buyerContact.slice(-4);
-    const challanNumber = `${businessCode}${buyerCode}${String(nextNumber).padStart(3, '0')}`;
-
+    const challanNumber = await generateChallanNumber(businessName || buyerName, organizationId);
     res.json({ challanNumber });
+
   } catch (error) {
     logger.error('Failed to preview challan number', { error: error.message });
-    res.status(500).json({
-      code: 'PREVIEW_FAILED',
-      message: 'Failed to preview challan number',
-      error: error.message,
-    });
+    res.status(500).json({ code: 'PREVIEW_FAILED', message: 'Failed to preview challan number' });
   }
 };
 
@@ -2681,28 +2667,7 @@ const createOrderWithReservedBorrow = async (req, res) => {
     }
 
     // Generate challan
-    const cleanBusinessName = (businessName || buyerName)
-      .replace(/[^a-zA-Z0-9 ]/g, '')
-      .replace(/ /g, '_')
-      .toUpperCase();
-
-    const existingOrders = await WholesaleOrder.find({
-      businessName: businessName || buyerName,
-      organizationId,
-      deletedAt: null
-    }).select('challanNumber').session(session).lean();
-
-    const usedNumbers = existingOrders
-      .map(order => {
-        const match = order.challanNumber.match(/(\d+)/);
-        return match ? parseInt(match[1], 10) : null;
-      })
-      .filter(num => num !== null)
-      .sort((a, b) => a - b);
-
-    const maxSequence = usedNumbers.length > 0 ? Math.max(...usedNumbers) : 0;
-    const orderNumber = maxSequence + 1;
-    const challanNumber = `${cleanBusinessName}${String(orderNumber).padStart(2, '0')}`;
+    const challanNumber = await generateChallanNumber(businessName || buyerName, organizationId, session);
 
     const amountDue = totalAmount - (amountPaid || 0);
     const paymentStatus = amountDue === 0 ? 'Paid' : (amountPaid || 0) > 0 ? 'Partial' : 'Pending';

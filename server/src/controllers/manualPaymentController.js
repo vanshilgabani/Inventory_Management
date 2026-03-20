@@ -463,4 +463,38 @@ exports.rejectPaymentRequest = async (req, res) => {
   }
 };
 
+// Get payment requests from independent users (no linked supplier) → Developer only
+exports.getIndependentUserPaymentRequests = async (req, res) => {
+  try {
+    const { status = 'pending' } = req.query;
+    const DEVELOPER_ID = '69baa77ed43ec29b9968354b';
+
+    const requests = await ManualPaymentRequest.find({ status })
+      .populate('userId', 'name email phone businessName organizationId linkedSupplier')
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    const independentRequests = requests.filter(req => {
+      const supplier = req.userId?.linkedSupplier;
+      const isDevAccount = req.userId?._id?.toString() === DEVELOPER_ID;
+
+      // ✅ Exclude developer's own requests + only show users with no real supplier
+      return !isDevAccount && !supplier?.supplierUserId;
+    });
+
+    res.json({
+      success: true,
+      data: { requests: independentRequests }
+    });
+
+  } catch (error) {
+    logger.error('Get independent user payment requests failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payment requests',
+      error: error.message
+    });
+  }
+};
+
 module.exports = exports;

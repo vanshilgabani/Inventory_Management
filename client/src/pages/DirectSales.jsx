@@ -32,7 +32,7 @@ import SkeletonCard from '../components/common/SkeletonCard';
 import { useAuth } from '../context/AuthContext';
 import ScrollToTop from '../components/common/ScrollToTop';
 const DirectSales = () => {
-const { enabledSizes, loading: sizesLoading } = useEnabledSizes();
+const { enabledSizes, getSizesForDesign, loading: sizesLoading } = useEnabledSizes();
 const { user } = useAuth(); // ✅ ADD THIS (if not already present)
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);

@@ -34,11 +34,7 @@ const tenantSettingsSchema = new mongoose.Schema({
   // NEW: Sidebar navigation control
 allowedSidebarItems: {
   type: [String],
-  default: [
-    'dashboard',
-    'inventory', 
-    'marketplace-sales'
-  ],
+  default: [],
   enum: [
     'dashboard',           // Always visible
     'inventory',
