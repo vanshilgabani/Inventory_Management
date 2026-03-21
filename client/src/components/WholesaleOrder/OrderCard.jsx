@@ -1,4 +1,4 @@
-import { FiEye, FiEdit2, FiTrash2, FiDownload, FiMessageCircle } from 'react-icons/fi';
+import { FiEye, FiEdit2, FiTrash2, FiPrinter, FiMessageCircle } from 'react-icons/fi';
 import { FiAlertTriangle, FiCheckCircle } from 'react-icons/fi';
 import { format } from 'date-fns';
 import SyncStatusBadge from '../sync/SyncStatusBadge';
@@ -21,7 +21,7 @@ function PaymentBadge({ status }) {
 
 export default function OrderCard({
   order, syncStatus, isAdmin,
-  onView, onEdit, onPayment, onDownload, onWhatsApp, onDelete, onResendSync,
+  onView, onEdit, onPayment, onDownload, onPrint, onWhatsApp, onDelete, onResendSync,
 }) {
   const borderClass = BORDER[order.paymentStatus] || 'border-l-4 border-gray-300';
   const totalPieces = order.items?.reduce((s, i) => s + i.quantity, 0) ?? 0;
@@ -108,9 +108,12 @@ export default function OrderCard({
           </button>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => onDownload(order)}
-            className="flex-1 flex items-center justify-center gap-1 py-1.5 text-xs text-gray-500 hover:text-gray-700">
-            <FiDownload size={12} /> PDF
+          <button
+            onClick={() => onPrint(order)}
+            className="flex-1 flex items-center justify-center gap-1 py-1.5 text-xs text-gray-500 hover:text-indigo-600 transition-colors"
+            title="Print challan (also downloads PDF)"
+          >
+            <FiPrinter size={12} /> Print
           </button>
           <button onClick={() => onWhatsApp(order)}
             className="flex-1 flex items-center justify-center gap-1 py-1.5 text-xs text-gray-500 hover:text-gray-700">
