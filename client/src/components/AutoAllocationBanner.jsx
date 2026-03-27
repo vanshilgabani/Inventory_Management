@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { FiAlertTriangle, FiX, FiChevronDown, FiChevronUp, FiPackage } from 'react-icons/fi';
-import axios from 'axios';
+import api from '../../src/services/api';
 
 // ✅ One constant, used everywhere in this file
 const API = import.meta.env.VITE_API_URL; // "https://inventory-backend-6lt9.onrender.com/api"
@@ -85,7 +85,7 @@ const AutoAllocationBanner = () => {
     setDismissing(prev => ({ ...prev, [notifId]: true }));
     try {
       // ✅ FIX 2: Use API env var — was `/api/auto-allocation/notifications/...`
-      await axios.patch(`${API}/auto-allocation/notifications/${notifId}/dismiss`);
+      await api.patch(`/auto-allocation/notifications/${notifId}/dismiss`);
       setTimeout(() => {
         setNotifications(prev => prev.filter(n => n._id !== notifId));
         if (notifications.length === 1) setExpanded(false);
@@ -99,7 +99,7 @@ const AutoAllocationBanner = () => {
     e.stopPropagation();
     try {
       // ✅ FIX 3: Use API env var — was `/api/auto-allocation/notifications/dismiss-all`
-      await axios.patch(`${API}/auto-allocation/notifications/dismiss-all`);
+      await api.patch(`/auto-allocation/notifications/dismiss-all`);
       setNotifications([]);
       setExpanded(false);
     } catch (_) {}

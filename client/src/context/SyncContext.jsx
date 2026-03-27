@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
-
+const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 const SyncContext = createContext();
 
 export const useSyncContext = () => {
@@ -20,7 +20,7 @@ export const SyncProvider = ({ children }) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const response = await fetch('/api/supplier-sync/pending', {
+      const response = await fetch(`${API}/supplier-sync/pending`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!response.ok) return;

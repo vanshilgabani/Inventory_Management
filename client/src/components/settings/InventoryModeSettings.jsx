@@ -3,6 +3,7 @@ import { FiPackage, FiShoppingCart, FiInfo, FiZap, FiToggleLeft, FiToggleRight }
 import Card from '../common/Card';
 import {settingsService} from '../../services/settingsService';
 import toast from 'react-hot-toast';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 const InventoryModeSettings = () => {
   const [inventoryMode, setInventoryMode] = useState('reserved');
@@ -33,7 +34,7 @@ const InventoryModeSettings = () => {
 
       // Load auto allocation settings
       try {
-        const res = await fetch('/api/settings/auto-allocation', {
+        const res = await fetch(`${API}/settings/auto-allocation`, {
           headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
         });
         const data = await res.json();
@@ -76,7 +77,7 @@ const InventoryModeSettings = () => {
   if (autoSaving) return;
   setAutoSaving(true);
   try {
-    const res = await fetch('/api/settings/auto-allocation', {
+    const res = await fetch(`${API}/settings/auto-allocation`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',

@@ -22,7 +22,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useSubscription } from '../../context/SubscriptionContext';
 import { useSettings } from '../../context/SettingsContext';
-import axios from 'axios';
+import api from '../../services/api';
 
 const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
   const { isAdmin, user } = useAuth();
@@ -64,12 +64,7 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
   // Fetch permissions function
   const fetchSidebarPermissions = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get('/api/tenant-settings/my-settings', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      const response = await api.get('/tenant-settings/my-settings');
 
       console.log('🔍 Full API Response:', response.data);
 

@@ -1,7 +1,5 @@
 import { createContext, useState, useEffect, useContext } from 'react';
-import axios from 'axios';
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+import api from '../services/api';
 
 const AuthContext = createContext();
 
@@ -16,12 +14,6 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-
-  // Set axios defaults
-  const token = localStorage.getItem('token');
-  if (token) {
-    axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-  }
 
   useEffect(() => {
     checkAuth();
@@ -56,7 +48,7 @@ const checkAuth = async () => {
 const login = async (email, password) => {
   try {
     console.log('🔗 API Login call...');
-    const response = await axios.post(`${API_URL}/auth/login`, { email, password });
+    const response = await api.post('/auth/login', { email, password });
     console.log('🔗 API Response:', response.data);
 
     const { 
@@ -106,7 +98,7 @@ const login = async (email, password) => {
 
   const register = async (userData) => {
     try {
-      const response = await axios.post(`${API_URL}/auth/register`, userData);
+      const response = await api.post('/auth/register', userData);
       
       const { token, _id, name, email, role } = response.data;
       

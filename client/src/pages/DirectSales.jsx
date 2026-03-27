@@ -31,6 +31,9 @@ import { formatDate, formatCurrency } from '../utils/dateUtils';
 import SkeletonCard from '../components/common/SkeletonCard';
 import { useAuth } from '../context/AuthContext';
 import ScrollToTop from '../components/common/ScrollToTop';
+
+const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
 const DirectSales = () => {
 const { enabledSizes, getSizesForDesign, loading: sizesLoading } = useEnabledSizes();
 const { user } = useAuth(); // ✅ ADD THIS (if not already present)
@@ -403,7 +406,7 @@ const handleConfirmUseLock = async () => {
 
     console.log('🔓 Reducing variant locks:', itemsToReduce);
 
-    const response = await fetch('/api/inventory/reduce-variant-lock', {
+    const response = await fetch(`${API}/inventory/reduce-variant-lock`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

@@ -1,19 +1,8 @@
-import axios from 'axios';
 import api from './api';
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-
-// Get auth token
-const getAuthHeader = () => {
-  const token = localStorage.getItem('token');
-  return { Authorization: `Bearer ${token}` };
-};
 
 // Get settings
 const getSettings = async () => {
-  const response = await axios.get(`${API_URL}/settings`, {
-    headers: getAuthHeader()
-  });
+  const response = await api.get('/settings');
   return response.data;
 };
 
@@ -21,9 +10,9 @@ const getSettings = async () => {
 const getEnabledSizes = async (design = null) => {
   try {
     const url = design
-      ? `${API_URL}/settings/sizes/enabled?design=${encodeURIComponent(design)}`
-      : `${API_URL}/settings/sizes/enabled`;
-    const response = await axios.get(url, { headers: getAuthHeader() });
+      ? `/settings/sizes/enabled?design=${encodeURIComponent(design)}`
+      : '/settings/sizes/enabled';
+    const response = await api.get(url);
     return response.data;
   } catch (error) {
     return ['S', 'M', 'L', 'XL', 'XXL'];
@@ -32,218 +21,139 @@ const getEnabledSizes = async (design = null) => {
 
 // ✅ NEW: Get all sizes (enabled + disabled)
 const getAllSizes = async () => {
-  const response = await axios.get(`${API_URL}/settings/sizes`, {
-    headers: getAuthHeader()
-  });
+  const response = await api.get('/settings/sizes');
   return response.data;
 };
 
 // ✅ NEW: Add new size
 const addSize = async (sizeName) => {
-  const response = await axios.post(
-    `${API_URL}/settings/sizes`,
-    { name: sizeName },
-    { headers: getAuthHeader() }
-  );
+  const response = await api.post('/settings/sizes', { name: sizeName });
   return response.data;
 };
 
 // ✅ NEW: Toggle size enable/disable
 const toggleSize = async (sizeName, isEnabled, design = null) => {
-  const response = await axios.put(
-    `${API_URL}/settings/sizes/${sizeName}/toggle`,
-    { isEnabled, ...(design && { design }) }, // ← passes design if provided
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put(`/settings/sizes/${sizeName}/toggle`, {
+    isEnabled,
+    ...(design && { design })
+  });
   return response.data;
 };
 
 // ✅ NEW: Reorder sizes
 const reorderSizes = async (sizes) => {
-  const response = await axios.put(
-    `${API_URL}/settings/sizes/reorder`,
-    { sizes },
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put('/settings/sizes/reorder', { sizes });
   return response.data;
 };
 
 // Update settings
 const updateSettings = async (settingsData) => {
-  const response = await axios.put(`${API_URL}/settings`, settingsData, {
-    headers: getAuthHeader()
-  });
+  const response = await api.put('/settings', settingsData);
   return response.data;
 };
 
 // Add marketplace account
 const addMarketplaceAccount = async (accountData) => {
-  const response = await axios.post(
-    `${API_URL}/settings/marketplace-accounts`,
-    accountData,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.post('/settings/marketplace-accounts', accountData);
   return response.data;
 };
 
 // Update marketplace account
 const updateMarketplaceAccount = async (accountId, accountData) => {
-  const response = await axios.put(
-    `${API_URL}/settings/marketplace-accounts/${accountId}`,
-    accountData,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put(`/settings/marketplace-accounts/${accountId}`, accountData);
   return response.data;
 };
 
 // Delete marketplace account
 const deleteMarketplaceAccount = async (accountId) => {
-  const response = await axios.delete(
-    `${API_URL}/settings/marketplace-accounts/${accountId}`,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.delete(`/settings/marketplace-accounts/${accountId}`);
   return response.data;
 };
 
 // Set default marketplace account
 const setDefaultMarketplaceAccount = async (accountId) => {
-  const response = await axios.put(
-    `${API_URL}/settings/marketplace-accounts/${accountId}/set-default`,
-    {},
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put(`/settings/marketplace-accounts/${accountId}/set-default`, {});
   return response.data;
 };
 
 // Get stock thresholds
 const getStockThresholds = async () => {
-  const response = await axios.get(`${API_URL}/settings/stock-thresholds`, {
-    headers: getAuthHeader()
-  });
+  const response = await api.get('/settings/stock-thresholds');
   return response.data;
 };
 
 // Update stock thresholds (Admin only)
 const updateStockThresholds = async (thresholdData) => {
-  const response = await axios.put(
-    `${API_URL}/settings/stock-thresholds`,
-    thresholdData,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put('/settings/stock-thresholds', thresholdData);
   return response.data;
 };
 
 // Add or update design-specific threshold (Admin only)
 const addDesignThreshold = async (design, threshold) => {
-  const response = await axios.post(
-    `${API_URL}/settings/stock-thresholds/design`,
-    { design, threshold },
-    { headers: getAuthHeader() }
-  );
+  const response = await api.post('/settings/stock-thresholds/design', { design, threshold });
   return response.data;
 };
 
 // Remove design threshold override (Admin only)
 const removeDesignThreshold = async (design) => {
-  const response = await axios.delete(
-    `${API_URL}/settings/stock-thresholds/design/${design}`,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.delete(`/settings/stock-thresholds/design/${design}`);
   return response.data;
 };
 
 // Color Palette APIs
 const getColorPalette = async () => {
-  const response = await axios.get(`${API_URL}/settings/color-palette`, {
-    headers: getAuthHeader()
-  });
+  const response = await api.get('/settings/color-palette');
   return response.data;
 };
 
 const addColorToPalette = async (colorData) => {
-  const response = await axios.post(
-    `${API_URL}/settings/color-palette`,
-    colorData,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.post('/settings/color-palette', colorData);
   return response.data;
 };
 
 const updateColorInPalette = async (colorId, colorData) => {
-  const response = await axios.put(
-    `${API_URL}/settings/color-palette/${colorId}`,
-    colorData,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put(`/settings/color-palette/${colorId}`, colorData);
   return response.data;
 };
 
 const deleteColorFromPalette = async (colorId) => {
-  const response = await axios.delete(
-    `${API_URL}/settings/color-palette/${colorId}`,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.delete(`/settings/color-palette/${colorId}`);
   return response.data;
 };
 
 const reorderColors = async (orderedColorIds) => {
-  const response = await axios.put(
-    `${API_URL}/settings/color-palette/reorder`,
-    { orderedColorIds },
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put('/settings/color-palette/reorder', { orderedColorIds });
   return response.data;
 };
 
 // Company Management APIs
 const getCompanies = async () => {
-  const response = await axios.get(`${API_URL}/settings/companies`, {
-    headers: getAuthHeader()
-  });
+  const response = await api.get('/settings/companies');
   return response.data;
 };
 
 const addCompany = async (companyData) => {
-  const response = await axios.post(
-    `${API_URL}/settings/companies`,
-    companyData,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.post('/settings/companies', companyData);
   return response.data;
 };
 
 const updateCompany = async (companyId, companyData) => {
-  const response = await axios.put(
-    `${API_URL}/settings/companies/${companyId}`,
-    companyData,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put(`/settings/companies/${companyId}`, companyData);
   return response.data;
 };
 
 const deleteCompany = async (companyId) => {
-  const response = await axios.delete(
-    `${API_URL}/settings/companies/${companyId}`,
-    { headers: getAuthHeader() }
-  );
+  const response = await api.delete(`/settings/companies/${companyId}`);
   return response.data;
 };
 
 const toggleCompanyActive = async (companyId, isActive) => {
-  const response = await axios.put(
-    `${API_URL}/settings/companies/${companyId}/toggle-active`,
-    { isActive },
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put(`/settings/companies/${companyId}/toggle-active`, { isActive });
   return response.data;
 };
 
 const setDefaultCompany = async (companyId) => {
-  const response = await axios.put(
-    `${API_URL}/settings/companies/${companyId}/set-default`,
-    {},
-    { headers: getAuthHeader() }
-  );
+  const response = await api.put(`/settings/companies/${companyId}/set-default`, {});
   return response.data;
 };
 
@@ -287,11 +197,7 @@ const updateAccountFlipkart = async (accountId, flipkartConfig) => {
 };
 
 const syncProductsWithSizes = async () => {
-  const response = await axios.post(
-    `${API_URL}/settings/sizes/sync-products`,
-    {},
-    { headers: getAuthHeader() }
-  );
+  const response = await api.post('/settings/sizes/sync-products', {});
   return response.data;
 };
 

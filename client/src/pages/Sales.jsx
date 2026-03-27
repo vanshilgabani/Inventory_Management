@@ -26,6 +26,7 @@ import BulkSKUMappingModal from '../components/modals/BulkSKUMappingModal';
 import FinalImportPreviewModal from '../components/modals/FinalImportPreviewModal';
 import ImportResultModal from '../components/modals/ImportResultModal';
 import { skuMappingService } from '../services/skuMappingService';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 const Sales = () => {
   const { user } = useAuth();
@@ -1667,7 +1668,7 @@ const handleConfirmRefill = async () => {
     console.log('🔓 Refilling variant locks (Sales):', itemsToRefill);
 
     // Call refill API
-    const response = await fetch('/api/inventory/refill-variant-lock', {
+    const response = await fetch(`${API}/inventory/refill-variant-lock`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

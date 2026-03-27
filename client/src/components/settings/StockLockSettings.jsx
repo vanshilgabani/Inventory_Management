@@ -2,6 +2,7 @@
 import React from 'react';
 import { FiLock, FiUnlock } from 'react-icons/fi';
 import toast from 'react-hot-toast';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 const StockLockSettings = ({ settings, handleInputChange, handleUpdateSettings, saving }) => {
   const enabled = settings.stockLockEnabled || false;
@@ -23,7 +24,7 @@ const handleDistribute = async () => {
       return;
     }
     
-    const response = await fetch('/api/settings/stock-lock/distribute', {
+    const response = await fetch(`${API}/settings/stock-lock`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

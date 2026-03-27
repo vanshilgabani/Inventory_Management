@@ -28,6 +28,7 @@ import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import ScrollToTop from '../components/common/ScrollToTop';
 import FlipkartSyncButton from '../components/sync/FlipkartSyncButton';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 const ReservedInventory = () => {
   const { enabledSizes, getSizesForDesign } = useEnabledSizes();
@@ -137,7 +138,7 @@ const fetchData = async () => {
       // designs = [] means run ALL, otherwise run only selected designs
       if (designs.length === 0) {
         // Full run — all variants
-        const res = await fetch('/api/auto-allocation/run', {
+        const res = await fetch(`${API}/auto-allocation/run`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -167,7 +168,7 @@ const fetchData = async () => {
             for (const sv of (cv.sizes || [])) {
               if ((sv.reservedStock || 0) <= 0) continue;
               try {
-                const res = await fetch('/api/auto-allocation/run', {
+                const res = await fetch(`${API}/auto-allocation/run`, {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',

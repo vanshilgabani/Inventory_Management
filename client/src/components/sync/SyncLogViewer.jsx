@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { FiRefreshCw, FiCheckCircle, FiXCircle, FiClock, FiAlertCircle } from 'react-icons/fi';
-import axios from 'axios';
+import api from '../../services/api';
 
 const SyncLogViewer = () => {
   const [syncLogs, setSyncLogs] = useState([]);
@@ -15,11 +15,7 @@ const SyncLogViewer = () => {
   const fetchSyncLogs = async () => {
     try {
       setLoading(true);
-      const token = localStorage.getItem('token');
-      const response = await axios.get(
-        `${import.meta.env.VITE_API_URL || 'http://localhost:5000/api'}/sync/logs`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const response = await api.get('/sync/logs');
       
       console.log('Sync logs response:', response.data);
       
