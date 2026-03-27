@@ -3,6 +3,10 @@ const router = express.Router();
 const analyticsController = require('../controllers/analyticsController');
 const { protect } = require('../middleware/auth');
 
+router.get('/today-marketplace-summary', protect, analyticsController.getTodayMarketplaceSummary);
+router.get('/wd/best-selling', protect, analyticsController.getBestSellingWDProducts);
+router.get('/reorder-planner', protect, analyticsController.getReorderPlannerData);
+
 // Section 1: Wholesale & Direct Analytics
 router.get('/wholesale/top-buyers', protect, analyticsController.getTopWholesaleBuyers);
 router.get('/wholesale/buyer-products', protect, analyticsController.getTopProductsPerBuyer);

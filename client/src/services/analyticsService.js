@@ -7,6 +7,21 @@ export const analyticsService = {
     return response.data;
   },
 
+  getTodayMarketplaceSummary: async () => {
+    const response = await api.get('/analytics/today-marketplace-summary');
+    return response.data;
+  },
+
+  async getBestSellingWDProducts(params = {}) {
+    const response = await api.get('/analytics/wd/best-selling', { params });
+    return response.data;
+  },
+
+  getReorderPlannerData: async ({ channel = 'marketplace', inventoryMode = 'reserved' } = {}) => {
+    const res = await api.get(`/analytics/reorder-planner?channel=${channel}&inventoryMode=${inventoryMode}`);
+    return res.data;
+  },
+
   async getSalesByChannel() {
     const response = await api.get('/analytics/sales-by-channel');
     return response.data;

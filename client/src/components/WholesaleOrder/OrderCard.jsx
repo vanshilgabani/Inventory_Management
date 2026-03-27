@@ -1,4 +1,4 @@
-import { FiEye, FiEdit2, FiTrash2, FiPrinter, FiMessageCircle } from 'react-icons/fi';
+import { FiEye, FiEdit2, FiTrash2, FiPrinter, FiDownload, FiMessageCircle } from 'react-icons/fi';
 import { FiAlertTriangle, FiCheckCircle } from 'react-icons/fi';
 import { format } from 'date-fns';
 import SyncStatusBadge from '../sync/SyncStatusBadge';
@@ -108,13 +108,17 @@ export default function OrderCard({
           </button>
         </div>
         <div className="flex gap-2">
-          <button
+          <button onClick={() => onDownload(order)}
+            className="flex-1 flex items-center justify-center gap-1 py-1.5 text-xs text-gray-500 hover:text-gray-700">
+            <FiDownload size={12} /> PDF
+          </button>
+          {/*<button
             onClick={() => onPrint(order)}
             className="flex-1 flex items-center justify-center gap-1 py-1.5 text-xs text-gray-500 hover:text-indigo-600 transition-colors"
             title="Print challan (also downloads PDF)"
           >
             <FiPrinter size={12} /> Print
-          </button>
+          </button>*/}
           <button onClick={() => onWhatsApp(order)}
             className="flex-1 flex items-center justify-center gap-1 py-1.5 text-xs text-gray-500 hover:text-gray-700">
             <FiMessageCircle size={12} /> WhatsApp
@@ -131,7 +135,10 @@ export default function OrderCard({
         {(order.createdBy || order.editHistory?.length > 0) && (
           <div className="mt-3 pt-3 border-t border-gray-100 space-y-1 text-xs text-gray-400">
             {order.createdBy && (
-              <div>Created by <span className="text-gray-600 font-medium">{order.createdBy.userName}</span></div>
+              <div>
+                Created by <span className="text-gray-600 font-medium">{order.createdBy.userName}</span>
+                {' · '}{format(new Date(order.createdAt), 'dd/MM/yy h:mm a')}
+              </div>
             )}
             {order.editHistory?.length > 0 && (() => {
               const last = order.editHistory[order.editHistory.length - 1];

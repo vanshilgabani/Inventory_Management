@@ -311,8 +311,15 @@ export const generateInvoice = async (order, options = {}) => {
         doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 5, { align: 'right' });
       }
 
-      // Extract base64 BEFORE saving (works in all cases)
-      const base64 = doc.output('datauristring').split(',')[1];
+      if (options.openInNewTab) {
+        window.open(doc.output('bloburl'));
+      } else {
+        doc.save(`Challan_${order.challanNumber}.pdf`);
+      }
+
+      resolve(doc);
+
+      {/*const base64 = doc.output('datauristring').split(',')[1];
 
       if (options.openInNewTab) {
         window.open(doc.output('bloburl'));
@@ -321,7 +328,8 @@ export const generateInvoice = async (order, options = {}) => {
         doc.save(`Challan-${order.challanNumber}.pdf`);
       }
 
-      resolve({ doc, base64 });
+      resolve({ doc, base64 });*/}
+      
     } catch (e) { reject(e); }
   });
 };

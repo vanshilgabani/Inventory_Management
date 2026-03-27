@@ -20,6 +20,7 @@
     "i18next-browser-languagedetector": "^8.2.1",
     "jspdf": "^3.0.3",
     "jspdf-autotable": "^5.0.2",
+    "jsrsasign": "^11.1.1",
     "lucide-react": "^0.553.0",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",

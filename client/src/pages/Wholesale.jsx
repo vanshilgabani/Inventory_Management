@@ -24,13 +24,15 @@ import DraftsListModal  from '../components/WholesaleOrder/modals/DraftsListModa
 import UseLockModal     from '../components/WholesaleOrder/modals/UseLockModal';
 import BuyerListModal   from '../components/WholesaleOrder/modals/BuyerListModal';
 
+// ✅ Single API base — used for all fetch/axios calls in this file
+const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
 const Wholesale = () => {
   const { isAdmin } = useAuth();
   const { enabledSizes, getSizesForDesign } = useEnabledSizes();
   const { colors, getColorsForDesign, getColorCode } = useColorPalette();
   const [autoOpenDrafts, setAutoOpenDrafts] = useState(false);
 
-  // ── useWholesaleData handles ALL order fetching, filtering & pagination ──
   const {
     orders, products, allBuyers, syncStatuses, loading,
     pagination, page, goToPage,
@@ -40,31 +42,28 @@ const Wholesale = () => {
     refetch, refetchBuyers,
   } = useWholesaleData();
 
-  // ── useDraftManager handles draft persistence ──
   const {
     savedDrafts, currentDraftId,
     saveDraft, deleteDraft, deleteCurrentDraft, clearAllDrafts,
   } = useDraftManager();
 
-  // ── Backend stats (separate endpoint, not from hook) ──────────
   const [orderStats, setOrderStats] = useState({
     totalOrders: 0, totalRevenue: 0, totalCollected: 0,
     totalDue: 0, pendingCount: 0, partialCount: 0, paidCount: 0,
   });
 
-  const [qzStatus, setQzStatus]             = useState('checking'); // 'checking'|'available'|'unavailable'
+  const [qzStatus, setQzStatus]                 = useState('checking');
   const [showPrinterModal, setShowPrinterModal] = useState(false);
   const [availablePrinters, setAvailablePrinters] = useState([]);
   const [selectedPrinter, setSelectedPrinter]     = useState('');
   const [pendingPrintOrder, setPendingPrintOrder] = useState(null);
   const [isPrinting, setIsPrinting]               = useState(false);
 
+  // ✅ FIX 1: fetchOrderStats — was using convoluted .replace() trick; now clean
   const fetchOrderStats = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const base  = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
-      const res   = await fetch(`${base}/api/wholesale/orders/stats`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const res = await fetch(`${API}/wholesale/orders/stats`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
       if (res.ok) {
         const data = await res.json();
@@ -73,7 +72,6 @@ const Wholesale = () => {
     } catch (e) { console.error('fetchOrderStats failed', e); }
   };
 
-  // ✅ ONLY fetchOrderStats here — useWholesaleData fetches orders/products/buyers automatically
   useEffect(() => {
     fetchOrderStats();
     connectQZ().then(available => {
@@ -81,14 +79,13 @@ const Wholesale = () => {
     });
   }, []);
 
-  // ── Modal visibility ──────────────────────────────────────────
-  const [showForm,     setShowForm]     = useState(false);
-  const [showDetail,   setShowDetail]   = useState(false);
-  const [showPayment,  setShowPayment]  = useState(false);
-  const [showDrafts,   setShowDrafts]   = useState(false);
-  const [showBuyerList,setShowBuyerList]= useState(false);
-  const [showUseLock,  setShowUseLock]  = useState(false);
-  const [showBorrow,   setShowBorrow]   = useState(false);
+  const [showForm,      setShowForm]      = useState(false);
+  const [showDetail,    setShowDetail]    = useState(false);
+  const [showPayment,   setShowPayment]   = useState(false);
+  const [showDrafts,    setShowDrafts]    = useState(false);
+  const [showBuyerList, setShowBuyerList] = useState(false);
+  const [showUseLock,   setShowUseLock]   = useState(false);
+  const [showBorrow,    setShowBorrow]    = useState(false);
 
   const [editingOrder,     setEditingOrder]     = useState(null);
   const [viewingOrder,     setViewingOrder]     = useState(null);
@@ -97,7 +94,6 @@ const Wholesale = () => {
   const [pendingOrderData, setPendingOrderData] = useState(null);
   const [borrowData,       setBorrowData]       = useState(null);
 
-  // ── Handlers ─────────────────────────────────────────────────
   const handleNewOrder  = () => { setEditingOrder(null); setShowForm(true); };
   const handleEditOrder = (o) => { setEditingOrder(o);   setShowForm(true); };
   const handleViewOrder = (o) => { setViewingOrder(o);   setShowDetail(true); };
@@ -133,7 +129,6 @@ const Wholesale = () => {
         const savedPrinter = getSavedPrinter();
 
         if (!savedPrinter) {
-          // First time — ask user to pick printer, then print
           const printers = await getAvailablePrinters();
           setAvailablePrinters(printers);
           setSelectedPrinter(printers[0] || '');
@@ -143,8 +138,7 @@ const Wholesale = () => {
           return;
         }
 
-        // QZ available + printer saved — download + direct print
-        const { base64 } = await generateInvoice(mergedOrder, {}); // downloads PDF
+        const { base64 } = await generateInvoice(mergedOrder, {});
         const result = await printBase64PDF(base64, savedPrinter);
 
         if (result.success) {
@@ -154,8 +148,7 @@ const Wholesale = () => {
         }
 
       } else {
-        // QZ not available — download + fallback browser print dialog
-        const { base64 } = await generateInvoice(mergedOrder, {}); // downloads PDF
+        const { base64 } = await generateInvoice(mergedOrder, {});
         printViaIframe(base64);
 
         toast(
@@ -187,7 +180,6 @@ const Wholesale = () => {
     }
   };
 
-  // Called when user confirms printer selection in the modal
   const handleConfirmPrinter = async () => {
     if (!selectedPrinter || !pendingPrintOrder) return;
     savePrinter(selectedPrinter);
@@ -195,7 +187,7 @@ const Wholesale = () => {
 
     setIsPrinting(true);
     try {
-      const { base64 } = await generateInvoice(pendingPrintOrder, {}); // downloads PDF
+      const { base64 } = await generateInvoice(pendingPrintOrder, {});
       const result = await printBase64PDF(base64, selectedPrinter);
       if (result.success) {
         toast.success(`Printed to ${selectedPrinter}`);
@@ -216,9 +208,10 @@ const Wholesale = () => {
     catch { toast.error('Failed to open WhatsApp'); }
   };
 
+  // ✅ FIX 2: handleResendSync — was `/api/supplier-sync/...` (relative, hit Vercel)
   const handleResendSync = useCallback(async (orderId) => {
     try {
-      const res  = await fetch(`/api/supplier-sync/resend/${orderId}`, {
+      const res = await fetch(`${API}/supplier-sync/resend/${orderId}`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,
@@ -238,8 +231,8 @@ const Wholesale = () => {
     refetch(); refetchBuyers(); fetchOrderStats();
   };
 
-  const handleUseLockNeeded  = (data, payload) => { setUseLockData(data);  setPendingOrderData(payload); setShowUseLock(true); };
-  const handleBorrowNeeded   = (data, payload) => { setBorrowData(data);   setPendingOrderData(payload); setShowBorrow(true); };
+  const handleUseLockNeeded = (data, payload) => { setUseLockData(data);  setPendingOrderData(payload); setShowUseLock(true); };
+  const handleBorrowNeeded  = (data, payload) => { setBorrowData(data);   setPendingOrderData(payload); setShowBorrow(true); };
 
   const handleConfirmUseLock = async () => {
     if (!pendingOrderData) return;
@@ -260,7 +253,6 @@ const Wholesale = () => {
     } catch (err) { toast.error(err?.response?.data?.message || 'Borrow failed'); }
   };
 
-  // ── Render ────────────────────────────────────────────────────
   return (
     <div className="space-y-6 p-4 md:p-6">
 
@@ -269,7 +261,7 @@ const Wholesale = () => {
         onNewOrder={handleNewOrder}
         onShowDrafts={() => {
           setEditingOrder(null);
-          setAutoOpenDrafts(true);  
+          setAutoOpenDrafts(true);
           setShowForm(true);
         }}
       />
@@ -281,7 +273,7 @@ const Wholesale = () => {
         onSearchChange={handleSearchChange}
         paymentFilter={paymentFilter}
         onFilterChange={handleFilterChange}
-        sortBy={sortBy}     setSortBy={setSortBy}
+        sortBy={sortBy}       setSortBy={setSortBy}
         sortOrder={sortOrder} setSortOrder={setSortOrder}
         totalCount={orders.length}
       />
@@ -301,7 +293,7 @@ const Wholesale = () => {
             onEdit={handleEditOrder}
             onPayment={(o) => { setPaymentOrder(o); setShowPayment(true); }}
             onDownload={handleDownloadChallan}
-            onPrint={handlePrintChallan}          
+            onPrint={handlePrintChallan}
             onWhatsApp={handleWhatsApp}
             onDelete={handleDeleteOrder}
             onResendSync={handleResendSync}
@@ -311,7 +303,6 @@ const Wholesale = () => {
 
       <ScrollToTop />
 
-      {/* ── Modals ── */}
       <OrderFormModal
         show={showForm}
         editingOrder={editingOrder}
@@ -331,7 +322,7 @@ const Wholesale = () => {
         onSuccess={handleFormSuccess}
         onBorrowNeeded={handleBorrowNeeded}
         onUseLockNeeded={handleUseLockNeeded}
-        onClose={() => { setShowForm(false); setEditingOrder(null); setAutoOpenDrafts(false);}}
+        onClose={() => { setShowForm(false); setEditingOrder(null); setAutoOpenDrafts(false); }}
         clearAllDrafts={clearAllDrafts}
         getSizesForDesign={getSizesForDesign}
       />
@@ -349,7 +340,7 @@ const Wholesale = () => {
         onEdit={(o) => {
           setShowDetail(false);
           setViewingOrder(null);
-          handleEditOrder(o);   // opens OrderFormModal with this order
+          handleEditOrder(o);
         }}
       />
 
@@ -364,7 +355,6 @@ const Wholesale = () => {
         show={showDrafts}
         drafts={savedDrafts}
         onLoad={(draft) => {
-          setDraftToLoad(draft);
           setEditingOrder(null);
           setShowDrafts(false);
           setShowForm(true);
@@ -400,7 +390,7 @@ const Wholesale = () => {
           orderType="order"
         />
       )}
-      {/* ── QZ Printer Selection Modal ── */}
+
       {showPrinterModal && (
         <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-80 p-6">

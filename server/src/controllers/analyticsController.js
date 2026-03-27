@@ -1522,8 +1522,331 @@ const getGrowthMetrics = async (req, res) => {
   }
 };
 
+// GET /api/analytics/today-marketplace-summary
+const getTodayMarketplaceSummary = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+
+    // ✅ Dispatched today — saleDate = today
+    const dispatchedStats = await MarketplaceSale.aggregate([
+      {
+        $match: {
+          organizationId: new mongoose.Types.ObjectId(organizationId),
+          deletedAt: null,
+          status: 'dispatched',
+          saleDate: { $gte: start, $lte: end }
+        }
+      },
+      {
+        $group: {
+          _id: '$accountName',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // ✅ Returns today — updatedAt = today, status in return statuses
+    const returnStats = await MarketplaceSale.aggregate([
+  {
+    $match: {
+      organizationId: new mongoose.Types.ObjectId(organizationId),
+      deletedAt: null,
+      status: { $in: ['returned', 'RTO', 'wrongreturn'] },
+    },
+  },
+  {
+    // Find the last statusHistory entry that matches the current return status
+    $addFields: {
+      effectiveReturnDate: {
+        $let: {
+          vars: {
+            matchingEntry: {
+              $arrayElemAt: [
+                {
+                  $filter: {
+                    input: { $ifNull: ['$statusHistory', []] },
+                    as:    'h',
+                    cond:  { $eq: ['$$h.newStatus', '$status'] },
+                  },
+                },
+                -1,  // last matching entry
+              ],
+            },
+          },
+          in: {
+            // Use changedAt if found, else fall back to updatedAt
+            $ifNull: ['$$matchingEntry.changedAt', '$updatedAt'],
+          },
+        },
+      },
+    },
+  },
+  {
+    // Now filter by effectiveReturnDate = today
+    $match: {
+      effectiveReturnDate: { $gte: start, $lte: end },
+    },
+  },
+  {
+    $group: {
+      _id: { accountName: '$accountName', status: '$status' },
+      count: { $sum: 1 },
+    },
+  },
+]);
+
+    // Build per-account map
+    const accountMap = {};
+
+    dispatchedStats.forEach(a => {
+      const acc = a._id || 'Unknown';
+      if (!accountMap[acc]) accountMap[acc] = { dispatched: 0, returned: 0, rto: 0, wrongReturn: 0 };
+      accountMap[acc].dispatched = a.count;
+    });
+
+    returnStats.forEach(a => {
+      const acc    = a._id.accountName || 'Unknown';
+      const status = a._id.status;
+      if (!accountMap[acc]) accountMap[acc] = { dispatched: 0, returned: 0, rto: 0, wrongReturn: 0 };
+      if (status === 'returned')    accountMap[acc].returned    = a.count;
+      if (status === 'RTO')         accountMap[acc].rto         = a.count;
+      if (status === 'wrongreturn') accountMap[acc].wrongReturn = a.count;
+    });
+
+    // Overall totals
+    const totals = Object.values(accountMap).reduce((acc, a) => ({
+      dispatched:  acc.dispatched  + a.dispatched,
+      returned:    acc.returned    + a.returned,
+      rto:         acc.rto         + a.rto,
+      wrongReturn: acc.wrongReturn + a.wrongReturn,
+    }), { dispatched: 0, returned: 0, rto: 0, wrongReturn: 0 });
+
+    res.json({
+      success: true,
+      data: { accountMap, totals }
+    });
+
+  } catch (error) {
+    console.error('getTodayMarketplaceSummary error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const getBestSellingWDProducts = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { startDate, endDate, limit = 20 } = req.query;
+
+    const wsMatch = {
+      organizationId: new mongoose.Types.ObjectId(organizationId),
+      deletedAt: null,
+    };
+    const dsMatch = { ...wsMatch };
+
+    if (startDate) {
+      wsMatch.orderDate = { $gte: new Date(startDate), ...(endDate && { $lte: new Date(endDate) }) };
+      dsMatch.saleDate  = { $gte: new Date(startDate), ...(endDate && { $lte: new Date(endDate) }) };
+    }
+
+    const [wholesale, direct] = await Promise.all([
+      WholesaleOrder.aggregate([
+        { $match: wsMatch },
+        { $unwind: '$items' },
+        { $group: {
+            _id: { design: '$items.design', color: '$items.color', size: '$items.size' },
+            totalQuantity: { $sum: '$items.quantity' },
+            orderCount:    { $sum: 1 }
+        }}
+      ]),
+      DirectSale.aggregate([
+        { $match: dsMatch },
+        { $unwind: '$items' },
+        { $group: {
+            _id: { design: '$items.design', color: '$items.color', size: '$items.size' },
+            totalQuantity: { $sum: '$items.quantity' },
+            orderCount:    { $sum: 1 }
+        }}
+      ])
+    ]);
+
+    const combined = {};
+    [...wholesale, ...direct].forEach(item => {
+      const key = `${item._id.design}-${item._id.color}-${item._id.size}`;
+      if (!combined[key]) combined[key] = {
+        design: item._id.design, color: item._id.color, size: item._id.size,
+        totalQuantity: 0, orderCount: 0
+      };
+      combined[key].totalQuantity += item.totalQuantity;
+      combined[key].orderCount    += item.orderCount;
+    });
+
+    const result = Object.values(combined)
+      .sort((a, b) => b.totalQuantity - a.totalQuantity)
+      .slice(0, parseInt(limit));
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('getBestSellingWDProducts error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ==========================================
+// REORDER PLANNER — accurate backend calc
+// ==========================================
+const getReorderPlannerData = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { channel = 'marketplace', inventoryMode = 'reserved' } = req.query;
+
+    const DAYS       = 30;
+    const startDate  = new Date();
+    startDate.setDate(startDate.getDate() - DAYS);
+    startDate.setHours(0, 0, 0, 0);
+
+    // ── Step 1: Get all sales for last 30d from DB (no pagination limit) ──
+    let salesData = [];
+
+    if (channel === 'marketplace') {
+      salesData = await MarketplaceSale.aggregate([
+        {
+          $match: {
+            organizationId: new mongoose.Types.ObjectId(organizationId),
+            saleDate:   { $gte: startDate },
+            deletedAt:  null,
+            status:     { $nin: ['cancelled', 'returned', 'wrongreturn', 'RTO'] },
+          },
+        },
+        {
+          $group: {
+            _id:       { design: '$design', color: '$color', size: '$size' },
+            totalSold: { $sum: '$quantity' },
+          },
+        },
+      ]);
+    } else {
+      // W&D: wholesale orders + direct sales combined
+      const [wholesale, direct] = await Promise.all([
+        WholesaleOrder.aggregate([
+          {
+            $match: {
+              organizationId: new mongoose.Types.ObjectId(organizationId),
+              orderDate:  { $gte: startDate },
+              deletedAt:  null,
+            },
+          },
+          { $unwind: '$items' },
+          {
+            $group: {
+              _id:       { design: '$items.design', color: '$items.color', size: '$items.size' },
+              totalSold: { $sum: '$items.quantity' },
+            },
+          },
+        ]),
+        DirectSale.aggregate([
+          {
+            $match: {
+              organizationId: new mongoose.Types.ObjectId(organizationId),
+              saleDate:  { $gte: startDate },
+              deletedAt: null,
+            },
+          },
+          { $unwind: '$items' },
+          {
+            $group: {
+              _id:       { design: '$items.design', color: '$items.color', size: '$items.size' },
+              totalSold: { $sum: '$items.quantity' },
+            },
+          },
+        ]),
+      ]);
+
+      // Merge wholesale + direct into one salesData array
+      const mergeMap = {};
+      [...wholesale, ...direct].forEach(item => {
+        const key = `${item._id.design}__${item._id.color}__${item._id.size}`;
+        if (!mergeMap[key]) mergeMap[key] = { _id: item._id, totalSold: 0 };
+        mergeMap[key].totalSold += item.totalSold;
+      });
+      salesData = Object.values(mergeMap);
+    }
+
+    // ── Step 2: Get full stock data from Product collection ──
+    const products = await Product.find({ organizationId }).lean();
+
+    const stockMap = {};
+    products.forEach(product => {
+      product.colors.forEach(color => {
+        color.sizes.forEach(size => {
+          const key = `${product.design}__${color.color}__${size.size}`;
+          stockMap[key] = {
+            design:       product.design,
+            color:        color.color,
+            size:         size.size,
+            currentStock: size.currentStock  || 0,
+            reservedStock: size.reservedStock || 0,
+            reorderPoint: size.reorderPoint  || 10,
+          };
+        });
+      });
+    });
+
+    // ── Step 3: Build reorder list ──
+    const result = [];
+
+    salesData.forEach(sale => {
+    const key       = `${sale._id.design}__${sale._id.color}__${sale._id.size}`;
+    const stockInfo = stockMap[key];
+    if (!stockInfo) return;
+
+    const stockToUse = channel === 'marketplace'
+      ? (inventoryMode === 'reserved' ? stockInfo.reservedStock : stockInfo.currentStock)
+      : stockInfo.currentStock;
+
+    const totalSold = sale.totalSold || 0;
+    if (totalSold === 0) return;
+
+    const dailyRate = parseFloat((totalSold / DAYS).toFixed(2));
+    if (dailyRate === 0) return;
+
+    const doh       = Math.round(stockToUse / dailyRate);
+    const suggested = stockToUse <= stockInfo.reorderPoint
+      ? Math.max(0, Math.ceil(dailyRate * DAYS) - stockToUse + 15)
+      : 0;
+
+    result.push({
+      design:       stockInfo.design,
+      color:        stockInfo.color,
+      size:         stockInfo.size,
+      currentStock: stockToUse,
+      sold30d:      totalSold,
+      dailyRate,
+      doh,
+      suggested,
+    });
+  });
+
+    // Sort by DOH ascending — most urgent first
+    result.sort((a, b) => a.doh - b.doh);
+
+    res.json({ success: true, data: result, days: DAYS });
+
+  } catch (error) {
+    console.error('getReorderPlannerData error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
-  
+  getTodayMarketplaceSummary,
+  getBestSellingWDProducts,
+  getReorderPlannerData,
+
   // Section 1: Wholesale & Direct
   getTopWholesaleBuyers,
   getTopProductsPerBuyer,
