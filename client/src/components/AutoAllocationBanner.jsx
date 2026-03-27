@@ -2,18 +2,19 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { FiAlertTriangle, FiX, FiChevronDown, FiChevronUp, FiPackage } from 'react-icons/fi';
 import axios from 'axios';
 
+// ✅ One constant, used everywhere in this file
+const API = import.meta.env.VITE_API_URL; // "https://inventory-backend-6lt9.onrender.com/api"
+
 const AutoAllocationBanner = () => {
   const [notifications, setNotifications] = useState([]);
   const [expanded, setExpanded]           = useState(false);
   const [dismissing, setDismissing]       = useState({});
-  const [newIds, setNewIds]               = useState(new Set()); // ids to animate in
+  const [newIds, setNewIds]               = useState(new Set());
   const dropdownRef                       = useRef(null);
   const eventSourceRef                    = useRef(null);
   const reconnectTimerRef                 = useRef(null);
 
-  // ── Connect to SSE ────────────────────────────────────────────────────────
   const connectSSE = useCallback(() => {
-    // Clean up any existing connection
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
@@ -22,12 +23,10 @@ const AutoAllocationBanner = () => {
     const token = localStorage.getItem('token');
     if (!token) return;
 
-    // EventSource doesn't support custom headers natively
-    // so we pass token as query param — make sure your protect middleware supports this
-    const url = `/api/auto-allocation/stream?token=${token}`;
+    // ✅ FIX 1: Use API env var — was `/api/auto-allocation/stream?token=...`
+    const url = `${API}/auto-allocation/stream?token=${token}`;
     const es  = new EventSource(url);
 
-    // ── On connect: receive current notifications immediately ────────────
     es.addEventListener('init', (e) => {
       try {
         const { notifications: existing } = JSON.parse(e.data);
@@ -35,18 +34,14 @@ const AutoAllocationBanner = () => {
       } catch (_) {}
     });
 
-    // ── Real-time push: new allocation just ran ──────────────────────────
     es.addEventListener('new_allocation', (e) => {
       try {
         const { notification } = JSON.parse(e.data);
         setNotifications(prev => {
-          // Avoid duplicates
           if (prev.some(n => n._id === notification._id)) return prev;
           return [notification, ...prev];
         });
-        // Mark as new for animation
         setNewIds(prev => new Set([...prev, notification._id]));
-        // Remove animation class after it completes
         setTimeout(() => {
           setNewIds(prev => {
             const next = new Set(prev);
@@ -54,23 +49,19 @@ const AutoAllocationBanner = () => {
             return next;
           });
         }, 600);
-        // Auto-expand banner when new notification arrives
         setExpanded(true);
       } catch (_) {}
     });
 
-    // ── On error: reconnect after 5s ─────────────────────────────────────
     es.onerror = () => {
       es.close();
       eventSourceRef.current = null;
-      // Reconnect after 5 seconds
       reconnectTimerRef.current = setTimeout(connectSSE, 5000);
     };
 
     eventSourceRef.current = es;
   }, []);
 
-  // ── Mount: connect SSE. Unmount: cleanup ─────────────────────────────────
   useEffect(() => {
     connectSSE();
     return () => {
@@ -79,7 +70,6 @@ const AutoAllocationBanner = () => {
     };
   }, [connectSSE]);
 
-  // ── Close dropdown on outside click ──────────────────────────────────────
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
@@ -90,13 +80,12 @@ const AutoAllocationBanner = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [expanded]);
 
-  // ── Dismiss single ────────────────────────────────────────────────────────
   const handleDismiss = async (e, notifId) => {
     e.stopPropagation();
     setDismissing(prev => ({ ...prev, [notifId]: true }));
     try {
-      await axios.patch(`/api/auto-allocation/notifications/${notifId}/dismiss`);
-      // Animate out: wait for CSS transition then remove
+      // ✅ FIX 2: Use API env var — was `/api/auto-allocation/notifications/...`
+      await axios.patch(`${API}/auto-allocation/notifications/${notifId}/dismiss`);
       setTimeout(() => {
         setNotifications(prev => prev.filter(n => n._id !== notifId));
         if (notifications.length === 1) setExpanded(false);
@@ -106,11 +95,11 @@ const AutoAllocationBanner = () => {
     }
   };
 
-  // ── Dismiss all ───────────────────────────────────────────────────────────
   const handleDismissAll = async (e) => {
     e.stopPropagation();
     try {
-      await axios.patch('/api/auto-allocation/notifications/dismiss-all');
+      // ✅ FIX 3: Use API env var — was `/api/auto-allocation/notifications/dismiss-all`
+      await axios.patch(`${API}/auto-allocation/notifications/dismiss-all`);
       setNotifications([]);
       setExpanded(false);
     } catch (_) {}
