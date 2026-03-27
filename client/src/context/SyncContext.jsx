@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
 const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
 const SyncContext = createContext();
 
 export const useSyncContext = () => {
@@ -64,7 +65,7 @@ export const SyncProvider = ({ children }) => {
   const acceptSyncRequest = async (syncId) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`/api/supplier-sync/${syncId}/accept`, {
+      const response = await fetch(`${API}/supplier-sync/${syncId}/accept`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       });
@@ -88,7 +89,7 @@ export const SyncProvider = ({ children }) => {
   const rejectSyncRequest = async (syncId, reason) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`/api/supplier-sync/${syncId}/reject`, {
+      const response = await fetch(`${API}/supplier-sync/${syncId}/reject`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason })
