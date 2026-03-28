@@ -3876,6 +3876,12 @@ const handleDelete = async (id) => {
                                       : sale.marketplaceOrderId || '-'}
                                   </p>
                                 </div>
+                                <div>
+                                  <span className="text-gray-500">Product:</span>
+                                  <p className="font-semibold">
+                                    {sale.design} - {sale.color} - {sale.size}
+                                  </p>
+                                </div>
                                 {/* Tracking ID — shown if exists */}
                                 {sale.trackingId && (
                                   <div className="mt-1">
@@ -3896,12 +3902,6 @@ const handleDelete = async (id) => {
                                     </p>
                                   </div>
                                 )}
-                                <div>
-                                  <span className="text-gray-500">Product:</span>
-                                  <p className="font-semibold">
-                                    {sale.design} - {sale.color} - {sale.size}
-                                  </p>
-                                </div>
                                 <div>
                                   <span className="text-gray-500">Quantity:</span>
                                   <p className="font-semibold">{sale.quantity}</p>
