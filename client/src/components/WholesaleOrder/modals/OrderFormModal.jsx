@@ -306,10 +306,9 @@ const debouncedLookup = useMemo(() => debounce(async (mobile) => {
   // ── Helpers ──────────────────────────────────────────────────
   const getColorQty = (cd, sizes) => {
     if (!cd) return {};
-    if (cd.mode === 'sets') return sizes.reduce((a, s) => ({ ...a, [s]: Number(cd.sets) || 0 }), {});
+    if (cd.mode === 'sets') return (sizes || []).reduce((a, s) => ({ ...a, [s]: Number(cd.sets) || 0 }), {});
     return cd.pieces || {};
   };
-
 
   const getStock = (design, color, size) => {
     const p  = products.find(p => p.design === design); if (!p) return 0;
@@ -319,12 +318,17 @@ const debouncedLookup = useMemo(() => debounce(async (mobile) => {
   };
 
 
-  const getTotalPieces = item =>
-    item.selectedColors.reduce((t, color) => {
-      const qty = getColorQty(item.colorData[color], getSizesForDesign(item.design) || enabledSizes || []);
-      return t + Object.values(qty).reduce((s, q) => s + (Number(q) || 0), 0);
+  const getTotalPieces = item => {
+    if (!item?.selectedColors?.length) return 0;
+    return item.selectedColors.reduce((t, color) => {
+      const cd  = item.colorData?.[color];
+      if (!cd) return t;
+      const sizes = getSizesForDesign?.(item.design) || enabledSizes || [];
+      const qty   = getColorQty(cd, sizes);
+      if (!qty) return t;
+      return t + Object.values(qty).reduce((s, q) => s + Number(q || 0), 0);
     }, 0);
-
+  };
 
   const calcTotals = useCallback(() => {
     let subtotal = 0;
@@ -831,7 +835,7 @@ const handleAddItem = () => {
                     )}
 
                     {/* Quantities per color */}
-                    {item.selectedColors.length > 0 && (
+                    {(item.selectedColors?.length > 0) && (
                       <div className="space-y-3" data-qty-section={idx}>
                         {item.selectedColors.map(color => {
                           const itemSizes = getSizesForDesign(item.design) || enabledSizes || [];
@@ -883,15 +887,15 @@ const handleAddItem = () => {
                                     placeholder="0"
                                   />
                                   <span className="text-xs text-gray-400">
-                                    × {itemSizes.length} = {(cd.sets || 0) * itemSizes.length} pcs
+                                    × {itemSizes?.length || 0} · {cd.sets || 0} × {itemSizes?.length || 0} pcs
                                   </span>
                                 </div>
                               ) : (
                                 <div
                                   className="grid gap-2"
-                                  style={{ gridTemplateColumns: `repeat(${Math.min(itemSizes.length, 7)}, minmax(0, 1fr))` }}
+                                  style={{ gridTemplateColumns: `repeat(${Math.min(itemSizes?.length || 1, 7)}, minmax(0, 1fr))` }}
                                 >
-                                  {itemSizes.map(size => {
+                                  {(itemSizes || []).map(size => {
                                     const stock = getStock(item.design, color, size);
                                     const qty   = Number(cd.pieces?.[size]) || 0;
                                     const over  = qty > stock && formData.fulfillmentType === 'warehouse';
