@@ -61,7 +61,7 @@ const EMPTY_FORM = {
 
 export default function OrderFormModal({
   show, editingOrder,
-  products, autoOpenDrafts, enabledSizes,
+  products, autoOpenDrafts, enabledSizes, prefillItems = null,
   gstPercentage: gstPct = 5,
   savedDrafts, currentDraftId,
   saveDraft, deleteDraft, clearAllDrafts,
@@ -212,7 +212,7 @@ const scrollToColorInput = (idx) => {
 
     } else {
       setFormData({ ...EMPTY_FORM });
-      setOrderItems([emptyItem()]);
+      setOrderItems(prefillItems?.length > 0 ? prefillItems : [emptyItem]);
       setSearchMobile('');
       setBuyerFound(null);
       setGstEnabled(true);

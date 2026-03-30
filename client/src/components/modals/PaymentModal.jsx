@@ -94,19 +94,66 @@ const PaymentModal = ({
         </div>
 
         {paymentPreview && (
-          <div className="p-4 bg-green-50 border border-green-200 rounded-lg space-y-2">
-            <h4 className="font-semibold text-green-900 text-sm mb-2">Payment Preview</h4>
-            <div className="text-sm text-green-800">
-              <p>Amount: ₹{paymentPreview.amount?.toLocaleString('en-IN')}</p>
-              <p>Will be allocated to {paymentPreview.ordersAffected?.length || 0} order(s)</p>
-              {paymentPreview.remaining > 0 && (
-                <p className="text-orange-600 mt-1">
-                  Excess: ₹{paymentPreview.remaining.toLocaleString('en-IN')} (will be saved as advance)
+        <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+          <p className="text-sm font-semibold text-blue-800 mb-3">📊 Allocation Preview</p>
+
+          {/* ── BILL MODE ── */}
+          {paymentPreview.mode === 'bill' && paymentPreview.billAllocation?.map((bill, i) => (
+            <div key={i} className="mb-3 p-3 bg-white rounded border border-blue-100">
+              <div className="flex justify-between text-sm font-medium text-gray-800">
+                <span>📄 {bill.billNumber} ({bill.month} {bill.year})</span>
+                <span className={bill.status === 'FULLY_PAID' ? 'text-green-600' : 'text-orange-600'}>
+                  {bill.status === 'FULLY_PAID' ? '✅ Fully Paid' : '⚡ Partial'}
+                </span>
+              </div>
+              <div className="flex justify-between text-xs text-gray-500 mt-1">
+                <span>Balance: ₹{bill.currentBalance?.toLocaleString('en-IN')}</span>
+                <span>Allocating: ₹{bill.amountToAllocate?.toLocaleString('en-IN')}</span>
+                <span>Remaining: ₹{bill.newBalance?.toLocaleString('en-IN')}</span>
+              </div>
+              {bill.hasPrevAdj && (
+                <p className="text-xs text-amber-600 mt-1">
+                  ⚠️ Includes ₹{bill.prevAdjAmount?.toLocaleString('en-IN')} previous unbilled adjustment
                 </p>
               )}
+              {bill.challanBreakdown?.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {bill.challanBreakdown.map((c, j) => (
+                    <div key={j} className="flex justify-between text-xs text-gray-500 pl-2 border-l-2 border-blue-200">
+                      <span>{c.challanNumber}</span>
+                      <span>+₹{c.amountAllocated?.toLocaleString('en-IN')} → Due: ₹{c.newDue?.toLocaleString('en-IN')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
+          ))}
+
+          {/* ── ORDER MODE ── */}
+          {paymentPreview.mode === 'order' && paymentPreview.allocation?.map((order, i) => (
+            <div key={i} className="flex justify-between items-center py-2 border-b border-blue-100 text-sm">
+              <span className="text-gray-700 font-medium">{order.challanNumber}</span>
+              <span className="text-blue-600">+₹{order.amountToAllocate?.toLocaleString('en-IN')}</span>
+              <span className={order.status === 'FULLY_PAID' ? 'text-green-600' : 'text-orange-500'}>
+                Due: ₹{order.newDue?.toLocaleString('en-IN')}
+              </span>
+            </div>
+          ))}
+
+          {/* ── SUMMARY ── */}
+          <div className="mt-3 pt-2 border-t border-blue-200 flex justify-between text-sm font-semibold">
+            <span className="text-gray-700">Remaining Due After Payment</span>
+            <span className={paymentPreview.remainingDue === 0 ? 'text-green-600' : 'text-red-600'}>
+              ₹{paymentPreview.remainingDue?.toLocaleString('en-IN')}
+            </span>
           </div>
-        )}
+          {paymentPreview.excessAmount > 0 && (
+            <p className="text-xs text-amber-600 mt-1">
+              ⚠️ ₹{paymentPreview.excessAmount?.toLocaleString('en-IN')} excess — no more pending dues
+            </p>
+          )}
+        </div>
+      )}
 
         <div className="flex gap-3 pt-4">
           <button

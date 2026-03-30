@@ -161,11 +161,12 @@ const fetchTenants = async () => {
     }
 
     try {
-      const preview = await wholesaleService.previewPaymentAllocation(
+      const response = await wholesaleService.previewPaymentAllocation(
         selectedBuyer._id,
         parseFloat(amount)
       );
-      setPaymentPreview(preview);
+      // ✅ FIX: unwrap .data — backend sends { success, data: {...} }
+      setPaymentPreview(response.data || response);
     } catch (error) {
       console.error('Preview failed:', error);
       setPaymentPreview(null);
@@ -198,31 +199,61 @@ const fetchTenants = async () => {
     setIsSubmitting(true);
     try {
       const result = await wholesaleService.recordSmartPayment(selectedBuyer._id, {
-        amount: parseFloat(paymentForm.amount),
+        amount       : parseFloat(paymentForm.amount),
         paymentMethod: paymentForm.paymentMethod,
-        paymentDate: paymentForm.paymentDate,
-        notes: paymentForm.notes
+        paymentDate  : paymentForm.paymentDate,
+        notes        : paymentForm.notes
       });
 
-      if (result.data.billsAffected) {
+      const {
+        amountAllocated,
+        excessAmount,
+        excessSavedAsAdvance,
+        billsAffected,
+        ordersAffected,
+        warning
+      } = result.data;
+
+      // ── Toast based on outcome ──────────────────────────────────────────
+      if (excessSavedAsAdvance && amountAllocated > 0) {
+        // Partial allocation + excess saved as advance
         toast.success(
-          `₹${result.data.amountAllocated.toLocaleString('en-IN')} allocated to ${result.data.billsAffected.length} bill(s)`
+          `₹${amountAllocated.toLocaleString('en-IN')} allocated. ₹${excessAmount.toLocaleString('en-IN')} saved as advance.`,
+          { duration: 5000, icon: '💰' }
+        );
+      } else if (excessSavedAsAdvance && amountAllocated === 0) {
+        // No dues at all — full amount saved as advance
+        toast.success(
+          `No pending dues. ₹${excessAmount.toLocaleString('en-IN')} saved as advance payment.`,
+          { duration: 5000, icon: '💰' }
+        );
+      } else if (billsAffected?.length > 0) {
+        // Normal bill allocation
+        toast.success(
+          `₹${amountAllocated.toLocaleString('en-IN')} allocated to ${billsAffected.length} bill(s)`
         );
       } else {
+        // Normal order allocation
         toast.success(
-          `₹${result.data.amountAllocated.toLocaleString('en-IN')} allocated to ${result.data.ordersAffected.length} order(s)`
+          `₹${amountAllocated.toLocaleString('en-IN')} allocated to ${ordersAffected?.length || 0} order(s)`
         );
+      }
+
+      // Show warning as separate toast if present
+      if (warning) {
+        toast(warning, { icon: '⚠️', duration: 4000 });
       }
 
       setShowPaymentModal(false);
       await fetchInitialData();
-      
-      // Update selected buyer
+
+      // Update selected buyer panel with fresh data
       const updatedBuyers = await wholesaleService.getAllBuyers();
-      const updatedBuyer = updatedBuyers.find(b => b._id === selectedBuyer._id);
+      const updatedBuyer  = updatedBuyers.find(b => b._id === selectedBuyer._id);
       if (updatedBuyer) {
         setSelectedBuyer(updatedBuyer);
       }
+
     } catch (error) {
       const errorMsg = error.response?.data?.message || 'Failed to record payment';
       toast.error(errorMsg);
@@ -261,7 +292,7 @@ const openLinkModal = (buyer) => {
     setShowHistoryModal(true);
     try {
       const history = await wholesaleService.getBulkPaymentHistory(buyer._id);
-      setPaymentHistory(history.payments || []);
+      setPaymentHistory(history.data?.payments || []);  // ← fix: history.data.payments
     } catch (error) {
       toast.error('Failed to load payment history');
       setPaymentHistory([]);

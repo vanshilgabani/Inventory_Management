@@ -5,6 +5,55 @@ const Settings = require('../models/Settings');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 
+// ── Article description helper ───────────────────────────────────────────────
+// Extracts design number from design name and builds article description
+// D9 → #09, D10 → #10, D11 → #11, D13 → #13
+// Same design, higher price → #09A, #10A etc.
+const buildDesignPriceMap = (orders) => {
+  const designPriceMap = {};
+
+  orders.forEach(order => {
+    (order.items || []).forEach(item => {
+      const design = (item.design || '').trim();
+      const price  = item.pricePerUnit || 0;
+      if (!design || price <= 0) return;
+
+      if (!designPriceMap[design]) designPriceMap[design] = new Set();
+      designPriceMap[design].add(price);
+    });
+  });
+
+  // Convert sets → sorted arrays (ascending price)
+  const result = {};
+  for (const [design, priceSet] of Object.entries(designPriceMap)) {
+    result[design] = Array.from(priceSet).sort((a, b) => a - b);
+  }
+  return result;
+};
+
+const getArticleDescription = (design, price, designPriceSorted) => {
+  if (!design) return 'CARGO PANTS'; // fallback for missing design
+
+  // Extract number from design name — supports D9, d9, D09, D10, D13 etc.
+  const match = design.match(/[Dd](\d+)/);
+  if (!match) return `CARGO PANTS`; // non-D design fallback
+
+  const num    = match[1];
+  const padded = num.padStart(2, '0');   // 9→09, 10→10, 13→13
+
+  const prices     = designPriceSorted[design] || [price];
+  const priceIndex = prices.indexOf(price);
+
+  if (priceIndex <= 0) {
+    // Standard / lowest price → #09, #10, #11, #13
+    return `CARGO PANTS #${padded}`;
+  } else {
+    // Higher price variant → #09A, #09B, #10A etc.
+    const suffix = String.fromCharCode(65 + priceIndex - 1); // A, B, C...
+    return `CARGO PANTS #${padded}${suffix}`;
+  }
+};
+
 const updateChallansAfterPayment = async (bill, session) => {
   try {
     logger.info('Starting challan payment update', {
@@ -32,8 +81,14 @@ const updateChallansAfterPayment = async (bill, session) => {
     
     for (const b of allBills) {
       // Calculate how much of this bill has been paid
-      const billPaidRatio = b.financials.grandTotal > 0 
-        ? b.financials.amountPaid / b.financials.grandTotal 
+      const realChallansTotal = b.challans
+        .filter(c => c.challanId)  // exclude PREV-ADJ (challanId: null)
+        .reduce((sum, c) => sum + (c.totalAmount || 0), 0);
+
+      const paymentForRealChallans = Math.min(b.financials.amountPaid, realChallansTotal);
+
+      const billPaidRatio = realChallansTotal > 0
+        ? paymentForRealChallans / realChallansTotal
         : 0;
 
       logger.debug('Processing bill', {
@@ -156,6 +211,43 @@ const updateChallansAfterPayment = async (bill, session) => {
       fullyPaid: fullyPaidCount,
       partiallyPaid: partiallyPaidCount
     });
+
+    // When bill is fully paid, force-clear any rounding residuals on all orders
+    if (bill.financials.balanceDue === 0) {
+      logger.info('Bill fully paid — reconciling any rounding residuals', {
+        billNumber: bill.billNumber
+      });
+
+      for (const [challanId] of challanPaymentMap) {
+        const order = await WholesaleOrder.findById(challanId).session(session);
+        if (!order) continue;
+
+        if (order.amountDue > 0 && order.amountDue < 1) {
+          // Small rounding residual — write it off
+          const residual = order.amountDue;
+
+          order.amountPaid      = order.totalAmount;
+          order.amountDue       = 0;
+          order.paymentStatus   = 'Paid';
+
+          order.paymentHistory.push({
+            amount       : residual,
+            paymentDate  : new Date(),
+            paymentMethod: 'Rounding Adjustment',
+            notes        : `Auto rounding adjustment ₹${residual.toFixed(2)} — bill ${bill.billNumber} fully paid`,
+            recordedBy   : 'System-Reconcile'
+          });
+
+          await order.save({ session });
+
+          logger.info('Rounding residual cleared', {
+            challanId,
+            challanNumber: order.challanNumber,
+            residualCleared: residual
+          });
+        }
+      }
+    }
 
     return {
       success: true,
@@ -441,7 +533,15 @@ const generateBill = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { buyerId, month, year, companyId } = req.body;
+    const {
+      buyerId,
+      month,
+      year,
+      companyId,
+      adjustPreviousUnbilled,
+      customSequence,
+      selectedGstId          // ← NEW
+    } = req.body;
     const organizationId = req.user.organizationId;
 
     // Validation
@@ -467,33 +567,25 @@ const generateBill = async (req, res) => {
     let companies = settings.companies || [];
     if (!companies || companies.length === 0) {
       const defaultCompany = {
-        id: 'company1',
-        name: settings.companyName || 'My Company',
+        id      : 'company1',
+        name    : settings.companyName || 'My Company',
         legalName: settings.companyName || 'My Company',
-        gstin: settings.gstNumber || '',
-        pan: '',
-        address: {
-          line1: settings.address || '',
-          line2: '',
-          city: '',
-          state: 'Gujarat',
-          pincode: '',
+        gstin   : settings.gstNumber || '',
+        pan     : '',
+        address : {
+          line1    : settings.address || '',
+          line2    : '',
+          city     : '',
+          state    : 'Gujarat',
+          pincode  : '',
           stateCode: '24'
         },
-        contact: {
-          phone: settings.phone || '',
-          email: settings.email || ''
-        },
-        bank: {
-          name: '',
-          accountNo: '',
-          ifsc: '',
-          branch: ''
-        },
-        logo: '',
+        contact : { phone: settings.phone || '', email: settings.email || '' },
+        bank    : { name: '', accountNo: '', ifsc: '', branch: '' },
+        logo    : '',
         isDefault: true
       };
-      companies = [defaultCompany];
+      companies          = [defaultCompany];
       settings.companies = companies;
       await settings.save({ session });
     }
@@ -501,14 +593,14 @@ const generateBill = async (req, res) => {
     // Get company details
     const billingSettings = settings.billingSettings || {
       defaultCompanyId: 'company1',
-      paymentTermDays: 30,
-      hsnCode: '6203',
-      gstRate: settings.gstPercentage || 5,
+      paymentTermDays : 30,
+      hsnCode         : '6203',
+      gstRate         : settings.gstPercentage || 5,
       billNumberPrefix: 'VR'
     };
 
     const selectedCompanyId = companyId || billingSettings.defaultCompanyId || 'company1';
-    const company = companies.find(c => c.id === selectedCompanyId);
+    const company           = companies.find(c => c.id === selectedCompanyId);
 
     if (!company) {
       await session.abortTransaction();
@@ -519,10 +611,7 @@ const generateBill = async (req, res) => {
     }
 
     // Get buyer
-    const buyer = await WholesaleBuyer.findOne({
-      _id: buyerId,
-      organizationId
-    }).session(session);
+    const buyer = await WholesaleBuyer.findOne({ _id: buyerId, organizationId }).session(session);
 
     if (!buyer) {
       await session.abortTransaction();
@@ -532,16 +621,64 @@ const generateBill = async (req, res) => {
       });
     }
 
+    // ── RESOLVE GST PROFILE ───────────────────────────────────────────────────
+    // Default → use buyer's primary GST fields
+    let activeBuyerGst = {
+      gstin    : buyer.gstNumber || '',
+      pan      : buyer.pan || (buyer.gstNumber?.length >= 12 ? buyer.gstNumber.substring(2, 12) : ''),
+      address  : buyer.address || '',
+      stateCode: buyer.stateCode || '24',
+      profileId: null,
+      label    : 'Primary'
+    };
+
+    if (selectedGstId && buyer.gstProfiles?.length > 0) {
+      const selectedProfile = buyer.gstProfiles.find(
+        g => g.profileId === selectedGstId || g._id?.toString() === selectedGstId
+      );
+
+      if (selectedProfile) {
+        activeBuyerGst = {
+          gstin    : selectedProfile.gstNumber || activeBuyerGst.gstin,
+          pan      : selectedProfile.pan       || activeBuyerGst.pan,
+          address  : selectedProfile.address?.fullAddress
+                     || selectedProfile.address?.line1
+                     || activeBuyerGst.address,
+          stateCode: selectedProfile.stateCode || activeBuyerGst.stateCode,
+          profileId: selectedProfile.profileId,
+          label    : selectedProfile.businessName
+                     || selectedProfile.tradeName
+                     || 'Selected GST'
+        };
+
+        // Track usage count on the profile
+        selectedProfile.lastUsedAt = new Date();
+        selectedProfile.usageCount = (selectedProfile.usageCount || 0) + 1;
+
+        logger.info('Using selected GST profile for bill', {
+          buyerId,
+          profileId: activeBuyerGst.profileId,
+          gstin    : activeBuyerGst.gstin,
+          label    : activeBuyerGst.label
+        });
+      } else {
+        logger.warn('selectedGstId provided but profile not found — using primary GST', {
+          buyerId,
+          selectedGstId
+        });
+      }
+    }
+
     // Calculate billing period dates
     const startDate = new Date(year, getMonthNumber(month), 1);
-    const endDate = new Date(year, getMonthNumber(month) + 1, 0, 23, 59, 59);
+    const endDate   = new Date(year, getMonthNumber(month) + 1, 0, 23, 59, 59);
 
     // Check if bill already exists
     const existingBill = await MonthlyBill.findOne({
       organizationId,
-      'buyer.id': buyerId,
+      'buyer.id'           : buyerId,
       'billingPeriod.month': month,
-      'billingPeriod.year': year
+      'billingPeriod.year' : year
     }).session(session);
 
     if (existingBill) {
@@ -554,13 +691,10 @@ const generateBill = async (req, res) => {
 
     // Get all orders for this buyer in this period
     const orders = await WholesaleOrder.find({
-      buyerId: buyer._id,
+      buyerId     : buyer._id,
       organizationId,
-      createdAt: {
-        $gte: startDate,
-        $lte: endDate
-      },
-      deletedAt: null
+      createdAt   : { $gte: startDate, $lte: endDate },
+      deletedAt   : null
     })
       .sort({ createdAt: 1 })
       .session(session);
@@ -573,53 +707,65 @@ const generateBill = async (req, res) => {
       });
     }
 
-    // Build challans array
-    const gstRate = billingSettings.gstRate || settings.gstPercentage || 5;
-    const challans = orders.map(order => {
-      const itemsQty = order.items.reduce((sum, item) => sum + item.quantity, 0);
-      const taxableAmount = order.totalAmount / (1 + gstRate / 100);
-      const gstAmount = order.totalAmount - taxableAmount;
+    // ── Build design→price map BEFORE building challans ──────────────────────
+    const designPriceSorted = buildDesignPriceMap(orders);
 
-      const itemsWithTaxableAmounts = order.items.map(item => {
-        const qty = item.quantity || 0;
-        const price = item.pricePerUnit || 0;
-        return {
-          color: item.color || '',
-          size: item.size || '',
-          quantity: qty,
-          price: parseFloat(price.toFixed(2)),
-          amount: parseFloat((qty * price).toFixed(2))
-        };
-      });
+    logger.info('Design price map built', {
+      buyerId,
+      designs: Object.keys(designPriceSorted).map(d => ({
+        design: d,
+        prices: designPriceSorted[d]
+      }))
+    });
+
+  // Build challans array
+  const gstRate = billingSettings.gstRate || settings.gstPercentage || 5;
+  const challans = orders.map(order => {
+    const itemsQty      = order.items.reduce((sum, item) => sum + item.quantity, 0);
+    const taxableAmount = order.totalAmount / (1 + gstRate / 100);
+    const gstAmount     = order.totalAmount - taxableAmount;
+
+    const itemsWithTaxableAmounts = order.items.map(item => {
+      const qty    = item.quantity     || 0;
+      const price  = item.pricePerUnit || 0;
+      const design = (item.design || '').trim();
 
       return {
-        challanId: order._id,
-        challanNumber: order.challanNumber,
-        challanDate: order.createdAt,
-        items: itemsWithTaxableAmounts,
-        itemsQty: itemsQty,
-        taxableAmount: parseFloat(taxableAmount.toFixed(2)),
-        gstAmount: parseFloat(gstAmount.toFixed(2)),
-        totalAmount: order.totalAmount
+        color      : item.color || '',
+        size       : item.size  || '',
+        quantity   : qty,
+        price      : parseFloat(price.toFixed(2)),
+        amount     : parseFloat((qty * price).toFixed(2)),
+        description: getArticleDescription(design, price, designPriceSorted)  // ✅ NEW
       };
     });
 
-    // 🔥 NEW: Check if buyer has unbilled amount from previous period
-    const previousUnbilledAmount = req.body.adjustPreviousUnbilled || 0; // From frontend
+    return {
+      challanId    : order._id,
+      challanNumber: order.challanNumber,
+      challanDate  : order.createdAt,
+      items        : itemsWithTaxableAmounts,
+      itemsQty,
+      taxableAmount: parseFloat(taxableAmount.toFixed(2)),
+      gstAmount    : parseFloat(gstAmount.toFixed(2)),
+      totalAmount  : order.totalAmount
+    };
+  });
+
+    // ── PREV-ADJ: Previous unbilled amount adjustment ─────────────────────────
+    const previousUnbilledAmount = adjustPreviousUnbilled || 0;
 
     if (previousUnbilledAmount > 0) {
-      logger.info('🔧 Adjusting for unbilled previous amount', {
-        buyerId: buyer._id,
-        unbilledAmount: previousUnbilledAmount,
+      logger.info('Adjusting for unbilled previous amount', {
+        buyerId          : buyer._id,
+        unbilledAmount   : previousUnbilledAmount,
         month,
         year
       });
-      
-      // STEP 1: Convert to taxable amount
-      const targetTaxable = previousUnbilledAmount / (1 + gstRate / 100);
-      
-      // STEP 2: Extract unique prices from current orders
+
+      const targetTaxable   = previousUnbilledAmount / (1 + gstRate / 100);
       const availablePrices = [];
+
       orders.forEach(order => {
         order.items.forEach(item => {
           if (item.pricePerUnit && item.pricePerUnit > 0) {
@@ -627,19 +773,15 @@ const generateBill = async (req, res) => {
           }
         });
       });
-      
+
       if (availablePrices.length === 0) {
         logger.warn('No product prices available for adjustment');
       } else {
-        // STEP 3: Find best product combination
         const combination = findBestProductCombination(targetTaxable, availablePrices, gstRate);
-        
+
         if (combination) {
-          // STEP 4: Create adjustment challan
           const adjustmentItems = combination.products.map(p => {
-            // Find a product with this price to get color/size
             let productInfo = { color: 'Mixed', size: 'Assorted' };
-            
             for (const order of orders) {
               const matchingItem = order.items.find(item => item.pricePerUnit === p.price);
               if (matchingItem) {
@@ -647,40 +789,36 @@ const generateBill = async (req, res) => {
                 break;
               }
             }
-            
             return {
-              color: productInfo.color,
-              size: productInfo.size,
+              color   : productInfo.color,
+              size    : productInfo.size,
               quantity: p.quantity,
-              price: parseFloat(p.price.toFixed(2)),
-              amount: parseFloat(p.amount.toFixed(2))
+              price   : parseFloat(p.price.toFixed(2)),
+              amount  : parseFloat(p.amount.toFixed(2)),
+              description: 'CARGO PANTS #101'
             };
           });
-          
+
           const adjustmentTaxable = combination.totalAmount;
-          const adjustmentGst = adjustmentTaxable * (gstRate / 100);
-          const adjustmentTotal = adjustmentTaxable + adjustmentGst;
-          
-          const adjustmentChallan = {
-            challanId: null, // No actual order
-            challanNumber: 'PREV-ADJ', // Special marker
-            challanDate: new Date(),
-            items: adjustmentItems,
-            itemsQty: combination.products.reduce((sum, p) => sum + p.quantity, 0),
+          const adjustmentGst     = adjustmentTaxable * (gstRate / 100);
+          const adjustmentTotal   = adjustmentTaxable + adjustmentGst;
+
+          challans.push({
+            challanId    : null,
+            challanNumber: 'PREV-ADJ',
+            challanDate  : new Date(),
+            items        : adjustmentItems,
+            itemsQty     : combination.products.reduce((sum, p) => sum + p.quantity, 0),
             taxableAmount: parseFloat(adjustmentTaxable.toFixed(2)),
-            gstAmount: parseFloat(adjustmentGst.toFixed(2)),
-            totalAmount: parseFloat(adjustmentTotal.toFixed(2))
-          };
-          
-          // Add to challans array
-          challans.push(adjustmentChallan);
-          
-          logger.info('✅ Adjustment challan added', {
+            gstAmount    : parseFloat(adjustmentGst.toFixed(2)),
+            totalAmount  : parseFloat(adjustmentTotal.toFixed(2))
+          });
+
+          logger.info('Adjustment challan added', {
             targetAmount: previousUnbilledAmount,
             actualAmount: adjustmentTotal,
-            difference: Math.abs(previousUnbilledAmount - adjustmentTotal),
-            products: combination.products,
-            accuracy: `${(100 - (combination.difference / targetTaxable * 100)).toFixed(2)}%`
+            difference  : Math.abs(previousUnbilledAmount - adjustmentTotal),
+            accuracy    : `${(100 - (combination.difference / targetTaxable * 100)).toFixed(2)}%`
           });
         }
       }
@@ -688,106 +826,168 @@ const generateBill = async (req, res) => {
 
     // Calculate financials
     const totalTaxableAmount = challans.reduce((sum, c) => sum + c.taxableAmount, 0);
-    const totalGstAmount = challans.reduce((sum, c) => sum + c.gstAmount, 0);
-    const invoiceTotal = challans.reduce((sum, c) => sum + c.totalAmount, 0);
+    const totalGstAmount     = challans.reduce((sum, c) => sum + c.gstAmount, 0);
+    const invoiceTotal       = challans.reduce((sum, c) => sum + c.totalAmount, 0);
 
-    // Check if same state for CGST/SGST or IGST
-    const buyerState = buyer.stateCode || company.address?.stateCode || '24';
+    // ── Use activeBuyerGst.stateCode for CGST/SGST vs IGST ───────────────────
+    const buyerState   = activeBuyerGst.stateCode || company.address?.stateCode || '24';
     const companyState = company.address?.stateCode || '24';
-    const isSameState = buyerState === companyState;
+    const isSameState  = buyerState === companyState;
 
-    const cgst = isSameState ? totalGstAmount / 2 : 0;
-    const sgst = isSameState ? totalGstAmount / 2 : 0;
-    const igst = !isSameState ? totalGstAmount : 0;
+    const cgst = isSameState  ? totalGstAmount / 2 : 0;
+    const sgst = isSameState  ? totalGstAmount / 2 : 0;
+    const igst = !isSameState ? totalGstAmount     : 0;
 
     // Get previous outstanding (unpaid bills)
-    // 🔥 NEW: If we're adjusting previous unbilled amount, skip previous outstanding
     let previousOutstanding = 0;
 
     if (!previousUnbilledAmount || previousUnbilledAmount === 0) {
-      // Normal flow - get previous outstanding from unpaid bills
       const previousBills = await MonthlyBill.find({
         organizationId,
         'buyer.id': buyerId,
-        status: { $in: ['generated', 'sent', 'partial', 'overdue'] },
+        status    : { $in: ['generated', 'sent', 'partial', 'overdue'] },
         'billingPeriod.endDate': { $lt: startDate }
       }).session(session);
 
-      previousOutstanding = previousBills.reduce((sum, bill) => 
-        sum + bill.financials.balanceDue, 0
-      );
-      
+      previousOutstanding = previousBills.reduce((sum, bill) => sum + bill.financials.balanceDue, 0);
+
       logger.info('Previous outstanding calculated from unpaid bills', {
         buyerId,
         previousBills: previousBills.length,
         previousOutstanding
       });
     } else {
-      // Adjustment mode - previous unbilled amount is already included in products
-      logger.info('🔧 Skipping previous outstanding (adjustment mode)', {
+      logger.info('Skipping previous outstanding (adjustment mode)', {
         buyerId,
         adjustmentAmount: previousUnbilledAmount
       });
     }
 
-    // ✅ NEW: Check if challans in this bill are already paid
-    const challanIds = challans.map(c => c.challanId);
-
+    // Check challan payments already made
+    const challanIds         = challans.map(c => c.challanId).filter(Boolean);
     const ordersWithPayments = await WholesaleOrder.find({
       _id: { $in: challanIds },
       organizationId
     }).session(session);
 
-    // Calculate how much has been paid for these challans
-    let totalPaidFromChallans = 0;
+    let totalPaidFromChallans        = 0;
     const paymentHistoryFromChallans = [];
 
     for (const order of ordersWithPayments) {
       totalPaidFromChallans += order.amountPaid || 0;
-      
-      // Collect payment history from orders
-      if (order.paymentHistory && order.paymentHistory.length > 0) {
+
+      if (order.paymentHistory?.length > 0) {
+        const VALID_PAYMENT_METHODS = ['Cash', 'UPI', 'Bank Transfer', 'Cheque', 'Card', 'Other',
+                                'Bill Payment', 'Rounding Adjustment', 'System-AutoApply'];
+
         order.paymentHistory.forEach(payment => {
           paymentHistoryFromChallans.push({
-            amount: payment.amount,
-            paymentDate: payment.paymentDate,
-            paymentMethod: payment.paymentMethod,
-            notes: payment.notes || `Payment for challan ${order.challanNumber}`,
-            recordedBy: payment.recordedBy || "System",
-            recordedByRole: payment.recordedByRole || "admin"
+            amount        : payment.amount,
+            paymentDate   : payment.paymentDate,
+            // ✅ Normalize — fallback to 'Other' if value not in enum
+            paymentMethod : VALID_PAYMENT_METHODS.includes(payment.paymentMethod)
+                            ? payment.paymentMethod
+                            : 'Other',
+            notes         : payment.notes || `Payment for challan ${order.challanNumber}`,
+            recordedBy    : payment.recordedBy    || 'System',
+            recordedByRole: payment.recordedByRole || 'admin'
           });
         });
       }
     }
 
     logger.info('Challan payments detected during bill generation', {
-      buyerId: buyer._id,
+      buyerId              : buyer._id,
       month,
       year,
       totalPaidFromChallans,
-      paymentsCount: paymentHistoryFromChallans.length
+      paymentsCount        : paymentHistoryFromChallans.length
     });
 
-    // Calculate grand total and balance
+    // Calculate grand total
     const grandTotal = invoiceTotal + previousOutstanding;
-    const amountPaid = totalPaidFromChallans;
-    const balanceDue = Math.max(0, grandTotal - amountPaid);
 
-    const status = 'draft';
+    // ── AUTO-APPLY PENDING ADVANCE PAYMENTS ──────────────────────────────────
+    const pendingAdvances = (buyer.advancePayments || [])
+      .filter(p => p.status === 'pending-allocation')
+      .sort((a, b) => new Date(a.paymentDate) - new Date(b.paymentDate));
 
-    // Generate bill number (with optional custom sequence for first bill)
-    const { customSequence } = req.body; // Get from request
+    let advanceApplied = 0;
+    const advancesUsed = [];
+
+    for (const advance of pendingAdvances) {
+      const available = grandTotal - totalPaidFromChallans - advanceApplied;
+      if (available <= 0) break;
+
+      const toApply = Math.min(advance.amount, available);
+      advanceApplied += toApply;
+
+      advancesUsed.push({
+        advanceId    : advance._id,
+        amount       : advance.amount,
+        applied      : toApply,
+        leftover     : Math.round((advance.amount - toApply) * 100) / 100,
+        paymentDate  : advance.paymentDate,
+        paymentMethod: advance.paymentMethod
+      });
+    }
+
+    // Mark advances as allocated or partially used
+    for (const used of advancesUsed) {
+      const adv = buyer.advancePayments.id(used.advanceId);
+      if (adv) {
+        if (used.leftover > 0) {
+          adv.amount = used.leftover;
+          adv.notes  = `${adv.notes || ''} | Partially applied ₹${used.applied} to bill generated ${new Date().toLocaleDateString('en-IN')}`.trim();
+        } else {
+          adv.status = 'allocated';
+          adv.notes  = `${adv.notes || ''} | Fully applied to bill generated ${new Date().toLocaleDateString('en-IN')}`.trim();
+        }
+      }
+    }
+
+    const totalAmountPaid = totalPaidFromChallans + advanceApplied;
+    const amountPaid      = Math.round(totalAmountPaid * 100) / 100;
+    const balanceDue      = Math.max(0, grandTotal - amountPaid);
+
+    // ✅ Status auto-calculated AFTER balanceDue is known
+    const status = balanceDue === 0 ? 'paid' : 'draft';
+
+    // Build advance payment history entries
+    const advancePaymentHistory = advancesUsed.map(used => ({
+      amount        : used.applied,
+      paymentDate   : used.paymentDate,
+      paymentMethod : used.paymentMethod,
+      notes         : `Auto-applied advance payment (originally recorded: ${new Date(used.paymentDate).toLocaleDateString('en-IN')})`,
+      recordedBy    : 'System-AutoApply',
+      recordedByRole: 'admin'
+    }));
+
+    // ✅ Merge all payment histories
+    const mergedPaymentHistory = [...paymentHistoryFromChallans, ...advancePaymentHistory];
+
+    if (advancesUsed.length > 0) {
+      logger.info('Advance payments auto-applied during bill generation', {
+        buyerId        : buyer._id,
+        advancesUsed   : advancesUsed.length,
+        totalApplied   : advanceApplied,
+        grandTotal,
+        finalBalanceDue: balanceDue
+      });
+    }
+
+    // Generate bill number
     const billNumber = await generateBillNumber(organizationId, customSequence, session);
 
     // Calculate financial year
-    const billMonth = startDate.getMonth(); // 0-11
-    const billYear = startDate.getFullYear();
-    const financialYear = billMonth < 3 ? billYear - 1 : billYear;
+    const billMonth          = startDate.getMonth();
+    const billYear           = startDate.getFullYear();
+    const financialYear      = billMonth < 3 ? billYear - 1 : billYear;
     const financialYearString = `${financialYear}-${(financialYear + 1).toString().slice(-2)}`;
 
     // Calculate due date
     const paymentTermDays = billingSettings.paymentTermDays || 30;
-    const paymentDueDate = new Date(endDate);
+    const paymentDueDate  = new Date(endDate);
     paymentDueDate.setDate(paymentDueDate.getDate() + paymentTermDays);
 
     // Create bill
@@ -795,83 +995,81 @@ const generateBill = async (req, res) => {
       billNumber,
       financialYear: financialYearString,
       company: {
-        id: company.id,
-        name: company.name,
+        id      : company.id,
+        name    : company.name,
         legalName: company.legalName || company.name,
-        gstin: company.gstin,
-        pan: company.pan,
-        address: company.address,
-        contact: company.contact,
-        bank: company.bank,
-        logo: company.logo
+        gstin   : company.gstin,
+        pan     : company.pan,
+        address : company.address,
+        contact : company.contact,
+        bank    : company.bank,
+        logo    : company.logo
       },
+      // ✅ Uses activeBuyerGst — reflects selected GST profile
       buyer: {
-        id: buyer._id,
-        name: buyer.name,
-        mobile: buyer.mobile,
-        email: buyer.email,
-        businessName: buyer.businessName,
-        gstin: buyer.gstNumber,
-        pan: buyer.pan || (buyer.gstNumber && buyer.gstNumber.length >= 12 ? buyer.gstNumber.substring(2, 12) : ''),
-        address: buyer.address,
-        stateCode: buyerState
+        id          : buyer._id,
+        name        : buyer.name,
+        mobile      : buyer.mobile,
+        email       : buyer.email,
+        businessName: activeBuyerGst.label !== 'Primary'
+                        ? activeBuyerGst.label
+                        : (buyer.businessName || buyer.name),
+        gstin       : activeBuyerGst.gstin,
+        pan         : activeBuyerGst.pan,
+        address     : activeBuyerGst.address,
+        stateCode   : activeBuyerGst.stateCode,
+        gstProfileId: activeBuyerGst.profileId   // ✅ Track which profile was used
       },
-      billingPeriod: {
-        month,
-        year,
-        startDate,
-        endDate
-      },
+      billingPeriod: { month, year, startDate, endDate },
       challans,
       financials: {
         totalTaxableAmount: parseFloat(totalTaxableAmount.toFixed(2)),
-        cgst: parseFloat(cgst.toFixed(2)),
-        sgst: parseFloat(sgst.toFixed(2)),
-        igst: parseFloat(igst.toFixed(2)),
+        cgst              : parseFloat(cgst.toFixed(2)),
+        sgst              : parseFloat(sgst.toFixed(2)),
+        igst              : parseFloat(igst.toFixed(2)),
         gstRate,
-        invoiceTotal: parseFloat(invoiceTotal.toFixed(2)),
+        invoiceTotal      : parseFloat(invoiceTotal.toFixed(2)),
         previousOutstanding: parseFloat(previousOutstanding.toFixed(2)),
-        grandTotal: parseFloat(grandTotal.toFixed(2)),
-        amountPaid: parseFloat(amountPaid.toFixed(2)),  // ✅ From challan payments
-        balanceDue: parseFloat(balanceDue.toFixed(2))
+        grandTotal        : parseFloat(grandTotal.toFixed(2)),
+        amountPaid        : parseFloat(amountPaid.toFixed(2)),
+        balanceDue        : parseFloat(balanceDue.toFixed(2))
       },
-      status,  // ✅ Auto-calculated
+      status,
       paymentDueDate,
-      paymentHistory: paymentHistoryFromChallans,  // ✅ Include challan payments
-      hsnCode: billingSettings.hsnCode || '6203',
+      paymentHistory: mergedPaymentHistory,   // ✅ challan + advance payments
+      hsnCode       : billingSettings.hsnCode || '6203',
       organizationId,
-      finalizedAt: status !== 'draft' ? new Date() : null
+      finalizedAt   : status !== 'draft' ? new Date() : null
     }], { session });
 
-    // ✅ NEW: Add bill to buyer's tracking
-    if (!buyer.monthlyBills) {
-      buyer.monthlyBills = [];
-    }
+    // Add bill to buyer tracking
+    if (!buyer.monthlyBills) buyer.monthlyBills = [];
 
     buyer.monthlyBills.push({
-      billId: bill[0]._id,
+      billId      : bill[0]._id,
       billNumber,
       month,
       year,
       invoiceTotal: parseFloat(invoiceTotal.toFixed(2)),
-      amountPaid: parseFloat(amountPaid.toFixed(2)),
-      balanceDue: parseFloat(balanceDue.toFixed(2)),
+      amountPaid  : parseFloat(amountPaid.toFixed(2)),
+      balanceDue  : parseFloat(balanceDue.toFixed(2)),
       status,
-      generatedAt: new Date()
+      generatedAt : new Date()
     });
 
-    // ✅ Recalculate buyer's totalDue from bills
-    buyer.totalDue = buyer.monthlyBills.reduce((sum, b) => sum + b.balanceDue, 0);
-    buyer.totalPaid = buyer.monthlyBills.reduce((sum, b) => sum + b.amountPaid, 0);
+    // Recalculate buyer totals
+    buyer.totalDue  = Math.max(0, buyer.monthlyBills.reduce((sum, b) => sum + (b.balanceDue || 0), 0));
+    buyer.totalPaid = buyer.monthlyBills.reduce((sum, b) => sum + (b.amountPaid || 0), 0);
 
     await buyer.save({ session });
-
     await session.commitTransaction();
 
-    logger.info('Bill generated successfully with challan payments', {
-      billId: bill[0]._id,
+    logger.info('Bill generated successfully', {
+      billId      : bill[0]._id,
       billNumber,
-      buyer: buyer.name,
+      buyer       : buyer.name,
+      gstUsed     : activeBuyerGst.gstin,
+      gstProfileId: activeBuyerGst.profileId,
       status,
       amountPaid,
       balanceDue
@@ -880,15 +1078,16 @@ const generateBill = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Bill generated successfully',
-      data: bill[0]
+      data   : bill[0]
     });
+
   } catch (error) {
     await session.abortTransaction();
-    logger.error('Bill generation failed:', error.message);
+    logger.error('Bill generation failed', { error: error.message });
     res.status(500).json({
       success: false,
       message: 'Failed to generate bill',
-      error: error.message
+      error  : error.message
     });
   } finally {
     session.endSession();
@@ -2100,155 +2299,217 @@ const deletePaymentFromBill = async (req, res) => {
     const { billId, paymentIndex } = req.params;
     const organizationId = req.user.organizationId;
 
-    // Find bill
-    const bill = await MonthlyBill.findOne({
-      _id: billId,
-      organizationId,
-    }).session(session);
+    const bill = await MonthlyBill.findOne({ _id: billId, organizationId }).session(session);
 
     if (!bill) {
       await session.abortTransaction();
       return res.status(404).json({
         success: false,
-        code: 'BILL_NOT_FOUND',
-        message: 'Bill not found',
+        code   : 'BILL_NOT_FOUND',
+        message: 'Bill not found'
       });
     }
 
-    // Get payment to delete
-    const paymentToDelete = bill.paymentHistory[parseInt(paymentIndex)];
-    
+    const idx = parseInt(paymentIndex);
+    const paymentToDelete = bill.paymentHistory[idx];
+
     if (!paymentToDelete) {
       await session.abortTransaction();
       return res.status(404).json({
         success: false,
-        code: 'PAYMENT_NOT_FOUND',
-        message: 'Payment not found at specified index',
+        code   : 'PAYMENT_NOT_FOUND',
+        message: 'Payment not found at specified index'
       });
     }
 
     const deletedAmount = paymentToDelete.amount;
-    const isPreBillPayment = paymentToDelete.notes?.includes('Payment for challan') || false;
+
+    // Detect payment type
+    const isPreBillChallan  = paymentToDelete.notes?.includes('Payment for challan') || false;
+    const isAutoAdvance     = paymentToDelete.recordedBy === 'System-AutoApply' ||
+                              paymentToDelete.notes?.includes('Auto-applied advance') || false;
+    const isCorrection      = paymentToDelete.recordedBy === 'System-Fix-Script' || false;
 
     logger.info('Deleting payment from bill', {
-      billId: bill._id,
-      billNumber: bill.billNumber,
-      paymentIndex,
+      billId       : bill._id,
+      billNumber   : bill.billNumber,
+      paymentIndex : idx,
       deletedAmount,
-      isPreBillPayment,
+      isPreBillChallan,
+      isAutoAdvance
     });
 
-    // Remove payment from history
-    bill.paymentHistory.splice(parseInt(paymentIndex), 1);
+    // ── Remove payment from history ──────────────────────────────────────────
+    bill.paymentHistory.splice(idx, 1);
 
-    // ✅ FIXED: Only adjust financials if this is NOT a pre-bill challan payment
-    if (!isPreBillPayment) {
-      // This is a payment made AFTER bill generation - adjust bill totals
-      bill.financials.amountPaid = Math.max(0, bill.financials.amountPaid - deletedAmount);
-      bill.financials.balanceDue = bill.financials.grandTotal - bill.financials.amountPaid;
+    // ── ALWAYS recalculate amountPaid from remaining history ─────────────────
+    // This is the correct approach regardless of payment type
+    // because ALL payments in history contributed to amountPaid
+    bill.financials.amountPaid = Math.max(
+      0,
+      Math.round(
+        bill.paymentHistory.reduce((s, p) => s + (p.amount || 0), 0) * 100
+      ) / 100
+    );
+    bill.financials.balanceDue = Math.max(
+      0,
+      Math.round((bill.financials.grandTotal - bill.financials.amountPaid) * 100) / 100
+    );
 
-      // ✅ FIXED: Update bill status with correct enum values
-      if (bill.financials.balanceDue === 0) {
-        // Fully paid
-        bill.status = 'paid';
-        bill.paidAt = new Date();
-      } else if (bill.financials.balanceDue >= bill.financials.grandTotal) {
-        // Full balance restored - back to generated (unpaid)
-        bill.status = 'generated';
-        bill.paidAt = null;
-      } else if (bill.financials.amountPaid > 0 && bill.financials.balanceDue > 0) {
-        // Partially paid
-        bill.status = 'partial';
-        bill.paidAt = null;
-      } else {
-        // Default to generated
-        bill.status = 'generated';
-        bill.paidAt = null;
-      }
-
-      logger.info('Bill financials updated after payment deletion', {
-        amountPaid: bill.financials.amountPaid,
-        balanceDue: bill.financials.balanceDue,
-        status: bill.status,
-      });
+    // Recalculate bill status
+    if (bill.financials.balanceDue === 0) {
+      bill.status = 'paid';
+      bill.paidAt = new Date();
+    } else if (bill.financials.amountPaid === 0) {
+      bill.status = 'generated';
+      bill.paidAt = null;
+    } else {
+      bill.status = 'partial';
+      bill.paidAt = null;
     }
 
     await bill.save({ session });
 
-    // ✅ Update buyer totals if not pre-bill payment
-    if (!isPreBillPayment) {
-      const buyer = await WholesaleBuyer.findById(bill.buyer.id).session(session);
-      
-      if (buyer) {
-        const buyerBillIndex = buyer.monthlyBills.findIndex(
-          (b) => b.billId.toString() === bill._id.toString()
-        );
+    logger.info('Bill financials recalculated after payment deletion', {
+      amountPaid: bill.financials.amountPaid,
+      balanceDue: bill.financials.balanceDue,
+      status    : bill.status
+    });
 
+    // ── Sync order/challan payment statuses using correct ratio ──────────────
+    try {
+      const challanUpdateResult = await updateChallansAfterPayment(bill, session);
+      logger.info('Challans recalculated after payment deletion', {
+        billNumber: bill.billNumber,
+        ...challanUpdateResult
+      });
+    } catch (challanError) {
+      // Don't fail the deletion — log and continue
+      logger.error('Challan recalc failed after payment deletion', {
+        billNumber: bill.billNumber,
+        error     : challanError.message
+      });
+    }
+
+    // ── If advance payment deleted → restore it to pending-allocation ────────
+    if (isAutoAdvance) {
+      const buyer = await WholesaleBuyer.findById(bill.buyer.id).session(session);
+      if (buyer) {
+        // Find the most recently allocated advance that matches amount + date
+        const matchingAdvance = buyer.advancePayments
+          .filter(a =>
+            a.status === 'allocated' &&
+            Math.abs(a.amount - deletedAmount) < 0.01
+          )
+          .sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate))[0]; // most recent
+
+        if (matchingAdvance) {
+          matchingAdvance.status = 'pending-allocation';
+          matchingAdvance.notes  = `${matchingAdvance.notes || ''} | Restored: payment deleted from bill ${bill.billNumber}`.trim();
+          logger.info('Advance payment restored to pending', {
+            buyerId  : buyer._id,
+            advanceId: matchingAdvance._id,
+            amount   : deletedAmount
+          });
+        } else {
+          // Advance was partially used — add a fresh pending advance
+          buyer.advancePayments.push({
+            amount        : deletedAmount,
+            paymentDate   : paymentToDelete.paymentDate,
+            paymentMethod : paymentToDelete.paymentMethod,
+            forMonth      : null,
+            forYear       : null,
+            status        : 'pending-allocation',
+            notes         : `Restored from deleted bill payment. Bill: ${bill.billNumber}`,
+            recordedBy    : 'System-Restore',
+            recordedByRole: 'admin'
+          });
+          logger.info('Fresh advance payment created on restore', {
+            buyerId: buyer._id,
+            amount : deletedAmount
+          });
+        }
+
+        // Sync buyer bill tracking + recalculate totals
+        const buyerBillIndex = buyer.monthlyBills.findIndex(
+          b => b.billId.toString() === bill._id.toString()
+        );
         if (buyerBillIndex !== -1) {
           buyer.monthlyBills[buyerBillIndex].amountPaid = bill.financials.amountPaid;
           buyer.monthlyBills[buyerBillIndex].balanceDue = bill.financials.balanceDue;
-          buyer.monthlyBills[buyerBillIndex].status = bill.status;
+          buyer.monthlyBills[buyerBillIndex].status     = bill.status;
         }
 
-        // Recalculate totals
-        buyer.totalDue = buyer.monthlyBills.reduce((sum, b) => sum + (b.balanceDue || 0), 0);
-        buyer.totalPaid = buyer.monthlyBills.reduce((sum, b) => sum + (b.amountPaid || 0), 0);
+        buyer.totalDue  = Math.max(0, buyer.monthlyBills.reduce((s, b) => s + (b.balanceDue || 0), 0));
+        buyer.totalPaid = buyer.monthlyBills.reduce((s, b) => s + (b.amountPaid || 0), 0);
+
+        await buyer.save({ session });
+      }
+
+    } else {
+      // ── Normal payment (post-bill or pre-bill challan) → just sync buyer ───
+      const buyer = await WholesaleBuyer.findById(bill.buyer.id).session(session);
+      if (buyer) {
+        const buyerBillIndex = buyer.monthlyBills.findIndex(
+          b => b.billId.toString() === bill._id.toString()
+        );
+        if (buyerBillIndex !== -1) {
+          buyer.monthlyBills[buyerBillIndex].amountPaid = bill.financials.amountPaid;
+          buyer.monthlyBills[buyerBillIndex].balanceDue = bill.financials.balanceDue;
+          buyer.monthlyBills[buyerBillIndex].status     = bill.status;
+        }
+
+        buyer.totalDue  = Math.max(0, buyer.monthlyBills.reduce((s, b) => s + (b.balanceDue || 0), 0));
+        buyer.totalPaid = buyer.monthlyBills.reduce((s, b) => s + (b.amountPaid || 0), 0);
 
         await buyer.save({ session });
 
         logger.info('Buyer totals updated after payment deletion', {
-          buyerId: buyer._id,
-          newTotalDue: buyer.totalDue,
-          newTotalPaid: buyer.totalPaid,
+          buyerId     : buyer._id,
+          newTotalDue : buyer.totalDue,
+          newTotalPaid: buyer.totalPaid
         });
       }
     }
 
     await session.commitTransaction();
 
-    logger.info('Payment deleted successfully', {
-      billId: bill._id,
-      billNumber: bill.billNumber,
-      deletedAmount,
-      isPreBillPayment,
-      newBalanceDue: bill.financials.balanceDue,
-      deletedBy: req.user.email,
-    });
-
     res.json({
       success: true,
-      message: isPreBillPayment 
-        ? 'Challan payment removed from history (bill totals unchanged)' 
-        : 'Payment deleted and balance restored',
+      message: isAutoAdvance
+        ? 'Advance payment deleted and restored to pending allocation'
+        : isPreBillChallan
+          ? 'Pre-bill challan payment deleted and bill balance restored'
+          : 'Payment deleted and balance restored',
       data: {
         bill: {
-          _id: bill._id,
+          _id       : bill._id,
           billNumber: bill.billNumber,
-          status: bill.status,
+          status    : bill.status,
           amountPaid: bill.financials.amountPaid,
-          balanceDue: bill.financials.balanceDue,
+          balanceDue: bill.financials.balanceDue
         },
         deletedAmount,
-        isPreBillPayment,
+        isPreBillChallan,
+        isAutoAdvance,
         newBalanceDue: bill.financials.balanceDue,
-        newAmountPaid: bill.financials.amountPaid,
-      },
+        newAmountPaid: bill.financials.amountPaid
+      }
     });
 
   } catch (error) {
     await session.abortTransaction();
     logger.error('Failed to delete payment from bill', {
-      error: error.message,
-      stack: error.stack,
-      billId: req.params.billId,
-      paymentIndex: req.params.paymentIndex,
+      error     : error.message,
+      stack     : error.stack,
+      billId    : req.params.billId,
+      paymentIndex: req.params.paymentIndex
     });
-    
     res.status(500).json({
       success: false,
-      code: 'DELETE_FAILED',
+      code   : 'DELETE_FAILED',
       message: 'Failed to delete payment',
-      error: error.message,
+      error  : error.message
     });
   } finally {
     session.endSession();

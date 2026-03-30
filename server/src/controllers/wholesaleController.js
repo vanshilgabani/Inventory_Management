@@ -1194,9 +1194,29 @@ const getAllBuyers = async (req, res) => {
         // ✅ ALWAYS use order-based calculations
         // Bills are for invoicing only — they must not override display metrics
         const totalOrders = orders.length;
-        const totalSpent  = orders.reduce((sum, o) => sum + (o.totalAmount  || 0), 0);
-        const totalPaid   = orders.reduce((sum, o) => sum + (o.amountPaid   || 0), 0);
-        const totalDue    = orders.reduce((sum, o) => sum + (o.amountDue    || 0), 0);
+        const totalSpent  = orders.reduce((sum, o) => sum + o.totalAmount, 0);
+
+        // When bills exist, trust bill balanceDue (covers PREV-ADJ too)
+        // When no bills, fall back to order-based calculation
+        let totalDue, totalPaid;
+
+        if (buyer.monthlyBills && buyer.monthlyBills.length > 0) {
+          // Fetch fresh bill values — don't trust cached monthlyBills array
+          const activeBills = await MonthlyBill.find({
+            organizationId,
+            'buyer.id': buyer._id.toString()
+          }).lean();
+
+          totalDue  = Math.max(0, Math.round(
+            activeBills.reduce((s, b) => s + (b.financials?.balanceDue || 0), 0) * 100
+          ) / 100);
+          totalPaid = Math.round(
+            activeBills.reduce((s, b) => s + (b.financials?.amountPaid || 0), 0) * 100
+          ) / 100;
+        } else {
+          totalPaid = orders.reduce((sum, o) => sum + o.amountPaid, 0);
+          totalDue  = orders.reduce((sum, o) => sum + o.amountDue, 0);
+        }
 
         const finalStats = {
           totalOrders,
@@ -1563,6 +1583,7 @@ const recordBulkPayment = async (req, res) => {
       buyerId: buyer._id,
       organizationId,
       amountDue: { $gt: 0 },
+      deletedAt: null // ✅ EXCLUDE deleted orders
     })
       .sort({ orderDate: 1 }) // Oldest first
       .session(session);
@@ -1684,7 +1705,7 @@ const recordSmartPayment = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { id } = req.params; // buyer ID
+    const { id } = req.params;
     const { amount, paymentMethod, paymentDate, notes } = req.body;
     const organizationId = req.user.organizationId;
 
@@ -1696,10 +1717,7 @@ const recordSmartPayment = async (req, res) => {
       });
     }
 
-    const buyer = await WholesaleBuyer.findOne({
-      _id: id,
-      organizationId
-    }).session(session);
+    const buyer = await WholesaleBuyer.findOne({ _id: id, organizationId }).session(session);
 
     if (!buyer) {
       await session.abortTransaction();
@@ -1710,30 +1728,31 @@ const recordSmartPayment = async (req, res) => {
     }
 
     let remainingAmount = parseFloat(amount);
+
     const paymentRecord = {
-      amount: parseFloat(amount),
-      paymentDate: paymentDate || new Date(),
-      paymentMethod: paymentMethod || 'Cash',
-      notes: notes || '',
-      recordedBy: req.user.email || req.user.username,
+      amount        : parseFloat(amount),
+      paymentDate   : paymentDate || new Date(),
+      paymentMethod : paymentMethod || 'Cash',
+      notes         : notes || '',
+      recordedBy    : req.user.email || req.user.username,
       recordedByRole: req.user.role
     };
 
-    // ✅ STEP 1: Check if bills exist for this buyer
+    // ── STEP 1: Check if bills exist ────────────────────────────────────────
     const bills = await MonthlyBill.find({
       organizationId,
       'buyer.id': id,
       'financials.balanceDue': { $gt: 0 }
     })
-      .sort({ 'billingPeriod.year': 1, 'billingPeriod.month': 1 }) // Oldest first
+      .sort({ 'billingPeriod.year': 1, 'billingPeriod.month': 1 })
       .session(session);
 
+    // ════════════════════════════════════════════════════════════════════════
+    // PATH A — BILL-BASED ALLOCATION
+    // ════════════════════════════════════════════════════════════════════════
     if (bills.length > 0) {
-      // Bills exist - allocate payment to bills
       logger.info('Bills found - allocating payment to bills', {
-        buyerId: id,
-        billsCount: bills.length,
-        amount
+        buyerId: id, billsCount: bills.length, amount
       });
 
       const billsAffected = [];
@@ -1743,11 +1762,10 @@ const recordSmartPayment = async (req, res) => {
 
         const amountToAllocate = Math.min(remainingAmount, bill.financials.balanceDue);
 
-        // Update bill
         bill.financials.amountPaid += amountToAllocate;
-        bill.financials.balanceDue -= amountToAllocate;
+        bill.financials.balanceDue  = Math.max(0, bill.financials.balanceDue - amountToAllocate);
 
-        if (bill.financials.balanceDue <= 0) {
+        if (bill.financials.balanceDue === 0) {
           bill.status = 'paid';
           bill.paidAt = new Date();
         } else {
@@ -1757,172 +1775,272 @@ const recordSmartPayment = async (req, res) => {
         bill.paymentHistory.push({
           ...paymentRecord,
           amount: amountToAllocate,
-          notes: notes || 'Payment allocation'
+          notes : notes || 'Payment allocation'
         });
 
         await bill.save({ session });
 
-        // Update buyer's bill tracking
+        // Sync to buyer.monthlyBills tracking array
         const buyerBillIndex = buyer.monthlyBills.findIndex(
           b => b.billId.toString() === bill._id.toString()
         );
-
         if (buyerBillIndex !== -1) {
           buyer.monthlyBills[buyerBillIndex].amountPaid = bill.financials.amountPaid;
           buyer.monthlyBills[buyerBillIndex].balanceDue = bill.financials.balanceDue;
-          buyer.monthlyBills[buyerBillIndex].status = bill.status;
+          buyer.monthlyBills[buyerBillIndex].status     = bill.status;
         }
 
         billsAffected.push({
-          billId: bill._id,
-          billNumber: bill.billNumber,
-          month: bill.billingPeriod.month,
-          year: bill.billingPeriod.year,
+          billId         : bill._id,
+          billNumber     : bill.billNumber,
+          month          : bill.billingPeriod.month,
+          year           : bill.billingPeriod.year,
           amountAllocated: amountToAllocate,
-          newBalance: bill.financials.balanceDue
+          newBalance     : bill.financials.balanceDue
         });
 
         remainingAmount -= amountToAllocate;
 
         logger.info('Payment allocated to bill', {
-          billId: bill._id,
+          billId    : bill._id,
           billNumber: bill.billNumber,
-          allocated: amountToAllocate,
+          allocated : amountToAllocate,
           newBalance: bill.financials.balanceDue
         });
 
-        // 🆕 NEW: UPDATE CHALLANS AFTER EACH BILL PAYMENT
+        // Update individual challan/order payment status using CORRECT ratio
         try {
-          // Import the function at top of file:
-          // const { updateChallansAfterPayment } = require('./monthlyBillController');
-          // OR define it here as well (copy the helper function)
-          
           const challanUpdateResult = await updateChallansAfterPayment(bill, session);
           logger.info('Challans updated for bill', {
             billNumber: bill.billNumber,
             ...challanUpdateResult
           });
         } catch (challanError) {
-          logger.error('Failed to update challans for bill, continuing', {
+          logger.error('Failed to update challans, continuing', {
             billNumber: bill.billNumber,
-            error: challanError.message
+            error     : challanError.message
           });
-          // Don't fail the payment
         }
       }
 
-      // Update buyer totals
-      buyer.totalDue = buyer.monthlyBills.reduce((sum, b) => sum + (b.balanceDue || 0), 0);
-      buyer.totalPaid = buyer.monthlyBills.reduce((sum, b) => sum + (b.amountPaid || 0), 0);
+      // ── Handle excess → save as advance ───────────────────────────────────
+      const excessAmount = Math.round(remainingAmount * 100) / 100;
+      if (excessAmount > 0) {
+        buyer.advancePayments.push({
+          amount        : excessAmount,
+          paymentDate   : paymentRecord.paymentDate,
+          paymentMethod : paymentRecord.paymentMethod,
+          forMonth      : null,
+          forYear       : null,
+          status        : 'pending-allocation',
+          notes         : `Excess from bulk payment. Original: ₹${parseFloat(amount).toLocaleString('en-IN')}. ${notes || ''}`.trim(),
+          recordedBy    : paymentRecord.recordedBy,
+          recordedByRole: paymentRecord.recordedByRole
+        });
 
-      await buyer.save({ session });
+        logger.info('Excess payment saved as advance (bill path)', {
+          buyerId: id, excessAmount, originalAmount: amount
+        });
+      }
 
-      await session.commitTransaction();
-
-      res.json({
-        success: true,
-        message: 'Payment recorded and allocated to bills',
-        data: {
-          amountReceived: amount,
-          amountAllocated: amount - remainingAmount,
-          remainingAmount: remainingAmount,
-          billsAffected: billsAffected,
-          newTotalDue: buyer.totalDue
-        }
-      });
-    } else {
-      // ✅ No bills - use old challan-based system
-      logger.info('No bills found - using challan-based payment', {
-        buyerId: id,
-        amount
-      });
-
-      // Get unpaid orders
-      const orders = await WholesaleOrder.find({
-        buyerId: buyer._id,
+      // Recalculate buyer totals from fresh bill values (most accurate)
+      const freshBills = await MonthlyBill.find({
         organizationId,
-        amountDue: { $gt: 0 }
-      })
-        .sort({ createdAt: 1 })
-        .session(session);
+        'buyer.id': id
+      }).session(session).lean();
 
-      if (orders.length === 0) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          code: 'NO_PENDING_ORDERS',
-          message: 'No pending orders found for this buyer'
-        });
-      }
-
-      const ordersAffected = [];
-
-      // Allocate to orders
-      for (const order of orders) {
-        if (remainingAmount <= 0) break;
-
-        const previousDue = order.amountDue;
-        const amountToAllocate = Math.min(remainingAmount, order.amountDue);
-
-        order.amountPaid += amountToAllocate;
-        order.amountDue -= amountToAllocate;
-
-        if (order.amountDue === 0) {
-          order.paymentStatus = 'Paid';
-        } else if (order.amountPaid > 0) {
-          order.paymentStatus = 'Partial';
-        }
-
-        order.paymentHistory = order.paymentHistory || [];
-        order.paymentHistory.push({
-          ...paymentRecord,
-          amount: amountToAllocate
-        });
-
-        await order.save({ session });
-
-        ordersAffected.push({
-          orderId: order._id,
-          challanNumber: order.challanNumber,
-          amountAllocated: amountToAllocate,
-          previousDue,
-          newDue: order.amountDue
-        });
-
-        remainingAmount -= amountToAllocate;
-      }
-
-      // Add to buyer's bulk payments
-      buyer.bulkPayments.push({
-        ...paymentRecord,
-        ordersAffected
-      });
-
-      buyer.totalDue = Math.max(0, buyer.totalDue - (amount - remainingAmount));
-      buyer.totalPaid += amount - remainingAmount;
+      buyer.totalDue  = Math.max(0, Math.round(
+        freshBills.reduce((s, b) => s + (b.financials?.balanceDue || 0), 0) * 100
+      ) / 100);
+      buyer.totalPaid = Math.round(
+        freshBills.reduce((s, b) => s + (b.financials?.amountPaid || 0), 0) * 100
+      ) / 100;
 
       await buyer.save({ session });
       await session.commitTransaction();
 
-      res.json({
+      const allocatedAmount = parseFloat(amount) - (excessAmount > 0 ? excessAmount : 0);
+
+      return res.json({
         success: true,
-        message: 'Payment recorded and allocated to orders',
+        message: excessAmount > 0
+          ? `Payment recorded. ₹${excessAmount.toLocaleString('en-IN')} saved as advance`
+          : 'Payment recorded and allocated to bills',
         data: {
-          amountReceived: amount,
-          amountAllocated: amount - remainingAmount,
-          remainingAmount,
-          ordersAffected,
-          newTotalDue: buyer.totalDue
+          amountReceived      : parseFloat(amount),
+          amountAllocated     : Math.round(allocatedAmount * 100) / 100,
+          excessAmount        : excessAmount,
+          excessSavedAsAdvance: excessAmount > 0,
+          warning             : excessAmount > 0
+            ? `₹${excessAmount.toLocaleString('en-IN')} saved as advance — will auto-apply to next bill`
+            : null,
+          billsAffected,
+          newTotalDue         : buyer.totalDue
         }
       });
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    // PATH B — ORDER-BASED ALLOCATION (no bills)
+    // ════════════════════════════════════════════════════════════════════════
+    logger.info('No bills found - using order-based payment', { buyerId: id, amount });
+
+    const orders = await WholesaleOrder.find({
+      buyerId    : buyer._id,
+      organizationId,
+      amountDue  : { $gt: 0 },
+      deletedAt  : null                          // exclude deleted orders
+    })
+      .sort({ createdAt: 1 })
+      .session(session);
+
+    if (orders.length === 0) {
+      // No orders either → entire amount is advance
+      const excessAmount = Math.round(parseFloat(amount) * 100) / 100;
+
+      buyer.advancePayments.push({
+        amount        : excessAmount,
+        paymentDate   : paymentRecord.paymentDate,
+        paymentMethod : paymentRecord.paymentMethod,
+        forMonth      : null,
+        forYear       : null,
+        status        : 'pending-allocation',
+        notes         : `Full advance — no pending orders/bills at time of recording. ${notes || ''}`.trim(),
+        recordedBy    : paymentRecord.recordedBy,
+        recordedByRole: paymentRecord.recordedByRole
+      });
+
+      await buyer.save({ session });
+      await session.commitTransaction();
+
+      logger.info('No pending orders/bills — full amount saved as advance', {
+        buyerId: id, excessAmount
+      });
+
+      return res.json({
+        success: true,
+        message: `No pending dues found. ₹${excessAmount.toLocaleString('en-IN')} saved as advance payment`,
+        data: {
+          amountReceived      : parseFloat(amount),
+          amountAllocated     : 0,
+          excessAmount,
+          excessSavedAsAdvance: true,
+          warning             : `Full amount saved as advance — will auto-apply to next bill`,
+          ordersAffected      : [],
+          newTotalDue         : buyer.totalDue
+        }
+      });
+    }
+
+    const ordersAffected = [];
+
+    for (const order of orders) {
+      if (remainingAmount <= 0) break;
+
+      const previousDue      = order.amountDue;
+      const amountToAllocate = Math.min(remainingAmount, order.amountDue);
+
+      order.amountPaid += amountToAllocate;
+      order.amountDue   = Math.max(0, order.amountDue - amountToAllocate);
+
+      if (order.amountDue === 0) {
+        order.paymentStatus = 'Paid';
+      } else if (order.amountPaid > 0) {
+        order.paymentStatus = 'Partial';
+      }
+
+      order.paymentHistory = order.paymentHistory || [];
+      order.paymentHistory.push({
+        ...paymentRecord,
+        amount: amountToAllocate
+      });
+
+      await order.save({ session });
+
+      ordersAffected.push({
+        orderId        : order._id,
+        challanNumber  : order.challanNumber,
+        amountAllocated: amountToAllocate,
+        previousDue,
+        newDue         : order.amountDue
+      });
+
+      remainingAmount -= amountToAllocate;
+    }
+
+    // Track in bulkPayments
+    buyer.bulkPayments.push({
+      ...paymentRecord,
+      ordersAffected
+    });
+
+    // ── Handle excess → save as advance ───────────────────────────────────
+    const excessAmount = Math.round(remainingAmount * 100) / 100;
+    if (excessAmount > 0) {
+      buyer.advancePayments.push({
+        amount        : excessAmount,
+        paymentDate   : paymentRecord.paymentDate,
+        paymentMethod : paymentRecord.paymentMethod,
+        forMonth      : null,
+        forYear       : null,
+        status        : 'pending-allocation',
+        notes         : `Excess from bulk payment. Original: ₹${parseFloat(amount).toLocaleString('en-IN')}. ${notes || ''}`.trim(),
+        recordedBy    : paymentRecord.recordedBy,
+        recordedByRole: paymentRecord.recordedByRole
+      });
+
+      logger.info('Excess payment saved as advance (order path)', {
+        buyerId: id, excessAmount, originalAmount: amount
+      });
+    }
+
+    // Recalculate buyer totals from fresh order values
+    const freshOrders = await WholesaleOrder.find({
+      buyerId: buyer._id,
+      organizationId,
+      deletedAt: null
+    }).session(session).lean();
+
+    buyer.totalDue  = Math.max(0, Math.round(
+      freshOrders.reduce((s, o) => s + (o.amountDue  || 0), 0) * 100
+    ) / 100);
+    buyer.totalPaid = Math.round(
+      freshOrders.reduce((s, o) => s + (o.amountPaid || 0), 0) * 100
+    ) / 100;
+
+    await buyer.save({ session });
+    await session.commitTransaction();
+
+    const allocatedAmount = parseFloat(amount) - excessAmount;
+
+    return res.json({
+      success: true,
+      message: excessAmount > 0
+        ? `Payment recorded. ₹${excessAmount.toLocaleString('en-IN')} saved as advance`
+        : 'Payment recorded and allocated to orders',
+      data: {
+        amountReceived      : parseFloat(amount),
+        amountAllocated     : Math.round(allocatedAmount * 100) / 100,
+        excessAmount,
+        excessSavedAsAdvance: excessAmount > 0,
+        warning             : excessAmount > 0
+          ? `₹${excessAmount.toLocaleString('en-IN')} saved as advance — will auto-apply to next bill`
+          : null,
+        ordersAffected,
+        newTotalDue         : buyer.totalDue
+      }
+    });
+
   } catch (error) {
     await session.abortTransaction();
-    logger.error('Smart payment recording failed:', error.message);
+    logger.error('Smart payment recording failed', {
+      error  : error.message,
+      buyerId: req.params.id
+    });
     res.status(500).json({
-      code: 'PAYMENT_FAILED',
+      code   : 'PAYMENT_FAILED',
       message: 'Failed to record payment',
-      error: error.message
+      error  : error.message
     });
   } finally {
     session.endSession();
@@ -2212,91 +2330,141 @@ const deleteBulkPayment = async (req, res) => {
 // Preview payment allocation (before recording)
 const previewPaymentAllocation = async (req, res) => {
   try {
-    const { id } = req.params; // buyer ID
+    const { id } = req.params;
     const { amount } = req.body;
     const organizationId = req.user.organizationId;
 
-    if (!amount || amount <= 0) {
-      return res.status(400).json({
-        code: 'INVALID_AMOUNT',
-        message: 'Amount must be greater than 0',
-      });
-    }
+    if (!amount || amount <= 0)
+      return res.status(400).json({ code: 'INVALID_AMOUNT', message: 'Amount must be greater than 0' });
 
-    const buyer = await WholesaleBuyer.findOne({
-      _id: id,
+    const buyer = await WholesaleBuyer.findOne({ _id: id, organizationId });
+    if (!buyer)
+      return res.status(404).json({ code: 'BUYER_NOT_FOUND', message: 'Buyer not found' });
+
+    let remainingAmount = parseFloat(amount);
+
+    // ── STEP 1: Check if bills exist (mirror recordSmartPayment exactly) ──────
+    const bills = await MonthlyBill.find({
       organizationId,
-    });
+      'buyer.id': id,
+      'financials.balanceDue': { $gt: 0 }
+    })
+      .sort({ 'billingPeriod.year': 1, 'billingPeriod.month': 1 })
+      .lean();
 
-    if (!buyer) {
-      return res.status(404).json({
-        code: 'BUYER_NOT_FOUND',
-        message: 'Buyer not found',
+    if (bills.length > 0) {
+      // ── BILL-BASED PREVIEW ──────────────────────────────────────────────────
+      const billAllocation = [];
+
+      for (const bill of bills) {
+        if (remainingAmount <= 0) break;
+
+        const amountToAllocate = Math.min(remainingAmount, bill.financials.balanceDue);
+        const newBalance = bill.financials.balanceDue - amountToAllocate;
+
+        // ── Challan-level breakdown with CORRECT ratio (PREV-ADJ fix) ──────
+        const realChallans = (bill.challans || []).filter(c => c.challanId);
+        const realChallansTotal = realChallans.reduce((s, c) => s + (c.totalAmount || 0), 0);
+        const projectedBillPaid = bill.financials.amountPaid + amountToAllocate;
+        const paymentForReal = Math.min(projectedBillPaid, realChallansTotal);
+        const correctRatio = realChallansTotal > 0 ? paymentForReal / realChallansTotal : 0;
+
+        const challanBreakdown = realChallans.map(c => {
+          const challanPaid = Math.min(
+            Math.round((c.totalAmount || 0) * correctRatio * 100) / 100,
+            c.totalAmount || 0
+          );
+          return {
+            challanNumber: c.challanNumber,
+            challanTotal: c.totalAmount,
+            amountAllocated: challanPaid,
+            newDue: Math.max(0, (c.totalAmount || 0) - challanPaid)
+          };
+        });
+
+        billAllocation.push({
+          billId: bill._id,
+          billNumber: bill.billNumber,
+          month: bill.billingPeriod?.month,
+          year: bill.billingPeriod?.year,
+          currentBalance: bill.financials.balanceDue,
+          amountToAllocate,
+          newBalance,
+          status: newBalance === 0 ? 'FULLY_PAID' : 'PARTIALLY_PAID',
+          challanBreakdown,
+          hasPrevAdj: (bill.challans || []).some(c => c.challanNumber === 'PREV-ADJ'),
+          prevAdjAmount: (bill.challans || [])
+            .filter(c => c.challanNumber === 'PREV-ADJ')
+            .reduce((s, c) => s + (c.totalAmount || 0), 0)
+        });
+
+        remainingAmount -= amountToAllocate;
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          mode: 'bill',                          // ← tells frontend which mode
+          buyerName: buyer.name,
+          totalDue: buyer.totalDue,
+          amountReceived: parseFloat(amount),
+          billAllocation,
+          allocation: [],                        // empty for backward compat
+          remainingDue: Math.max(0, buyer.totalDue - parseFloat(amount)),
+          excessAmount: remainingAmount > 0 ? remainingAmount : 0
+        }
       });
     }
 
-    // Get all pending orders (oldest first)
+    // ── STEP 2: No bills — order-based preview ────────────────────────────────
     const pendingOrders = await WholesaleOrder.find({
       buyerId: buyer._id,
       organizationId,
       amountDue: { $gt: 0 },
+      deletedAt: null                            // ← deleted order fix
     })
-      .sort({ orderDate: 1 })
-      .select('challanNumber orderDate amountDue totalAmount items')
+      .sort({ createdAt: 1 })
+      .select('challanNumber createdAt amountDue totalAmount amountPaid items')
       .lean();
 
-    if (pendingOrders.length === 0) {
-      return res.status(400).json({
-        code: 'NO_PENDING_ORDERS',
-        message: 'No pending orders found',
-      });
-    }
+    if (pendingOrders.length === 0)
+      return res.status(400).json({ code: 'NO_PENDING_ORDERS', message: 'No pending orders found' });
 
-    // Simulate allocation
-    let remainingAmount = amount;
     const allocation = [];
-
     for (const order of pendingOrders) {
       if (remainingAmount <= 0) break;
-
       const amountToAllocate = Math.min(remainingAmount, order.amountDue);
       const newDue = order.amountDue - amountToAllocate;
-
       allocation.push({
         orderId: order._id,
         challanNumber: order.challanNumber,
-        orderDate: order.orderDate,
+        orderDate: order.createdAt,
         currentDue: order.amountDue,
-        amountToAllocate: amountToAllocate,
-        newDue: newDue,
+        amountToAllocate,
+        newDue,
         status: newDue === 0 ? 'FULLY_PAID' : 'PARTIALLY_PAID',
-        itemsCount: order.items.length,
+        itemsCount: order.items?.length || 0
       });
-
       remainingAmount -= amountToAllocate;
     }
 
-    res.json({
+    return res.json({
       success: true,
       data: {
+        mode: 'order',                           // ← tells frontend which mode
         buyerName: buyer.name,
         totalDue: buyer.totalDue,
-        amountReceived: amount,
-        allocation: allocation,
-        remainingDue: buyer.totalDue - (amount - remainingAmount),
-        excessAmount: remainingAmount > 0 ? remainingAmount : 0,
-      },
+        amountReceived: parseFloat(amount),
+        billAllocation: [],                      // empty for backward compat
+        allocation,
+        remainingDue: Math.max(0, buyer.totalDue - parseFloat(amount)),
+        excessAmount: remainingAmount > 0 ? remainingAmount : 0
+      }
     });
+
   } catch (error) {
-    logger.error('Payment preview failed', {
-      error: error.message,
-      buyerId: req.params.id,
-    });
-    res.status(500).json({
-      code: 'PREVIEW_FAILED',
-      message: 'Failed to preview payment allocation',
-      error: error.message,
-    });
+    logger.error('Payment preview failed', { error: error.message, buyerId: req.params.id });
+    res.status(500).json({ code: 'PREVIEW_FAILED', message: 'Failed to preview payment allocation', error: error.message });
   }
 };
 

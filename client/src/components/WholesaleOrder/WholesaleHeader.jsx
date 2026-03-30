@@ -1,6 +1,6 @@
-import { FiPlus, FiShoppingCart } from 'react-icons/fi';
+import { FiPlus, FiShoppingCart, FiUpload } from 'react-icons/fi';
 
-export default function WholesaleHeader({ draftsCount, onNewOrder, onShowDrafts }) {
+export default function WholesaleHeader({ draftsCount, onNewOrder, onShowDrafts, onImportCSV }) {
   return (
     <div className="flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200">
       <div className="flex items-center gap-3">
@@ -32,6 +32,13 @@ export default function WholesaleHeader({ draftsCount, onNewOrder, onShowDrafts 
         >
           <FiPlus className="text-base" />
           New Order
+        </button>
+        <button
+          onClick={onImportCSV}
+          className="flex items-center gap-2 px-4 py-2.5 bg-white border border-indigo-300 text-indigo-700 rounded-xl text-sm font-semibold hover:bg-indigo-50 transition-all"
+        >
+          <FiUpload size={16} />
+          Import CSV
         </button>
       </div>
     </div>

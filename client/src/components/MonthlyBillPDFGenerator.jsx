@@ -42,36 +42,45 @@ const generateBillNumber = (sequenceNumber, date = new Date()) => {
  * Consolidate items across all challans by per-unit price
  */
 const consolidateItems = (challans) => {
-  const priceMap = new Map();
-  
+  // ✅ Key by description+price so each article number stays separate
+  const descriptionMap = new Map();
+
   challans.forEach(challan => {
     if (!challan.items || challan.items.length === 0) {
-      const perUnitPrice = parseFloat((challan.taxableAmount / challan.itemsQty).toFixed(2));
-      if (priceMap.has(perUnitPrice)) {
-        const existing = priceMap.get(perUnitPrice);
-        existing.qty += challan.itemsQty;
+      // Fallback — no items array on challan
+      const perUnitPrice  = parseFloat((challan.taxableAmount / challan.itemsQty).toFixed(2));
+      const description   = 'Cargo Pants';
+      const key           = `${description}__${perUnitPrice}`;
+
+      if (descriptionMap.has(key)) {
+        const existing  = descriptionMap.get(key);
+        existing.qty   += challan.itemsQty;
         existing.amount += challan.taxableAmount;
       } else {
-        priceMap.set(perUnitPrice, {
-          price: perUnitPrice,
-          qty: challan.itemsQty,
+        descriptionMap.set(key, {
+          description,
+          price : perUnitPrice,
+          qty   : challan.itemsQty,
           amount: challan.taxableAmount
         });
       }
     } else {
       challan.items.forEach(item => {
-        const perUnitPrice = parseFloat(Number(item.price).toFixed(2));
-        const itemQuantity = Number(item.quantity);
-        const calculatedAmount = itemQuantity * perUnitPrice;
-        
-        if (priceMap.has(perUnitPrice)) {
-          const existing = priceMap.get(perUnitPrice);
-          existing.qty += itemQuantity;
+        const perUnitPrice      = parseFloat(Number(item.price).toFixed(2));
+        const itemQuantity      = Number(item.quantity);
+        const calculatedAmount  = itemQuantity * perUnitPrice;
+        const description       = item.description || 'CARGO PANTS'; // ✅ use saved description
+        const key               = `${description}__${perUnitPrice}`; // ✅ unique per article+price
+
+        if (descriptionMap.has(key)) {
+          const existing  = descriptionMap.get(key);
+          existing.qty   += itemQuantity;
           existing.amount += calculatedAmount;
         } else {
-          priceMap.set(perUnitPrice, {
-            price: perUnitPrice,
-            qty: itemQuantity,
+          descriptionMap.set(key, {
+            description,
+            price : perUnitPrice,
+            qty   : itemQuantity,
             amount: calculatedAmount
           });
         }
@@ -79,17 +88,16 @@ const consolidateItems = (challans) => {
     }
   });
 
-  const items = Array.from(priceMap.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map((entry, index) => ({
-      description: `CARGO PANTS #${String(index + 9).padStart(2, '0')}`,
-      hsn: '6203',
-      qty: entry[1].qty,
-      rate: entry[1].price,
-      amount: parseFloat(entry[1].amount.toFixed(2))
+  // ✅ Sort by description so #09 → #09A → #10 → #10A → #101 order on bill
+  return Array.from(descriptionMap.values())
+    .sort((a, b) => a.description.localeCompare(b.description, undefined, { numeric: true }))
+    .map(entry => ({
+      description: entry.description,
+      hsn        : '6203',
+      qty        : entry.qty,
+      rate       : entry.price,
+      amount     : parseFloat(entry.amount.toFixed(2))
     }));
-
-  return items;
 };
 
 /**

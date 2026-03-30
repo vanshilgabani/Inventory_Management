@@ -23,6 +23,7 @@ import PaymentModal     from '../components/WholesaleOrder/modals/PaymentModal';
 import DraftsListModal  from '../components/WholesaleOrder/modals/DraftsListModal';
 import UseLockModal     from '../components/WholesaleOrder/modals/UseLockModal';
 import BuyerListModal   from '../components/WholesaleOrder/modals/BuyerListModal';
+import CSVImportModal from '../components/WholesaleOrder/modals/CSVImportModal';
 
 // ✅ Single API base — used for all fetch/axios calls in this file
 const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
@@ -51,6 +52,9 @@ const Wholesale = () => {
     totalOrders: 0, totalRevenue: 0, totalCollected: 0,
     totalDue: 0, pendingCount: 0, partialCount: 0, paidCount: 0,
   });
+
+  const [showCSVImport,  setShowCSVImport]  = useState(false);
+  const [csvPrefillItems, setCsvPrefillItems] = useState(null);
 
   const [qzStatus, setQzStatus]                 = useState('checking');
   const [showPrinterModal, setShowPrinterModal] = useState(false);
@@ -107,6 +111,12 @@ const Wholesale = () => {
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to delete order');
     }
+  };
+
+  const handleCSVPrefill = (items) => {
+    setCsvPrefillItems(items);
+    setEditingOrder(null);
+    setShowForm(true);
   };
 
   const handleDownloadChallan = async (order) => {
@@ -264,6 +274,7 @@ const Wholesale = () => {
           setAutoOpenDrafts(true);
           setShowForm(true);
         }}
+        onImportCSV={() => setShowCSVImport(true)}   
       />
 
       <WholesaleStats orderStats={orderStats} />
@@ -306,6 +317,7 @@ const Wholesale = () => {
       <OrderFormModal
         show={showForm}
         editingOrder={editingOrder}
+        prefillItems={csvPrefillItems}    
         autoOpenDrafts={autoOpenDrafts}
         products={products}
         allBuyers={allBuyers}
@@ -322,7 +334,7 @@ const Wholesale = () => {
         onSuccess={handleFormSuccess}
         onBorrowNeeded={handleBorrowNeeded}
         onUseLockNeeded={handleUseLockNeeded}
-        onClose={() => { setShowForm(false); setEditingOrder(null); setAutoOpenDrafts(false); }}
+        onClose={() => { setShowForm(false); setEditingOrder(null); setAutoOpenDrafts(false); setCsvPrefillItems(null); }}
         clearAllDrafts={clearAllDrafts}
         getSizesForDesign={getSizesForDesign}
       />
@@ -379,6 +391,15 @@ const Wholesale = () => {
         data={useLockData}
         onConfirm={handleConfirmUseLock}
         onCancel={() => { setShowUseLock(false); setUseLockData(null); setPendingOrderData(null); }}
+      />
+
+      <CSVImportModal
+        isOpen={showCSVImport}
+        onClose={() => setShowCSVImport(false)}
+        products={products}
+        getSizesForDesign={getSizesForDesign}
+        enabledSizes={enabledSizes}
+        onPrefill={handleCSVPrefill}
       />
 
       {showBorrow && borrowData && (

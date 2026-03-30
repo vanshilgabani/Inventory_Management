@@ -2251,8 +2251,15 @@ exports.importFromCSV = async (req, res) => {
       }
     }
 
-    const runningAlloc = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
+    if (inventoryMode === 'reserved') {
+      // Deduct from this account's allocation (in-memory, visible to later rows)
+      const runningAlloc = sizeVariant.reservedAllocations?.find(a => a.accountName === accountName);
       if (runningAlloc) runningAlloc.quantity -= quantity;
+    } else {
+      // Main mode: decrement currentStock in-memory NOW so subsequent CSV rows
+      // see the updated value — prevents multi-row oversell within same import
+      sizeVariant.currentStock = (sizeVariant.currentStock || 0) - quantity;
+    }
 
       // Track stock changes
       const productId = product._id.toString();
@@ -2297,7 +2304,7 @@ exports.importFromCSV = async (req, res) => {
       results.success.push({ orderItemId, sku });
     }
 
-    // STEP 5: Apply stock changes and save products
+        // STEP 5: Apply stock changes and save products
     for (const [productId, changes] of stockChangesByProduct.entries()) {
       const product = products.find(p => p._id.toString() === productId);
 
@@ -2305,9 +2312,10 @@ exports.importFromCSV = async (req, res) => {
         const colorVariant = product.colors.find(c => c.color === change.color);
         
         if (inventoryMode === 'main') {
-          colorVariant.sizes[change.sizeIndex].currentStock -= change.quantity;
+          // ✅ currentStock already decremented in-memory in STEP 4
+          // No further deduction needed — just markModified + save
         } else {
-          // ✅ RESERVED MODE: Only deduct reservedStock total
+          // RESERVED MODE: only deduct reservedStock total
           // allocation.quantity was already deducted per-row in STEP 4
           const sizeVariant = colorVariant.sizes[change.sizeIndex];
           sizeVariant.reservedStock -= change.quantity;

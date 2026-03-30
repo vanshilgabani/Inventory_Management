@@ -13,8 +13,9 @@ const paymentHistorySchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['Cash', 'UPI', 'Bank Transfer', 'Cheque', 'Card', 'Other'],
-    default: 'Cash'
+    enum   : ['Cash', 'UPI', 'Bank Transfer', 'Cheque', 'Card', 'Other',
+              'Bill Payment', 'Rounding Adjustment', 'System-AutoApply'],
+    default: 'Bank Transfer'
   },
   notes: String,
   recordedBy: String,
@@ -27,7 +28,8 @@ const challanItemSchema = new mongoose.Schema({
   size: String,
   quantity: Number,
   price: Number,
-  amount: Number
+  amount: Number,
+  description: String
 });
 
 // Challan schema

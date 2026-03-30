@@ -93,6 +93,10 @@ const MonthlyBills = () => {
   });
   const [customSequence, setCustomSequence] = useState('');
 
+  const [selectedGstId, setSelectedGstId] = useState('');
+  const [buyerGstProfiles, setBuyerGstProfiles] = useState([]);
+  const [loadingBuyerProfiles, setLoadingBuyerProfiles] = useState(false);
+
   const [showSplitModal, setShowSplitModal] = useState(false);
   const [splittingBill, setSplittingBill] = useState(null);
   const [gstProfiles, setGstProfiles] = useState([]);
@@ -444,10 +448,32 @@ const handleSplitBill = async () => {
     });
     setBuyerSearchQuery('');
     setSelectedBuyerIds([]);
+    setSelectedGstId('');          
+    setBuyerGstProfiles([]);
     setShowGenerateModal(true);
   };
 
-    // NEW: Handle generate bill - Always create as draft first
+  const handleBuyerSelectForGenerate = async (buyer) => {
+    const buyerId = buyer._id || buyer.id;
+    setGenerateForm(prev => ({ ...prev, buyerId }));
+    setSelectedGstId('');
+    setBuyerGstProfiles([]);
+    setLoadingBuyerProfiles(true);   // ← always try to load, don't gate on gstProfiles.length
+
+    try {
+      const response = await buyerGSTService.getGSTProfiles(buyerId);
+      const profiles = (response.data?.profiles || []).filter(p => p.isActive !== false);
+      setBuyerGstProfiles(profiles);
+    } catch (err) {
+      console.error('Failed to load GST profiles', err);
+      setBuyerGstProfiles([]);
+    } finally {
+      setLoadingBuyerProfiles(false);
+    }
+
+    setGenerateStep(2);
+  };
+
   const handleGenerateBill = async () => {
     if (isSubmitting) return;
 
@@ -473,7 +499,8 @@ const handleSplitBill = async () => {
       const result = await monthlyBillService.generateBill({
         ...generateForm,
         companyId: companyIdToUse,
-        adjustPreviousUnbilled: adjustPreviousUnbilled
+        adjustPreviousUnbilled: adjustPreviousUnbilled,
+        selectedGstId: selectedGstId || null
       });
 
       // Close generate modal
@@ -1688,11 +1715,10 @@ const handleUpdateBillNumber = async () => {
                       <button
                         key={buyer._id}
                         onClick={() => {
-                          if (selectedBuyerIds.includes(buyer._id)) {
-                            toggleBuyerSelection(buyer._id);
+                          if (selectedBuyerIds.includes(buyer._id || buyer.id)) {
+                            toggleBuyerSelection(buyer._id || buyer.id);
                           } else {
-                            setGenerateForm({ ...generateForm, buyerId: buyer._id });
-                            setGenerateStep(2);
+                            handleBuyerSelectForGenerate(buyer);  // ← use new handler
                           }
                         }}
                         className={`w-full p-4 rounded-xl border-2 transition-all duration-200 text-left relative ${
@@ -1828,6 +1854,96 @@ const handleUpdateBillNumber = async () => {
                     ))}
                   </div>
                 </div>
+
+                {/* GST Profile Selector — only for single buyer, only if profiles exist */}
+                {!selectedBuyerIds.length && generateForm.buyerId && (
+                  loadingBuyerProfiles ? (
+                    <div className="flex items-center gap-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                      <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                      <span className="text-sm text-blue-700">Loading GST profiles...</span>
+                    </div>
+                  ) : buyerGstProfiles.length > 0 ? (
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-3">
+                        Select GST Profile for this Bill
+                      </label>
+
+                      {/* Primary GST option */}
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedGstId('')}
+                          className={`w-full p-3 rounded-lg border-2 text-left transition-all ${
+                            !selectedGstId
+                              ? 'border-blue-600 bg-blue-50 shadow-md'
+                              : 'border-slate-200 hover:border-blue-300 hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">Primary GST</p>
+                              <p className="text-xs font-mono text-slate-600 mt-0.5">
+                                {selectedBuyer?.gstNumber || 'No GST on file'}
+                              </p>
+                            </div>
+                            {!selectedGstId && (
+                              <div className="w-5 h-5 bg-blue-600 rounded-full flex items-center justify-center">
+                                <FiCheck className="w-3 h-3 text-white" />
+                              </div>
+                            )}
+                          </div>
+                        </button>
+
+                        {/* Additional GST profiles */}
+                        {buyerGstProfiles.map(profile => (
+                          <button
+                            key={profile.profileId}
+                            type="button"
+                            onClick={() => setSelectedGstId(profile.profileId)}
+                            className={`w-full p-3 rounded-lg border-2 text-left transition-all ${
+                              selectedGstId === profile.profileId
+                                ? 'border-blue-600 bg-blue-50 shadow-md'
+                                : 'border-slate-200 hover:border-blue-300 hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-semibold text-slate-900 truncate">
+                                  {profile.businessName || profile.tradeName || 'GST Profile'}
+                                </p>
+                                <p className="text-xs font-mono text-slate-600 mt-0.5">{profile.gstNumber}</p>
+                                {profile.address?.state && (
+                                  <p className="text-xs text-slate-500 mt-0.5">
+                                    {profile.address.state} — {profile.stateCode}
+                                  </p>
+                                )}
+                              </div>
+                              {selectedGstId === profile.profileId && (
+                                <div className="w-5 h-5 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0 ml-2">
+                                  <FiCheck className="w-3 h-3 text-white" />
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Show selected profile confirmation */}
+                      {selectedGstId && (() => {
+                        const profile = buyerGstProfiles.find(p => p.profileId === selectedGstId);
+                        return profile ? (
+                          <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg text-xs text-green-800">
+                            <p><span className="font-semibold">GSTIN:</span> {profile.gstNumber}</p>
+                            {profile.pan && <p className="mt-0.5"><span className="font-semibold">PAN:</span> {profile.pan}</p>}
+                            {profile.address?.fullAddress && (
+                              <p className="mt-0.5 truncate"><span className="font-semibold">Address:</span> {profile.address.fullAddress}</p>
+                            )}
+                          </div>
+                        ) : null;
+                      })()}
+                    </div>
+                  ) : null
+                )}
 
                 {/* Year Selection */}
                 <div>
