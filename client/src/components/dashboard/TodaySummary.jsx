@@ -152,7 +152,7 @@ const TodaySummary = ({
                         </p>
                         <p className="text-[10px] text-gray-500">
                           {o.items?.reduce((a, b) => a + Number(b.quantity || 0), 0) || 0} pcs
-                          · {o.items?.length || 0} designs
+                          {/* · {o.items?.length || 0} designs */}
                         </p>
                       </div>
                     </div>
