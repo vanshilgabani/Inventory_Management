@@ -136,7 +136,7 @@ exports.syncOrderToCustomer = async (wholesaleOrderId, supplierTenantId) => {
     console.log('✅ SYNC: Customer organization found:', customerOrgId);
 
     // 🆕 NEW: Check buyer's sync preference
-    if (customerUser.syncPreference === 'manual') {
+    if (buyer.syncPreference === 'manual') {
       // Create sync request (pending approval)
       return await createSyncRequest(order, supplierTenantId, customerOrgId, customerUser, buyer);
     } else {
@@ -1106,6 +1106,11 @@ exports.syncOrderEdit = async (wholesaleOrderId, supplierTenantId, changesMade) 
       return { synced: false, reason: 'Customer not found' };
     }
 
+    const buyer = await WholesaleBuyer.findOne({
+      mobile: order.buyerContact,
+      organizationId: supplierTenantId
+    });
+
     const supplierUser = await User.findOne({ organizationId: supplierTenantId });
     const supplierCompanyName = supplierUser?.businessName || 'Supplier';
 
@@ -1197,7 +1202,7 @@ exports.syncOrderEdit = async (wholesaleOrderId, supplierTenantId, changesMade) 
     // ══════════════════════════════════════════════════════
     // MANUAL MODE
     // ══════════════════════════════════════════════════════
-    if (customerUser.syncPreference === 'manual') {
+    if (buyer?.syncPreference === 'manual') {
       console.log('📋 SYNC-EDIT: Manual mode, creating new pending edit request');
 
       const editSync = await SupplierSync.create({

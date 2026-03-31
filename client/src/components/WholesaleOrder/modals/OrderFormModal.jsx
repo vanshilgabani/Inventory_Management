@@ -52,7 +52,6 @@ const emptyItem = () => ({
   colorData: {}, isCollapsed: false, isComplete: false,
 });
 
-
 const EMPTY_FORM = {
   buyerName: '', buyerContact: '', buyerEmail: '', buyerAddress: '',
   businessName: '', gstNumber: '', deliveryDate: '', notes: '',

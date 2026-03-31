@@ -392,7 +392,7 @@ const handleFile = useCallback(async (file) => {
                   <FiUpload size={36} className="mx-auto text-gray-400 mb-3" />
                   <p className="font-semibold text-gray-700">Drop Flipkart CSV here</p>
                   <p className="text-sm text-gray-400 mt-1">or click to browse</p>
-                  <p className="text-xs text-gray-400 mt-3">Columns used: SKU (col 9) · Selling Price (col 17) · Quantity (col 19)</p>
+                  <p className="text-xs text-gray-400 mt-3">Columns used: SKU (col 9) ·  Quantity (col 19)</p>
                   <input
                     id="csv-file-input"
                     type="file"
