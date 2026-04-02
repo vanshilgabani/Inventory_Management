@@ -1,5 +1,6 @@
 // controllers/tenantSettingsController.js
 const TenantSettings = require('../models/TenantSettings');
+const Settings = require('../models/Settings');
 const User = require('../models/User');
 const logger = require('../utils/logger');
 const mongoose = require('mongoose');
@@ -37,66 +38,50 @@ exports.getSettings = async (req, res) => {
   }
 };
 
-// Update inventory mode
 exports.updateInventoryMode = async (req, res) => {
   try {
     const { mode } = req.body;
     const { organizationId, id: userId } = req.user;
 
-    if (!['main', 'reserved'].includes(mode)) {
-      return res.status(400).json({
-        success: false, // ✅ ADD THIS
-        message: 'Invalid inventory mode. Must be "main" or "reserved"'
-      });
+    // ✅ Admin only
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Only admins can change inventory mode.' });
     }
 
-    // ✅ Use organizationId instead of tenantId
-    const settings = await TenantSettings.findOneAndUpdate(
-      { organizationId: organizationId },
-      {
-        $setOnInsert: {
-          organizationId: organizationId,
-          userId: userId,
-          enabledModules: [],
-          allowedSidebarItems: [], // ✅ ADD DEFAULT
-          syncSettings: {},
-          branding: {},
-          restrictions: {},
-          createdAt: new Date()
-        },
-        $set: {
-          inventoryMode: mode,
-          updatedAt: new Date()
-        }
-      },
-      {
-        upsert: true,
-        new: true,
-        setDefaultsOnInsert: true
-      }
+    if (!['main', 'reserved'].includes(mode))
+      return res.status(400).json({ success: false, message: 'Invalid inventory mode. Must be main or reserved' });
+
+    // ✅ Write to org-wide Settings
+    await Settings.findOneAndUpdate(
+      { organizationId },
+      { $set: { inventoryMode: mode, updatedAt: new Date() } },
+      { upsert: true, new: true }
     );
 
-    console.log('✅ Updated inventory mode to:', mode);
-    
-    // ✅ RETURN CORRECT FORMAT
+    // ✅ Also keep TenantSettings in sync for backward compat
+    const tenantSettings = await TenantSettings.findOneAndUpdate(
+      { organizationId },
+      {
+        $setOnInsert: { organizationId, userId, enabledModules: [], allowedSidebarItems: [], createdAt: new Date() },
+        $set: { inventoryMode: mode, updatedAt: new Date() }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    console.log('Updated inventory mode to', mode);
     res.json({
       success: true,
       data: {
-        inventoryMode: settings.inventoryMode,
-        allowedSidebarItems: settings.allowedSidebarItems,
-        enabledModules: settings.enabledModules
+        inventoryMode: mode,
+        allowedSidebarItems: tenantSettings.allowedSidebarItems,
+        enabledModules: tenantSettings.enabledModules
       }
     });
-    
   } catch (error) {
-    console.error('Error updating inventory mode:', error);
-    res.status(500).json({
-      success: false, // ✅ ADD THIS
-      message: 'Failed to update inventory mode',
-      error: error.message
-    });
+    console.error('Error updating inventory mode', error);
+    res.status(500).json({ success: false, message: 'Failed to update inventory mode', error: error.message });
   }
-}
+};
 
 // Toggle feature access
 exports.updateFeatureAccess = async (req, res) => {
@@ -136,54 +121,37 @@ exports.updateFeatureAccess = async (req, res) => {
   }
 };
 
-// Get current tenant settings for any user
 exports.getMySettings = async (req, res) => {
   try {
     const { organizationId, isSupplier } = req.user;
 
-    // ✅ Suppliers NEVER have restrictions
     if (isSupplier) {
-      return res.json({
-        success: true,
-        data: {
-          inventoryMode: 'reserved',
-          allowedSidebarItems: [], // Empty = no restrictions
-          enabledModules: []
-        }
-      });
+      return res.json({ success: true, data: { inventoryMode: 'reserved', allowedSidebarItems: [], enabledModules: [] } });
     }
 
-    // Try to find TenantSettings for this organization
+    // ✅ Read inventoryMode from org-wide Settings
+    const orgSettings = await Settings.findOne({ organizationId }).lean();
+
+    // Read restrictions/modules from TenantSettings
     const settings = await TenantSettings.findOne({ organizationId });
 
-    // ✅ If no settings exist OR allowedSidebarItems is empty → No restrictions
+    // inventoryMode comes from org-wide Settings, fallback to TenantSettings, then 'reserved'
+    const inventoryMode = orgSettings?.inventoryMode || settings?.inventoryMode || 'reserved';
+
     if (!settings || !settings.allowedSidebarItems || settings.allowedSidebarItems.length === 0) {
       return res.json({
         success: true,
-        data: {
-          inventoryMode: settings?.inventoryMode || 'reserved',
-          allowedSidebarItems: [], // Empty = no restrictions = show all
-          enabledModules: settings?.enabledModules || []
-        }
+        data: { inventoryMode, allowedSidebarItems: [], enabledModules: settings?.enabledModules }
       });
     }
 
-    // ✅ Return actual restrictions if they exist
     res.json({
       success: true,
-      data: {
-        inventoryMode: settings.inventoryMode || 'reserved',
-        allowedSidebarItems: settings.allowedSidebarItems, // Apply restrictions
-        enabledModules: settings.enabledModules || []
-      }
+      data: { inventoryMode, allowedSidebarItems: settings.allowedSidebarItems, enabledModules: settings.enabledModules }
     });
   } catch (error) {
-    console.error('Error fetching settings:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch settings',
-      error: error.message
-    });
+    console.error('Error fetching settings', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch settings', error: error.message });
   }
 };
 

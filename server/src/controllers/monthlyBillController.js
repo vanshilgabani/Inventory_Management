@@ -537,12 +537,31 @@ const generateBill = async (req, res) => {
       buyerId,
       month,
       year,
+      selectedMonths,
       companyId,
       adjustPreviousUnbilled,
       customSequence,
       selectedGstId          // ← NEW
     } = req.body;
     const organizationId = req.user.organizationId;
+
+    // Normalize — support both old single-month format and new multi-month format
+    const monthsToProcess = (selectedMonths && selectedMonths.length > 0)
+      ? selectedMonths.map(m => ({ month: m.month, year: parseInt(m.year) }))
+      : [{ month, year: parseInt(year) }];
+
+    // Sort chronologically (oldest first)
+    monthsToProcess.sort((a, b) => {
+      const dateA = new Date(a.year, getMonthNumber(a.month));
+      const dateB = new Date(b.year, getMonthNumber(b.month));
+      return dateA - dateB;
+    });
+
+    // Latest month becomes the billingPeriod displayed on the bill
+    const latestEntry  = monthsToProcess[monthsToProcess.length - 1];
+    const earliestEntry = monthsToProcess[0]
+    const billingMonth = latestEntry.month;
+    const billingYear  = latestEntry.year;
 
     // Validation
     if (!buyerId || !month || !year) {
@@ -689,21 +708,31 @@ const generateBill = async (req, res) => {
       });
     }
 
-    // Get all orders for this buyer in this period
-    const orders = await WholesaleOrder.find({
-      buyerId     : buyer._id,
-      organizationId,
-      createdAt   : { $gte: startDate, $lte: endDate },
-      deletedAt   : null
-    })
-      .sort({ createdAt: 1 })
-      .session(session);
+    // Get orders for ALL selected months individually and merge
+    let orders = [];
+    for (const entry of monthsToProcess) {
+      const mStart = new Date(entry.year, getMonthNumber(entry.month), 1);
+      const mEnd   = new Date(entry.year, getMonthNumber(entry.month) + 1, 0, 23, 59, 59);
+
+      const monthOrders = await WholesaleOrder.find({
+        buyerId      : buyer._id,
+        organizationId,
+        createdAt    : { $gte: mStart, $lte: mEnd },
+        deletedAt    : null
+      })
+        .sort({ createdAt: 1 })
+        .session(session);
+
+      orders.push(...monthOrders);
+    }
 
     if (orders.length === 0) {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: 'No orders found for this buyer in the selected period'
+        message: `No orders found for this buyer in the selected period (${
+          monthsToProcess.map(m => `${m.month} ${m.year}`).join(', ')
+        })`
       });
     }
 
@@ -864,7 +893,7 @@ const generateBill = async (req, res) => {
     }
 
     // Check challan payments already made
-    const challanIds         = challans.map(c => c.challanId).filter(Boolean);
+    const challanIds = challans.map(c => c.challanId).filter(Boolean);
     const ordersWithPayments = await WholesaleOrder.find({
       _id: { $in: challanIds },
       organizationId
@@ -989,6 +1018,7 @@ const generateBill = async (req, res) => {
     const paymentTermDays = billingSettings.paymentTermDays || 30;
     const paymentDueDate  = new Date(endDate);
     paymentDueDate.setDate(paymentDueDate.getDate() + paymentTermDays);
+    const defaultBillDate = new Date(billingYear, getMonthNumber(billingMonth) + 1, 0);
 
     // Create bill
     const bill = await MonthlyBill.create([{
@@ -1039,7 +1069,8 @@ const generateBill = async (req, res) => {
       paymentHistory: mergedPaymentHistory,   // ✅ challan + advance payments
       hsnCode       : billingSettings.hsnCode || '6203',
       organizationId,
-      finalizedAt   : status !== 'draft' ? new Date() : null
+      generatedAt : defaultBillDate,
+      finalizedAt : status !== 'draft' ? new Date() : null
     }], { session });
 
     // Add bill to buyer tracking
@@ -1950,6 +1981,31 @@ const deleteBill = async (req, res) => {
       }
       
       await buyer.save({ session });
+
+      // ✅ Restore advance payments that were auto-applied to this bill
+      if (bill.paymentHistory && bill.paymentHistory.length > 0) {
+        const advanceEntries = bill.paymentHistory.filter(
+          p => p.recordedBy === 'System-AutoApply'
+        );
+
+        if (advanceEntries.length > 0 && buyer.advancePayments?.length > 0) {
+          const totalToRestore = advanceEntries.reduce((sum, p) => sum + p.amount, 0);
+
+          // Find allocated advances and restore them to pending-allocation
+          buyer.advancePayments.forEach(adv => {
+            if (adv.status === 'allocated') {
+              adv.status = 'pending-allocation';
+              adv.notes = `${adv.notes || ''} | Restored — bill ${bill.billNumber} was deleted`.trim();
+            }
+          });
+
+          logger.info('Advance payments restored after draft deletion', {
+            billNumber : bill.billNumber,
+            buyerId    : buyer._id,
+            totalRestored: totalToRestore
+          });
+        }
+      }
     }
 
     // Delete the bill
@@ -2062,14 +2118,11 @@ const getBillsStats = async (req, res) => {
 const customizeBill = async (req, res) => {
   try {
     const { id } = req.params;
-    const { paymentTermDays, hsnCode, notes, removeChallans } = req.body;
+    const { paymentTermDays, hsnCode, notes, removeChallans, billDate } = req.body;
     const organizationId = req.user.organizationId;
 
     // Find the bill
-    const bill = await MonthlyBill.findOne({
-      _id: id,
-      organizationId
-    }).populate('challans.challanId');
+    const bill = await MonthlyBill.findOne({ _id: id, organizationId });
 
     if (!bill) {
       return res.status(404).json({
@@ -2104,13 +2157,26 @@ const customizeBill = async (req, res) => {
       bill.notes = notes;
     }
 
+    // Bill date override
+    if (billDate) {
+      const parsed = new Date(billDate);
+      if (!isNaN(parsed.getTime())) {
+        bill.generatedAt = parsed;
+        logger.info('Bill date updated', {
+          billId    : bill._id,
+          billNumber: bill.billNumber,
+          newDate   : parsed
+        });
+      }
+    }
+
     // Remove challans if specified
     if (removeChallans && removeChallans.length > 0) {
       // Filter out the challans to be removed
-      bill.challans = bill.challans.filter(
-        c => !removeChallans.includes(c.challanId._id.toString()) && 
-             !removeChallans.includes(c.challanId.toString())
-      );
+      bill.challans = bill.challans.filter(c => {
+        const cid = c.challanId ? c.challanId.toString() : null;
+        return !cid || !removeChallans.includes(cid);
+      });
 
       // Recalculate financials
       let invoiceTotal = 0;
@@ -2152,10 +2218,7 @@ const customizeBill = async (req, res) => {
     await bill.save();
 
     // Populate for response
-    const updatedBill = await MonthlyBill.findById(bill._id)
-      .populate('buyer', 'name businessName mobile email gstin address')
-      .populate('challans.challanId')
-      .lean();
+    const updatedBill = await MonthlyBill.findById(bill._id).lean();
 
     console.log('✅ Bill customized successfully', {
       billId: bill._id,

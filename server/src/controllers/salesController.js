@@ -315,8 +315,8 @@ exports.createSale = async (req, res) => {
     const sizeVariant = colorVariant.sizes[sizeIndex];
 
     // ✅ Get tenant's inventory mode preference
-    const tenantSettings = await TenantSettings.findOne({ userId: req.user.id }).session(session);
-    const inventoryMode = tenantSettings?.inventoryMode || 'reserved'; // Default to reserved
+    const orgSettings = await Settings.findOne({ organizationId }).session(session);
+    const inventoryMode = orgSettings?.inventoryMode || 'reserved';
 
     logger.info('📦 Inventory mode for sale:', {
       organizationId,
@@ -1972,8 +1972,8 @@ exports.importFromCSV = async (req, res) => {
     }
 
     // Get tenant's inventory mode
-    const tenantSettings = await TenantSettings.findOne({ userId: req.user.id }).session(session);
-    const inventoryMode = tenantSettings?.inventoryMode || 'reserved';
+    const orgSettings = await Settings.findOne({ organizationId }).session(session);
+    const inventoryMode = orgSettings?.inventoryMode || 'reserved';
 
     logger.info('CSV Import using inventory mode', { organizationId, inventoryMode, rowCount: csvData.length });
 

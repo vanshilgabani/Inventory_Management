@@ -3187,7 +3187,8 @@ const linkBuyerToTenant = async (req, res) => {
       }
 
       // ✅ Update buyer with customer organization link
-      buyer.customerTenantId = customerUser.organizationId || customerUser._id;
+      const customerOrgId = customerUser.organizationId || customerUser._id;
+      buyer.customerTenantId = customerOrgId;
       buyer.customerUserId = customerUser._id;
       buyer.isCustomer = true;
       buyer.syncEnabled = true;

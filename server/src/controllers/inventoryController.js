@@ -720,13 +720,9 @@ const allocateReservedStock = async (req, res) => {
   try {
     const { id: productId } = req.params;
     const { allocations } = req.body;
-    const organizationId = req.user;
+    const organizationId = req.organizationId;  // consistent with all other functions
     const userId = req.user.id;
-
-    const product = await Product.findOne({ 
-      _id: productId, 
-      organizationId 
-    }).session(session);
+    const product = await Product.findOne({ _id: productId, organizationId }).session(session);
 
     if (!product) {
       await session.abortTransaction();
@@ -874,7 +870,7 @@ const allocateReservedStock = async (req, res) => {
 // ✅ NEW: Get Reserved Stock with Account Filter
 const getReservedStockByAccount = async (req, res) => {
   try {
-    const { organizationId } = req.user;
+    const organizationId = req.organizationId;
     const { accountName } = req.query; // Optional: filter by account
 
     const products = await Product.find({ organizationId }).lean();

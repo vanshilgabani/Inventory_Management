@@ -175,6 +175,12 @@ const settingsSchema = new mongoose.Schema({
   gstNumber: { type: String, default: '' },
 
   gstPercentage: { type: Number, default: 5, min: 0, max: 100 },
+  
+  inventoryMode: {
+    type: String,
+    enum: ['main', 'reserved'],
+    default: 'reserved'
+  },
 
   sizes: {
     type: [sizeSchema],

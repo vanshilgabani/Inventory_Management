@@ -7,6 +7,16 @@ const Product = require('../models/Product');
 const Notification = require('../models/Notification');
 const logger = require('../utils/logger');
 
+// ✅ Helper: Get all admin users of a customer org (org-wide)
+const getOrgAdmins = async (orgId) => {
+  return await User.find({
+    $or: [
+      { _id: orgId, isActive: true },                          // master admin themselves
+      { organizationId: orgId, role: 'admin', isActive: true } // other admins in org
+    ]
+  }).lean();
+};
+
 // Get all supplier sync logs (for admin dashboard)
 exports.getAllSupplierSyncLogs = async (req, res) => {
   try {
@@ -127,7 +137,7 @@ exports.syncOrderToCustomer = async (wholesaleOrderId, supplierTenantId) => {
       return { synced: false, reason: 'Customer account not active' };
     }
 
-    const customerOrgId = customerUser.organizationId;
+    const customerOrgId = customerUser.organizationId || customerUser._id;
     if (!customerOrgId) {
       console.log('🔄 SYNC: Customer has no organization. Skipping sync.');
       return { synced: false, reason: 'Customer has no organization' };
@@ -224,24 +234,22 @@ async function createSyncRequest(order, supplierTenantId, customerOrgId, custome
 
   // Create notification for customer
   try {
-    await Notification.create({
-      userId: customerUser._id,
-      type: 'sync_request',
-      title: 'New Stock Sync Request',
-      message: `${supplierCompanyName} sent a sync request for ${itemsSynced.length} items. Order: ${order.challanNumber || 'N/A'}`,
-      severity: 'info',
-      relatedId: supplierSync._id,
-      relatedModel: 'SupplierSync',
-      organizationId: customerOrgId,
-      metadata: {
-        supplierName: supplierCompanyName,
-        challanNumber: order.challanNumber,
-        totalAmount: order.totalAmount,
-        itemsCount: itemsSynced.length
-      }
-    });
+    const customerAdmins = await getOrgAdmins(customerOrgId);
+    await Promise.all(customerAdmins.map(admin =>
+      Notification.create({
+        userId: admin._id,
+        type: 'syncrequest',
+        title: 'New Stock Sync Request',
+        message: `${supplierCompanyName} sent a sync request for ${itemsSynced.length} items. Order: ${order.challanNumber || 'N/A'}`,
+        severity: 'info',
+        relatedId: supplierSync.id,
+        relatedModel: 'SupplierSync',
+        organizationId: customerOrgId,
+        metadata: { supplierName: supplierCompanyName, challanNumber: order.challanNumber, totalAmount: order.totalAmount, itemsCount: itemsSynced.length }
+      })
+    ));
   } catch (notifError) {
-    console.warn('⚠️ SYNC: Failed to create notification (non-critical):', notifError.message);
+    console.warn('SYNC: Failed to create notifications (non-critical)', notifError.message);
   }
 
   console.log('✅ SYNC: Manual sync request created:', supplierSync._id);
@@ -457,20 +465,23 @@ async function performDirectSync(order, supplierTenantId, customerOrgId, custome
     customerTenantId: customerOrgId
   });
 
-  // Create notification for customer (optional)
+  // ✅ FIXED — notify ALL admins of customer org
   try {
-    await Notification.create({
-      userId: customerUser._id,
-      type: 'stock_received',
-      title: 'New Stock Received',
-      message: `${itemsSynced.length} items received from ${supplierCompanyName}. Order: ${order.challanNumber || 'N/A'}`,
-      severity: 'info',
-      relatedId: supplierSync._id,
-      relatedModel: 'SupplierSync',
-      organizationId: customerOrgId
-    });
+    const customerAdmins = await getOrgAdmins(customerOrgId);
+    await Promise.all(customerAdmins.map(admin =>
+      Notification.create({
+        userId: admin._id,
+        type: 'stockreceived',
+        title: 'New Stock Received',
+        message: `${itemsSynced.length} items received from ${supplierCompanyName}. Order: ${order.challanNumber || 'N/A'}`,
+        severity: 'info',
+        relatedId: supplierSync.id,
+        relatedModel: 'SupplierSync',
+        organizationId: customerOrgId
+      })
+    ));
   } catch (notifError) {
-    console.warn('⚠️ SYNC: Failed to create notification (non-critical):', notifError.message);
+    console.warn('SYNC: Failed to create notifications (non-critical)', notifError.message);
   }
 
   console.log('✅ SYNC: Successfully synced order to customer', customerOrgId);
@@ -486,6 +497,9 @@ async function performDirectSync(order, supplierTenantId, customerOrgId, custome
 // 🆕 NEW: Accept sync request
 exports.acceptSyncRequest = async (req, res) => {
   try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Access denied. Admins only.' });
+    }
     const { syncId } = req.params;
     const userId = req.user.id;
     const userName = req.user.name || req.user.email;
@@ -767,6 +781,9 @@ exports.acceptSyncRequest = async (req, res) => {
 // 🆕 NEW: Reject sync request
 exports.rejectSyncRequest = async (req, res) => {
   try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Access denied. Admins only.' });
+    }
     const { syncId } = req.params;
     const { reason } = req.body;
     const userId = req.user.id;
@@ -894,7 +911,7 @@ exports.resendSyncRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Customer account not found' });
     }
 
-    const customerOrgId = customerUser.organizationId;
+    const customerOrgId = customerUser.organizationId || customerUser._id;
     const supplierUser = await User.findOne({ organizationId: supplierTenantId });
     const supplierCompanyName = supplierUser?.businessName || 'Supplier';
 
@@ -968,20 +985,23 @@ exports.resendSyncRequest = async (req, res) => {
 
     // Notify customer
     try {
-      await Notification.create({
-        userId: customerUser._id,
-        type: isResendAfterRejection ? 'sync_edit_request' : 'sync_request',
-        title: isResendAfterRejection ? '✏️ Supplier Resent Edit Request' : '📦 New Stock Sync Request',
-        message: isResendAfterRejection
-          ? `${supplierCompanyName} resent changes for Order ${order.challanNumber || 'N/A'}.`
-          : `${supplierCompanyName} sent a sync request for Order ${order.challanNumber || 'N/A'}.`,
-        severity: isResendAfterRejection ? 'warning' : 'info',
-        relatedId: syncRecord._id,
-        relatedModel: 'SupplierSync',
-        organizationId: customerOrgId
-      });
+      const customerAdmins = await getOrgAdmins(customerOrgId);
+      await Promise.all(customerAdmins.map(admin =>
+        Notification.create({
+          userId: admin._id,
+          type: isResendAfterRejection ? 'synceditrequest' : 'syncrequest',
+          title: isResendAfterRejection ? 'Supplier Resent Edit Request' : 'New Stock Sync Request',
+          message: isResendAfterRejection
+            ? `${supplierCompanyName} resent changes for Order: ${order.challanNumber || 'N/A'}.`
+            : `${supplierCompanyName} sent a sync request for Order: ${order.challanNumber || 'N/A'}.`,
+          severity: isResendAfterRejection ? 'warning' : 'info',
+          relatedId: syncRecord.id,
+          relatedModel: 'SupplierSync',
+          organizationId: customerOrgId
+        })
+      ));
     } catch (notifError) {
-      console.warn('⚠️ Notification failed:', notifError.message);
+      console.warn('Notification failed', notifError.message);
     }
 
     res.json({ success: true, message: 'Sync request resent successfully', data: { syncId: syncRecord._id, syncType } });
@@ -995,7 +1015,11 @@ exports.resendSyncRequest = async (req, res) => {
 // 🆕 NEW: Get pending sync requests (for customer)
 exports.getPendingSyncRequests = async (req, res) => {
   try {
-    const customerOrgId = req.user.organizationId;
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Access denied. Admins only.' });
+    }
+
+    const customerOrgId = req.user.organizationId || req.user.id;
 
     const pendingRequests = await SupplierSync.find({
       customerTenantId: customerOrgId,
@@ -1169,18 +1193,21 @@ exports.syncOrderEdit = async (wholesaleOrderId, supplierTenantId, changesMade) 
       await existingPendingSync.save();
 
       try {
-        await Notification.create({
-          userId: customerUser._id,
-          type: 'sync_request_updated',
-          title: '✏️ Pending Sync Request Updated',
-          message: `${supplierCompanyName} updated Order ${order.challanNumber || 'N/A'} before you reviewed it. Please check the updated request.`,
-          severity: 'warning',
-          relatedId: existingPendingSync._id,
-          relatedModel: 'SupplierSync',
-          organizationId: customerTenantId
-        });
+        const customerAdmins = await getOrgAdmins(customerTenantId);
+        await Promise.all(customerAdmins.map(admin =>
+          Notification.create({
+            userId: admin._id,
+            type: 'syncrequestupdated',
+            title: 'Pending Sync Request Updated',
+            message: `${supplierCompanyName} updated Order: ${order.challanNumber || 'N/A'} before you reviewed it. Please check the updated request.`,
+            severity: 'warning',
+            relatedId: existingPendingSync.id,
+            relatedModel: 'SupplierSync',
+            organizationId: customerTenantId
+          })
+        ));
       } catch (notifError) {
-        console.warn('⚠️ Update notification failed:', notifError.message);
+        console.warn('Update notification failed', notifError.message);
       }
 
       console.log('✅ SYNC-EDIT: Existing pending request updated');
@@ -1239,19 +1266,22 @@ exports.syncOrderEdit = async (wholesaleOrderId, supplierTenantId, changesMade) 
       });
 
       try {
-        await Notification.create({
-          userId: customerUser._id,
-          type: 'sync_edit_request',
-          title: '✏️ Supplier Edited an Order',
-          message: `${supplierCompanyName} made changes to Order ${order.challanNumber || 'N/A'}. Review and accept or reject.`,
-          severity: 'warning',
-          relatedId: editSync._id,
-          relatedModel: 'SupplierSync',
-          organizationId: customerTenantId,
-          metadata: { supplierName: supplierCompanyName, challanNumber: order.challanNumber, isEdit: true }
-        });
+        const customerAdmins = await getOrgAdmins(customerTenantId);
+        await Promise.all(customerAdmins.map(admin =>
+          Notification.create({
+            userId: admin._id,
+            type: 'synceditrequest',
+            title: 'Supplier Edited an Order',
+            message: `${supplierCompanyName} made changes to Order: ${order.challanNumber || 'N/A'}. Review and accept or reject.`,
+            severity: 'warning',
+            relatedId: editSync.id,
+            relatedModel: 'SupplierSync',
+            organizationId: customerTenantId,
+            metadata: { supplierName: supplierCompanyName, challanNumber: order.challanNumber, isEdit: true }
+          })
+        ));
       } catch (notifError) {
-        console.warn('⚠️ SYNC-EDIT: Notification failed:', notifError.message);
+        console.warn('SYNC-EDIT: Notification failed', notifError.message);
       }
 
       console.log('✅ SYNC-EDIT: Pending edit request created:', editSync._id);

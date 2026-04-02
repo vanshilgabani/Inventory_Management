@@ -89,7 +89,8 @@ const MonthlyBills = () => {
     paymentTermDays: 30,
     hsnCode: '6203',
     notes: '',
-    removeChallans: []
+    removeChallans: [],
+    billDate       : ''
   });
   const [customSequence, setCustomSequence] = useState('');
 
@@ -121,6 +122,8 @@ const MonthlyBills = () => {
     year: new Date().getFullYear()
   });
 
+  const [monthSelectorYear, setMonthSelectorYear] = useState(new Date().getFullYear());
+
   const [paymentForm, setPaymentForm] = useState({
     amount: '',
     paymentMethod: 'Cash',
@@ -135,6 +138,38 @@ const MonthlyBills = () => {
   const [selectedBuyerIds, setSelectedBuyerIds] = useState([]);
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
 
+  // ── Multi-month picker helpers ────────────────────────────────────────────
+
+const getMonthNumber = (monthName) => {
+  const map = {
+    'January':0,'February':1,'March':2,'April':3,
+    'May':4,'June':5,'July':6,'August':7,
+    'September':8,'October':9,'November':10,'December':11
+  };
+  return map[monthName] ?? 0;
+};
+
+const toggleMonthSelection = (month, year) => {
+  setGenerateForm(prev => {
+    const exists = prev.selectedMonths.some(sm => sm.month === month && sm.year === year);
+    if (exists) {
+      if (prev.selectedMonths.length === 1) return prev; // keep at least one
+      return { ...prev, selectedMonths: prev.selectedMonths.filter(sm => !(sm.month === month && sm.year === year)) };
+    }
+    return { ...prev, selectedMonths: [...prev.selectedMonths, { month, year }] };
+  });
+};
+
+const getLatestSelectedMonth = () => {
+  const list = generateForm.selectedMonths;
+  if (!list || list.length === 0) return { month: '', year: '' };
+  return list.reduce((latest, cur) => {
+    return new Date(cur.year, getMonthNumber(cur.month)) > new Date(latest.year, getMonthNumber(latest.month))
+      ? cur : latest;
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
   // Fetch data on mount
   useEffect(() => {
     fetchInitialData();
@@ -443,12 +478,15 @@ const handleSplitBill = async () => {
     setGenerateStep(1);
     setGenerateForm({
       buyerId: '',
-      month: new Date().toLocaleString('default', { month: 'long' }),
-      year: new Date().getFullYear()
+      selectedMonths: [{
+        month: new Date().toLocaleString('default', { month: 'long' }),
+        year : new Date().getFullYear()
+      }]
     });
+    setMonthSelectorYear(new Date().getFullYear());
     setBuyerSearchQuery('');
     setSelectedBuyerIds([]);
-    setSelectedGstId('');          
+    setSelectedGstId('');
     setBuyerGstProfiles([]);
     setShowGenerateModal(true);
   };
@@ -476,18 +514,17 @@ const handleSplitBill = async () => {
 
   const handleGenerateBill = async () => {
     if (isSubmitting) return;
-
     if (!generateForm.buyerId) {
       toast.error('Please select a buyer');
       return;
     }
-
+    if (!generateForm.selectedMonths || generateForm.selectedMonths.length === 0) {
+      toast.error('Please select at least one billing month');
+      return;
+    }
     setIsSubmitting(true);
-
     try {
       let companyIdToUse = generateForm.companyId;
-
-      // Get default company
       if (!companyIdToUse && companies && companies.length > 0) {
         const activeCompanies = companies.filter(c => c.isActive !== false);
         if (activeCompanies.length > 0) {
@@ -495,12 +532,15 @@ const handleSplitBill = async () => {
           companyIdToUse = defaultCompany ? defaultCompany.id : activeCompanies[0].id;
         }
       }
-
+      const latest = getLatestSelectedMonth();
       const result = await monthlyBillService.generateBill({
-        ...generateForm,
-        companyId: companyIdToUse,
-        adjustPreviousUnbilled: adjustPreviousUnbilled,
-        selectedGstId: selectedGstId || null
+        buyerId          : generateForm.buyerId,
+        selectedMonths   : generateForm.selectedMonths,
+        month            : latest.month,   // backward compat
+        year             : latest.year,    // backward compat
+        companyId        : companyIdToUse,
+        adjustPreviousUnbilled,
+        selectedGstId    : selectedGstId || null
       });
 
       // Close generate modal
@@ -568,7 +608,11 @@ const handleUpdateBillNumber = async () => {
   const handleGenerateAllBills = async () => {
     if (isGeneratingAll) return;
 
-    if (!window.confirm(`Generate DRAFT bills for ALL ${buyers.length} buyers for ${generateForm.month} ${generateForm.year}? You can customize and finalize them later.`)) {
+    const _latestForConfirm = getLatestSelectedMonth();
+    const _monthsLabel = generateForm.selectedMonths.length > 1
+      ? `${generateForm.selectedMonths.length} months (billing period: ${_latestForConfirm.month} ${_latestForConfirm.year})`
+      : `${_latestForConfirm.month} ${_latestForConfirm.year}`;
+    if (!window.confirm(`Generate DRAFT bills for ALL ${buyers.length} buyers for ${_monthsLabel}? You can customize and finalize them later.`)) {
       return;
     }
 
@@ -593,10 +637,11 @@ const handleUpdateBillNumber = async () => {
       for (const buyer of buyers) {
         try {
           await monthlyBillService.generateBill({
-            buyerId: buyer._id,
-            month: generateForm.month,
-            year: generateForm.year,
-            companyId: companyIdToUse
+            buyerId       : buyer._id,
+            selectedMonths: generateForm.selectedMonths,
+            month         : getLatestSelectedMonth().month,
+            year          : getLatestSelectedMonth().year,
+            companyId     : companyIdToUse
           });
           successCount++;
         } catch (error) {
@@ -641,7 +686,11 @@ const handleUpdateBillNumber = async () => {
       return;
     }
 
-    if (!window.confirm(`Generate DRAFT bills for ${selectedBuyerIds.length} selected buyers? You can customize and finalize them later.`)) {
+    const _latestSel = getLatestSelectedMonth();
+    const _selLabel = generateForm.selectedMonths.length > 1
+      ? `${generateForm.selectedMonths.length} months (billing period: ${_latestSel.month} ${_latestSel.year})`
+      : `${_latestSel.month} ${_latestSel.year}`;
+    if (!window.confirm(`Generate DRAFT bills for ${selectedBuyerIds.length} selected buyers for ${_selLabel}? You can customize and finalize them later.`)) {
       return;
     }
 
@@ -667,10 +716,11 @@ const handleUpdateBillNumber = async () => {
       for (const buyerId of selectedBuyerIds) {
         try {
           const result = await monthlyBillService.generateBill({
-            buyerId: buyerId,
-            month: generateForm.month,
-            year: generateForm.year,
-            companyId: companyIdToUse
+            buyerId       : buyerId,
+            selectedMonths: generateForm.selectedMonths,
+            month         : getLatestSelectedMonth().month,
+            year          : getLatestSelectedMonth().year,
+            companyId     : companyIdToUse
           });
           successCount++;
           createdDrafts.push(result.data);
@@ -739,7 +789,10 @@ const handleUpdateBillNumber = async () => {
         : 30,
       hsnCode: bill.hsnCode || '6203',
       notes: bill.notes || '',
-      removeChallans: []
+      removeChallans: [],
+      billDate      : bill.generatedAt
+        ? new Date(bill.generatedAt).toISOString().split('T')[0]
+        : ''
     });
     setCustomSequence('');
     setShowCustomizeModal(true);
@@ -767,8 +820,8 @@ const handleUpdateBillNumber = async () => {
         payload.notes = customizeForm.notes.trim();
       }
 
-      if (customizeForm.removeChallans.length > 0) {
-        payload.removeChallans = customizeForm.removeChallans;
+      if (customizeForm.billDate) {
+        payload.billDate = customizeForm.billDate;
       }
 
       await monthlyBillService.customizeBill(customizingBill._id, payload);
@@ -1140,7 +1193,7 @@ const handleUpdateBillNumber = async () => {
         </div>
       </div>
 
-            {/* Main Content */}
+      {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Search & Filters Bar */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-6">
@@ -1589,7 +1642,7 @@ const handleUpdateBillNumber = async () => {
         )}
       </div>
 
-            {/* Generate Bill Modal - Multi-Step */}
+      {/* Generate Bill Modal - Multi-Step */}
       {showGenerateModal && (
         <Modal
           isOpen={showGenerateModal}
@@ -1791,71 +1844,140 @@ const handleUpdateBillNumber = async () => {
               </div>
             )}
 
-            {/* Step 2: Select Period */}
+            {/* Step 2: Multi-Month Selector */}
             {generateStep === 2 && (
               <div className="space-y-6">
                 <div className="text-center mb-6">
                   <h3 className="text-xl font-bold text-slate-900 mb-2">Billing Period</h3>
-                  <p className="text-slate-600">Select the month and year for this bill</p>
+                  <p className="text-slate-600">Select one or more months — billing period will be the latest selected</p>
                 </div>
 
-                {/* Selected Buyer(s) Preview */}
+                {/* Buyer preview */}
                 {selectedBuyerIds.length > 0 ? (
                   <div className="p-4 bg-green-50 rounded-xl border border-green-200">
                     <p className="font-semibold text-green-900 mb-2">
-                      Generating for {selectedBuyerIds.length} buyers
+                      Generating for <span className="text-green-700">{selectedBuyerIds.length} buyer(s)</span>
                     </p>
                     <div className="text-sm text-green-700 space-y-1">
-                      {selectedBuyerIds.slice(0, 3).map((id) => {
-                        const buyer = buyers.find((b) => b._id === id);
-                        return buyer ? <div key={id}>• {buyer.name}</div> : null;
+                      {selectedBuyerIds.slice(0, 3).map(id => {
+                        const b = buyers.find(x => x._id === id);
+                        return b ? <div key={id}>{b.name}</div> : null;
                       })}
                       {selectedBuyerIds.length > 3 && (
-                        <div className="text-green-600 italic">
-                          ...and {selectedBuyerIds.length - 3} more
-                        </div>
+                        <div className="text-green-600 italic">...and {selectedBuyerIds.length - 3} more</div>
                       )}
                     </div>
                   </div>
-                ) : (
-                  selectedBuyer && (
-                    <div className="p-4 bg-blue-50 rounded-xl border border-blue-200">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
-                          <FiUser className="w-5 h-5 text-white" />
-                        </div>
-                        <div>
-                          <p className="font-semibold text-blue-900">{selectedBuyer.name}</p>
+                ) : selectedBuyer ? (
+                  <div className="p-4 bg-blue-50 rounded-xl border border-blue-200">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
+                        <FiUser className="w-5 h-5 text-white" />
+                      </div>
+                      <div>
+                        <p className="font-semibold text-blue-900">{selectedBuyer.name}</p>
+                        {selectedBuyer.businessName && (
                           <p className="text-sm text-blue-700">{selectedBuyer.businessName}</p>
-                        </div>
+                        )}
                       </div>
                     </div>
-                  )
-                )}
+                  </div>
+                ) : null}
 
-                {/* Month Selection */}
+                {/* Year Tabs */}
                 <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-3">
-                    📅 Select Month
-                  </label>
-                  <div className="grid grid-cols-3 gap-3">
-                    {months.map((month) => (
+                  <label className="block text-sm font-semibold text-slate-700 mb-3">Select Year</label>
+                  <div className="flex gap-2 mb-5">
+                    {[new Date().getFullYear() - 1, new Date().getFullYear()].map(yr => (
                       <button
-                        key={month}
-                        onClick={() => setGenerateForm({ ...generateForm, month })}
-                        className={`p-3 rounded-lg font-medium transition-all duration-200 ${
-                          generateForm.month === month
+                        key={yr}
+                        type="button"
+                        onClick={() => setMonthSelectorYear(yr)}
+                        className={`px-6 py-2.5 rounded-lg font-semibold transition-all duration-200 ${
+                          monthSelectorYear === yr
                             ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
                             : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                         }`}
                       >
-                        {month.substring(0, 3)}
+                        {yr}
                       </button>
                     ))}
                   </div>
+
+                  {/* Month Grid */}
+                  <label className="block text-sm font-semibold text-slate-700 mb-3">
+                    Select Months <span className="font-normal text-slate-500 text-xs ml-1">(tap to toggle)</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {months.map(m => {
+                      const isSelected = generateForm.selectedMonths.some(
+                        sm => sm.month === m && sm.year === monthSelectorYear
+                      );
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => toggleMonthSelection(m, monthSelectorYear)}
+                          className={`py-2.5 px-3 rounded-lg text-sm font-semibold border-2 transition-all duration-200 ${
+                            isSelected
+                              ? 'bg-blue-600 text-white border-blue-600 shadow-md'
+                              : 'bg-white text-slate-700 border-slate-200 hover:border-blue-400 hover:bg-blue-50'
+                          }`}
+                        >
+                          {m.substring(0, 3)}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
-                {/* GST Profile Selector — only for single buyer, only if profiles exist */}
+                {/* Selected months chips + billing period note */}
+                {generateForm.selectedMonths.length > 0 && (
+                  <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                    <p className="text-sm font-semibold text-slate-700 mb-2">
+                      Selected ({generateForm.selectedMonths.length} month{generateForm.selectedMonths.length > 1 ? 's' : ''}):
+                    </p>
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {[...generateForm.selectedMonths]
+                        .sort((a, b) =>
+                          new Date(a.year, getMonthNumber(a.month)) - new Date(b.year, getMonthNumber(b.month))
+                        )
+                        .map(sm => (
+                          <span
+                            key={`${sm.month}-${sm.year}`}
+                            className="inline-flex items-center gap-1 px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium"
+                          >
+                            {sm.month.substring(0, 3)} {sm.year}
+                            {generateForm.selectedMonths.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => toggleMonthSelection(sm.month, sm.year)}
+                                className="ml-1 text-blue-600 hover:text-blue-900 font-bold leading-none text-base"
+                              >
+                                ×
+                              </button>
+                            )}
+                          </span>
+                        ))}
+                    </div>
+
+                    {generateForm.selectedMonths.length > 1 && (() => {
+                      const latest = getLatestSelectedMonth();
+                      return (
+                        <div className="flex items-center gap-2 p-2.5 bg-blue-50 rounded-lg border border-blue-200">
+                          <FiCalendar className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                          <p className="text-sm text-blue-800">
+                            <span className="font-medium">Billing period on bill: </span>
+                            <span className="font-bold">{latest.month} {latest.year}</span>
+                            <span className="text-blue-600 text-xs ml-1">(latest selected month)</span>
+                          </p>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {/* GST Profile selector — single buyer only */}
                 {!selectedBuyerIds.length && generateForm.buyerId && (
                   loadingBuyerProfiles ? (
                     <div className="flex items-center gap-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
@@ -1867,8 +1989,6 @@ const handleUpdateBillNumber = async () => {
                       <label className="block text-sm font-semibold text-slate-700 mb-3">
                         Select GST Profile for this Bill
                       </label>
-
-                      {/* Primary GST option */}
                       <div className="space-y-2">
                         <button
                           type="button"
@@ -1893,8 +2013,6 @@ const handleUpdateBillNumber = async () => {
                             )}
                           </div>
                         </button>
-
-                        {/* Additional GST profiles */}
                         {buyerGstProfiles.map(profile => (
                           <button
                             key={profile.profileId}
@@ -1913,9 +2031,7 @@ const handleUpdateBillNumber = async () => {
                                 </p>
                                 <p className="text-xs font-mono text-slate-600 mt-0.5">{profile.gstNumber}</p>
                                 {profile.address?.state && (
-                                  <p className="text-xs text-slate-500 mt-0.5">
-                                    {profile.address.state} — {profile.stateCode}
-                                  </p>
+                                  <p className="text-xs text-slate-500 mt-0.5">{profile.address.state} {profile.stateCode}</p>
                                 )}
                               </div>
                               {selectedGstId === profile.profileId && (
@@ -1927,16 +2043,15 @@ const handleUpdateBillNumber = async () => {
                           </button>
                         ))}
                       </div>
-
-                      {/* Show selected profile confirmation */}
+                      {/* Selected profile confirmation */}
                       {selectedGstId && (() => {
                         const profile = buyerGstProfiles.find(p => p.profileId === selectedGstId);
                         return profile ? (
                           <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg text-xs text-green-800">
-                            <p><span className="font-semibold">GSTIN:</span> {profile.gstNumber}</p>
-                            {profile.pan && <p className="mt-0.5"><span className="font-semibold">PAN:</span> {profile.pan}</p>}
+                            <p><span className="font-semibold">GSTIN: </span>{profile.gstNumber}</p>
+                            {profile.pan && <p className="mt-0.5"><span className="font-semibold">PAN: </span>{profile.pan}</p>}
                             {profile.address?.fullAddress && (
-                              <p className="mt-0.5 truncate"><span className="font-semibold">Address:</span> {profile.address.fullAddress}</p>
+                              <p className="mt-0.5 truncate"><span className="font-semibold">Address: </span>{profile.address.fullAddress}</p>
                             )}
                           </div>
                         ) : null;
@@ -1945,29 +2060,7 @@ const handleUpdateBillNumber = async () => {
                   ) : null
                 )}
 
-                {/* Year Selection */}
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-3">
-                    📆 Select Year
-                  </label>
-                  <div className="grid grid-cols-3 gap-3">
-                    {[2024, 2025, 2026].map((year) => (
-                      <button
-                        key={year}
-                        onClick={() => setGenerateForm({ ...generateForm, year })}
-                        className={`p-3 rounded-lg font-medium transition-all duration-200 ${
-                          generateForm.year === year
-                            ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
-                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                        }`}
-                      >
-                        {year}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Navigation Buttons */}
+                {/* Navigation */}
                 <div className="flex items-center gap-3 pt-4">
                   <button
                     onClick={() => setGenerateStep(1)}
@@ -1976,8 +2069,15 @@ const handleUpdateBillNumber = async () => {
                     Back
                   </button>
                   <button
-                    onClick={() => setGenerateStep(3)}
-                    className="flex-1 px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all duration-200 font-semibold flex items-center justify-center gap-2 shadow-lg shadow-blue-500/30"
+                    onClick={() => {
+                      if (generateForm.selectedMonths.length === 0) {
+                        toast.error('Please select at least one month');
+                        return;
+                      }
+                      setGenerateStep(3);
+                    }}
+                    disabled={generateForm.selectedMonths.length === 0}
+                    className="flex-1 px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all duration-200 font-semibold flex items-center justify-center gap-2 shadow-lg shadow-blue-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <span>Continue</span>
                     <FiArrowRight className="w-5 h-5" />
@@ -2037,79 +2137,43 @@ const handleUpdateBillNumber = async () => {
 
                     {/* Period Info */}
                     <div className="flex items-start gap-4">
-                      <div className="w-12 h-12 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-lg flex items-center justify-center flex-shrink-0 shadow-lg">
+                      <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg flex items-center justify-center flex-shrink-0 shadow-lg">
                         <FiCalendar className="w-6 h-6 text-white" />
                       </div>
                       <div className="flex-1">
                         <p className="text-sm font-medium text-slate-600 mb-1">Billing Period</p>
-                        <p className="text-lg font-bold text-slate-900">
-                          {generateForm.month} {generateForm.year}
-                        </p>
+                        {generateForm.selectedMonths.length > 1 ? (
+                          <div>
+                            <div className="flex flex-wrap gap-1 mb-1">
+                              {[...generateForm.selectedMonths]
+                                .sort((a, b) =>
+                                  new Date(a.year, getMonthNumber(a.month)) - new Date(b.year, getMonthNumber(b.month))
+                                )
+                                .map(sm => (
+                                  <span
+                                    key={`${sm.month}-${sm.year}`}
+                                    className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs font-medium"
+                                  >
+                                    {sm.month.substring(0, 3)} {sm.year}
+                                  </span>
+                                ))}
+                            </div>
+                            <p className="text-xs text-slate-500">
+                              Bill period:{' '}
+                              <span className="font-bold text-blue-700">
+                                {getLatestSelectedMonth().month} {getLatestSelectedMonth().year}
+                              </span>
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-lg font-bold text-slate-900">
+                            {getLatestSelectedMonth().month} {getLatestSelectedMonth().year}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
                 </div>
-
-                    {/* 🔥 NEW: Adjustment Input - ADD THIS ENTIRE SECTION */}
-                    <div className="p-5 bg-white rounded-xl border-2 border-orange-200">
-                      <label className="block text-sm font-semibold text-slate-700 mb-3">
-                        <div className="flex items-center gap-2">
-                          <FiAlertCircle className="w-4 h-4 text-orange-600" />
-                          <span>Adjust Previous Unbilled Amount (Optional)</span>
-                        </div>
-                      </label>
-                      
-                      <div className="relative mb-2">
-                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-600 font-semibold">₹</span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={adjustPreviousUnbilled}
-                          onChange={(e) => setAdjustPreviousUnbilled(parseFloat(e.target.value) || 0)}
-                          className="w-full pl-8 pr-4 py-3 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent font-semibold text-slate-900"
-                          placeholder="0.00"
-                        />
-                      </div>
-                      
-                      <p className="text-xs text-slate-600 mb-3">
-                        Enter amount if products were supplied but not billed previously. System will add matching products automatically.
-                      </p>
-                      
-                      {adjustPreviousUnbilled > 0 && (
-                        <div className="p-3 bg-orange-50 border border-orange-300 rounded-lg">
-                          <div className="flex items-start gap-2">
-                            <FiAlertCircle className="w-4 h-4 text-orange-600 flex-shrink-0 mt-0.5" />
-                            <div className="text-xs text-orange-800">
-                              <p className="font-semibold mb-1">What will happen:</p>
-                              <ul className="space-y-1 list-disc list-inside">
-                                <li>Products worth <strong>₹{adjustPreviousUnbilled.toFixed(2)}</strong> will be added</li>
-                                <li>No separate mention - just increased quantities</li>
-                                <li>Bill total will increase accordingly</li>
-                                <li>GST will be calculated on adjusted total</li>
-                              </ul>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                      
-                      {/* Quick Amount Buttons */}
-                      {adjustPreviousUnbilled === 0 && (
-                        <div className="flex gap-2 mt-3">
-                          <span className="text-xs text-slate-600 mt-1">Quick:</span>
-                          {[1000, 2000, 3000, 5000].map(amount => (
-                            <button
-                              key={amount}
-                              type="button"
-                              onClick={() => setAdjustPreviousUnbilled(amount)}
-                              className="px-3 py-1 text-xs bg-slate-100 hover:bg-orange-100 hover:text-orange-700 text-slate-700 rounded border border-slate-300 hover:border-orange-400 transition-all font-medium"
-                            >
-                              ₹{amount}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
 
                 {/* Warning Box */}
                 <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-3">
@@ -2181,7 +2245,7 @@ const handleUpdateBillNumber = async () => {
         </Modal>
       )}
 
-            {/* Customize Bill Modal */}
+      {/* Customize Bill Modal */}
       {showCustomizeModal && customizingBill && (
         <Modal
           isOpen={showCustomizeModal}
@@ -2338,6 +2402,22 @@ const handleUpdateBillNumber = async () => {
                 rows="3"
                 placeholder="Add any special instructions or notes for this bill..."
               />
+            </div>
+
+            {/* Bill Date */}
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">
+                Bill Date
+              </label>
+              <input
+                type="date"
+                value={customizeForm.billDate}
+                onChange={e => setCustomizeForm(prev => ({ ...prev, billDate: e.target.value }))}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                Default is last day of billing period month. Admin can set any date.
+              </p>
             </div>
 
             {/* Remove Challans */}

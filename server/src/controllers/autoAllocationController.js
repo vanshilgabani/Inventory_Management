@@ -165,9 +165,8 @@ const designExcluded  = new Set(product.excludedAccounts || []);
 const variantExcluded = new Set(sizeVariant.excludedFromAutoAllocation || []);
 
 const eligibleAccounts = activeAccounts.filter(acc =>
-  everSoldSet.has(acc.accountName) &&
-  !designExcluded.has(acc.accountName) &&   // not design-excluded
-  !variantExcluded.has(acc.accountName)     // not variant-excluded
+  !designExcluded.has(acc.accountName) &&
+  !variantExcluded.has(acc.accountName)
 );
 
 if (eligibleAccounts.length === 0) {
@@ -192,14 +191,17 @@ if (eligibleAccounts.length === 0) {
   });
 
   // ── 7. GIVE NEW ACCOUNTS THEIR INITIAL STOCK FIRST ────────────────────────
+  const threshold = newAccountInitialStock * eligibleAccounts.length;
   let remainingStock = totalReservedStock;
-  const finalAllocations = {}; // accountName → integer units
+  const finalAllocations = {};
 
-  for (const acc of newAccounts) {
-    if (remainingStock <= 0) break;
-    const give = Math.min(newAccountInitialStock, remainingStock);
-    finalAllocations[acc.accountName] = give;
-    remainingStock -= give;
+  if (totalReservedStock >= threshold && newAccounts.length > 0) {
+    for (const acc of newAccounts) {
+      if (remainingStock <= 0) break;
+      const give = Math.min(newAccountInitialStock, remainingStock);
+      finalAllocations[acc.accountName] = give;
+      remainingStock -= give;
+    }
   }
 
   // ── 8. PROPORTIONAL SPLIT (LARGEST REMAINDER METHOD) ─────────────────────
