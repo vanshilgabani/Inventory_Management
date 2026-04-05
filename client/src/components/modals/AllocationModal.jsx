@@ -50,43 +50,65 @@ const isVariantExcluded = (accountName, color, size) => {
   return (sv?.excludedFromAutoAllocation || []).includes(accountName);
 };
 
+// ✅ FIXED — no onSuccess(), no auto-reload
 const handleDesignExclusion = async (accountName, exclude) => {
   try {
-    await fetch(`/api/settings/auto-allocation/${exclude ? 'exclude' : 'include'}-design`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${localStorage.getItem('token')}`
-      },
-      body: JSON.stringify({ design: localProduct.design, accountName })
-    });
-    // Update local state immediately — no full refresh needed
+    const res = await fetch(
+      `/api/settings/auto-allocation/${exclude ? 'exclude' : 'include'}-design`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({ design: localProduct.design, accountName }),
+      }
+    );
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.message || 'Server error');
+    }
+
+    // Only update localProduct — NO onSuccess(), no page reload
     setLocalProduct(prev => ({
       ...prev,
       excludedAccounts: exclude
         ? [...(prev.excludedAccounts || []), accountName]
-        : (prev.excludedAccounts || []).filter(a => a !== accountName)
+        : (prev.excludedAccounts || []).filter(a => a !== accountName),
     }));
-    toast.success(exclude
-      ? `${accountName} excluded from all ${localProduct.design} variants`
-      : `${accountName} re-included for ${localProduct.design}`
+
+    toast.success(
+      exclude
+        ? `${accountName} excluded from all ${localProduct.design} variants`
+        : `${accountName} re-included for ${localProduct.design}`
     );
   } catch (err) {
-    toast.error('Failed to update exclusion');
+    toast.error(err.message || 'Failed to update exclusion');
   }
 };
 
+// ✅ FIXED — no onSuccess(), no auto-reload
 const handleVariantExclusion = async (accountName, color, size, exclude) => {
   try {
-    await fetch(`/api/settings/auto-allocation/${exclude ? 'exclude' : 'include'}-variant`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${localStorage.getItem('token')}`
-      },
-      body: JSON.stringify({ design: localProduct.design, color, size, accountName })
-    });
-    // Update local state immediately
+    const res = await fetch(
+      `/api/settings/auto-allocation/${exclude ? 'exclude' : 'include'}-variant`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({ design: localProduct.design, color, size, accountName }),
+      }
+    );
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.message || 'Server error');
+    }
+
+    // Only update localProduct — NO onSuccess(), no page reload
     setLocalProduct(prev => ({
       ...prev,
       colors: prev.colors.map(cv =>
@@ -97,20 +119,23 @@ const handleVariantExclusion = async (accountName, color, size, exclude) => {
               ...sv,
               excludedFromAutoAllocation: exclude
                 ? [...(sv.excludedFromAutoAllocation || []), accountName]
-                : (sv.excludedFromAutoAllocation || []).filter(a => a !== accountName)
+                : (sv.excludedFromAutoAllocation || []).filter(a => a !== accountName),
             }
-          )
+          ),
         }
-      )
+      ),
     }));
-    toast.success(exclude
-      ? `${accountName} excluded from ${color}-${size}`
-      : `${accountName} re-included for ${color}-${size}`
+
+    toast.success(
+      exclude
+        ? `${accountName} excluded from ${color}-${size}`
+        : `${accountName} re-included for ${color}-${size}`
     );
   } catch (err) {
-    toast.error('Failed to update exclusion');
+    toast.error(err.message || 'Failed to update exclusion');
   }
 };
+
 // ───────────────────────────────────────────────────────────────────────────
 
   // Initialize allocations from existing data

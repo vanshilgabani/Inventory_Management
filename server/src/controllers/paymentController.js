@@ -50,6 +50,7 @@ console.log('💰 Pricing loaded from .env (in rupees, NO GST):', {
 });
 
 // ==================== GET PRICING ENDPOINT ====================
+// In getPricing endpoint, add useRazorpay to the response:
 exports.getPricing = (req, res) => {
   try {
     res.json({
@@ -60,9 +61,11 @@ exports.getPricing = (req, res) => {
         orderBased: PRICING.orderBased,
         trial: {
           days: parseInt(process.env.TRIAL_DAYS) || 7,
-          ordersLimit: parseInt(process.env.TRIAL_ORDERS_LIMIT) || 500
+          ordersLimit: parseInt(process.env.TRIAL_ORDERS_LIMIT) || 5000
         },
-        gstApplicable: false, // ✅ No GST
+        // ✅ Frontend reads this to decide Razorpay vs Manual payment
+        useRazorpay: process.env.PAYMENT_BY_RAZORPAY !== 'false',
+        gstApplicable: false,
         currency: 'INR'
       }
     });
@@ -108,13 +111,16 @@ const calculateProration = (subscription, newPlanType) => {
     const yearlyPrice = PRICING.yearly;
     const finalAmount = Math.max(0, yearlyPrice - unusedCredit);
 
+    const expiryDate = new Date(now);
+    expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+
     return {
       proratedAmount: unusedCredit,
       fullAmount: yearlyPrice,
       credited: unusedCredit,
       daysRemaining,
       finalAmount,
-      newExpiryDate: new Date(now.setFullYear(now.getFullYear() + 1))
+      newExpiryDate: expiryDate  // ← SAFE, `now` is untouched
     };
   }
 
@@ -312,6 +318,43 @@ exports.createOrder = async (req, res) => {
   }
 };
 
+// ✅ Calculate prorated upgrade amount before showing manual payment modal
+exports.calculateUpgrade = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { targetPlanType } = req.body;
+
+    if (!targetPlanType || !['monthly', 'yearly'].includes(targetPlanType)) {
+      return res.status(400).json({ success: false, message: 'Invalid plan type' });
+    }
+
+    const subscription = await Subscription.findOne({ userId });
+    if (!subscription) {
+      return res.status(404).json({ success: false, message: 'Subscription not found' });
+    }
+
+    const proration = calculateProration(subscription, targetPlanType);
+    const finalAmount = Math.max(0, Math.round((proration.fullAmount - proration.credited) * 100) / 100);
+
+    res.json({
+      success: true,
+      data: {
+        proration: {
+          fullAmount: proration.fullAmount,
+          credited: proration.credited,
+          finalAmount,
+          daysRemaining: proration.daysRemaining || 0,
+          isUpgrade: proration.credited > 0
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Calculate upgrade failed', { error: error.message });
+    res.status(500).json({ success: false, message: 'Failed to calculate upgrade amount' });
+  }
+};
+
 // ==================== VERIFY PAYMENT (NO GST) ====================
 exports.verifyPayment = async (req, res) => {
   const session = await mongoose.startSession();
@@ -367,7 +410,8 @@ exports.verifyPayment = async (req, res) => {
     
     // ✅ Calculate proration to determine start/end dates
     const proration = calculateProration(subscription, planType);
-    
+    const previousPlanType = subscription.planType;
+
     let startDate, endDate;
     const amountPaid = payment.amount / 100; // Convert paise to rupees
 
@@ -396,11 +440,15 @@ exports.verifyPayment = async (req, res) => {
       subscription.nextPaymentDue = endDate;
       
       // ✅ Clear monthly plan data if upgrading from monthly
-      if (subscription.monthlyStartDate) {
-        subscription.monthlyStartDate = undefined;
-        subscription.monthlyEndDate = undefined;
-        subscription.monthlyPrice = undefined;
-      }
+      subscription.monthlyStartDate = undefined;
+      subscription.monthlyEndDate = undefined;
+      subscription.monthlyPrice = undefined;
+      subscription.orderBasedStartDate = undefined;
+      subscription.currentBillingCycle = undefined;
+      subscription.ordersUsedThisMonth = undefined;
+      subscription.ordersUsedTotal = undefined;
+      subscription.gracePeriodEndDate = undefined;
+      subscription.gracePeriodInvoiceId = undefined;
 
     } else if (planType === 'monthly') {
       // ✅ Use proration-calculated dates if available (for renewals)
@@ -425,6 +473,16 @@ exports.verifyPayment = async (req, res) => {
       subscription.monthlyPrice = PRICING.monthly;
       subscription.lastPaymentDate = now;
       subscription.nextPaymentDue = endDate;
+
+      subscription.yearlyStartDate = undefined;
+      subscription.yearlyEndDate = undefined;
+      subscription.yearlyPrice = undefined;
+      subscription.orderBasedStartDate = undefined;
+      subscription.currentBillingCycle = undefined;
+      subscription.ordersUsedThisMonth = undefined;
+      subscription.ordersUsedTotal = undefined;
+      subscription.gracePeriodEndDate = undefined;
+      subscription.gracePeriodInvoiceId = undefined;
     }
 
     // Clear trial data and notifications
@@ -448,7 +506,7 @@ exports.verifyPayment = async (req, res) => {
     // ✅ Add credit line item if proration applied
     if (proration.credited > 0) {
       invoiceItems.push({
-        description: `Credit from previous ${subscription.planType} plan (${proration.daysRemaining} days remaining)`,
+        description: `Credit from previous ${previousPlanType} plan (${proration.daysRemaining} days remaining)`,
         quantity: 1,
         unitPrice: -proration.credited,
         amount: -proration.credited

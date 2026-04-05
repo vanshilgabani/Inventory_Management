@@ -1468,64 +1468,206 @@ exports.syncOrderDelete = async (wholesaleOrderId, supplierTenantId) => {
 exports.getReceivedFromSupplier = async (req, res) => {
   try {
     const customerOrgId = req.user.organizationId;
+    const {
+      page     = 1,
+      limit    = 20,
+      search   = '',
+      dateFrom = '',
+      dateTo   = ''
+    } = req.query;
 
-    const receivings = await FactoryReceiving.find({
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // ── Base filter ──
+    const baseFilter = {
       organizationId: customerOrgId,
-      sourceType: 'supplier-sync'
-    })
+      sourceType    : 'supplier-sync'
+    };
+
+    // ── Date filter ──
+    if (dateFrom || dateTo) {
+      baseFilter.receivedDate = {};
+      if (dateFrom) baseFilter.receivedDate.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        baseFilter.receivedDate.$lte = end;
+      }
+    }
+
+    // ── Search filter ──
+    if (search.trim()) {
+      baseFilter.$or = [
+        { sourceName : { $regex: search.trim(), $options: 'i' } },
+        { batchId    : { $regex: search.trim(), $options: 'i' } },
+        { 'supplierMetadata.challanNumber': { $regex: search.trim(), $options: 'i' } }
+      ];
+    }
+
+    // ── All-time stats (no filter) ──
+    const [totalOrdersAll, totalUnitsAll, lastSyncRecord] = await Promise.all([
+      FactoryReceiving.distinct('supplierWholesaleOrderId', {
+        organizationId: customerOrgId,
+        sourceType    : 'supplier-sync'
+      }).then(ids => ids.length),
+
+      FactoryReceiving.aggregate([
+        { $match: { organizationId: customerOrgId, sourceType: 'supplier-sync' } },
+        { $group: { _id: null, total: { $sum: '$totalQuantity' } } }
+      ]).then(r => r[0]?.total || 0),
+
+      FactoryReceiving.findOne({ organizationId: customerOrgId, sourceType: 'supplier-sync' })
+        .sort({ receivedDate: -1 })
+        .select('receivedDate')
+        .lean()
+    ]);
+
+    // ── Fetch all matching receivings ──
+    const allMatchingReceivings = await FactoryReceiving.find(baseFilter)
       .sort({ receivedDate: -1 })
       .lean();
 
-    // Group by order
-    const groupedOrders = receivings.reduce((acc, receiving) => {
+    // ── Group by supplierWholesaleOrderId ──
+    const groupedMap = allMatchingReceivings.reduce((acc, receiving) => {
       const orderId = receiving.supplierWholesaleOrderId?.toString() || receiving.batchId;
-      
       if (!acc[orderId]) {
         acc[orderId] = {
-          orderId: orderId,
-          batchId: receiving.batchId,
+          _id          : receiving._id,
+          orderId,
+          batchId      : receiving.batchId,
           challanNumber: receiving.supplierMetadata?.challanNumber || receiving.batchId,
-          orderDate: receiving.supplierMetadata?.orderDate || receiving.receivedDate,
-          supplierName: receiving.supplierMetadata?.supplierCompanyName || receiving.sourceName,
-          receivedDate: receiving.receivedDate,
-          receivedBy: receiving.receivedBy,
-          acceptedBy: receiving.supplierMetadata?.acceptedBy,
-          acceptedAt: receiving.supplierMetadata?.acceptedAt,
-          items: [],
+          orderDate    : receiving.supplierMetadata?.orderDate     || receiving.receivedDate,
+          supplierName : receiving.supplierMetadata?.supplierCompanyName || receiving.sourceName,
+          receivedDate : receiving.receivedDate,
+          receivedBy   : receiving.receivedBy,
+          // Temp: use receivedBy as hint — will be overridden by SupplierSync lookup below
+          acceptedBy   : (receiving.receivedBy && receiving.receivedBy !== 'System Auto-sync')
+                           ? receiving.receivedBy
+                           : (receiving.supplierMetadata?.acceptedBy || null),
+          acceptedAt   : receiving.supplierMetadata?.acceptedAt || null,
+          items        : [],
           totalQuantity: 0
         };
       }
-
       acc[orderId].items.push({
-        design: receiving.design,
-        color: receiving.color,
-        quantities: receiving.quantities instanceof Map ? Object.fromEntries(receiving.quantities) : receiving.quantities,
+        design       : receiving.design,
+        color        : receiving.color,
+        quantities   : receiving.quantities instanceof Map
+          ? Object.fromEntries(receiving.quantities)
+          : receiving.quantities,
         totalQuantity: receiving.totalQuantity
       });
-
       acc[orderId].totalQuantity += receiving.totalQuantity;
-
       return acc;
     }, {});
 
-    const orders = Object.values(groupedOrders);
+    // ── ✅ FIX: Cross-reference SupplierSync as source of truth for acceptedBy ──
+    // SupplierSync.approvedBy is always set on acceptSyncRequest — reliable even if
+    // FactoryReceiving.supplierMetadata.acceptedBy is stripped by Mongoose schema
+    const validOrderIds = Object.keys(groupedMap).filter(id => id && /^[a-f\d]{24}$/i.test(id));
+
+    if (validOrderIds.length > 0) {
+      const acceptedSyncs = await SupplierSync.find({
+        wholesaleOrderId: { $in: validOrderIds },
+        status          : 'accepted'
+      }).select('wholesaleOrderId approvedBy').lean();
+
+      acceptedSyncs.forEach(sync => {
+        const key = sync.wholesaleOrderId?.toString();
+        if (key && groupedMap[key] && sync.approvedBy?.userName) {
+          groupedMap[key].acceptedBy = sync.approvedBy.userName;
+          groupedMap[key].acceptedAt = sync.approvedBy.approvedAt || null;
+        }
+      });
+    }
+
+    // ── Paginate grouped orders ──
+    const allOrders   = Object.values(groupedMap);
+    const totalOrders = allOrders.length;
+    const totalPages  = Math.ceil(totalOrders / parseInt(limit));
+
+    const paginatedOrders = allOrders.slice(skip, skip + parseInt(limit));
+
+    // ── Strip quantities from list (design chips only — lazy load on expand) ──
+    const listOrders = paginatedOrders.map(o => ({
+      _id          : o._id,
+      orderId      : o.orderId,
+      batchId      : o.batchId,
+      challanNumber: o.challanNumber,
+      orderDate    : o.orderDate,
+      supplierName : o.supplierName,
+      receivedDate : o.receivedDate,
+      receivedBy   : o.receivedBy,
+      acceptedBy   : o.acceptedBy,
+      acceptedAt   : o.acceptedAt,
+      totalQuantity: o.totalQuantity,
+      items        : o.items.map(i => ({ design: i.design, color: i.color }))
+    }));
 
     res.json({
       success: true,
       data: {
-        orders,
-        totalOrders: orders.length,
-        totalItems: receivings.length
+        orders        : listOrders,
+        totalOrders   : totalOrders,
+        totalPages,
+        totalOrdersAll: totalOrdersAll,
+        totalUnits    : totalUnitsAll,
+        lastSyncDate  : lastSyncRecord?.receivedDate || null
       }
     });
 
   } catch (error) {
     console.error('Error in getReceivedFromSupplier:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch received orders',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to fetch received orders', error: error.message });
+  }
+};
+
+exports.getReceivedOrderDetail = async (req, res) => {
+  try {
+    const customerOrgId = req.user.organizationId;
+    const { orderId }   = req.params;  // supplierWholesaleOrderId or batchId
+
+    // Fetch all receivings for this order
+    const receivings = await FactoryReceiving.find({
+      organizationId: customerOrgId,
+      sourceType    : 'supplier-sync',
+      $or: [
+        { supplierWholesaleOrderId: orderId },
+        { batchId: orderId }
+      ]
+    }).lean();
+
+    if (!receivings.length) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // Build full detail with quantities
+    const first = receivings[0];
+    const detail = {
+      orderId      : orderId,
+      batchId      : first.batchId,
+      challanNumber: first.supplierMetadata?.challanNumber || first.batchId,
+      orderDate    : first.supplierMetadata?.orderDate || first.receivedDate,
+      supplierName : first.supplierMetadata?.supplierCompanyName || first.sourceName,
+      receivedDate : first.receivedDate,
+      receivedBy   : first.receivedBy,
+      acceptedBy   : first.supplierMetadata?.acceptedBy,
+      totalQuantity: receivings.reduce((sum, r) => sum + r.totalQuantity, 0),
+      items        : receivings.map(r => ({
+        design       : r.design,
+        color        : r.color,
+        quantities   : r.quantities instanceof Map
+          ? Object.fromEntries(r.quantities)
+          : r.quantities,
+        totalQuantity: r.totalQuantity
+      }))
+    };
+
+    res.json({ success: true, data: detail });
+
+  } catch (error) {
+    console.error('Error in getReceivedOrderDetail:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -1538,5 +1680,6 @@ module.exports = {
   getPendingSyncRequests: exports.getPendingSyncRequests,
   syncOrderEdit: exports.syncOrderEdit,
   syncOrderDelete: exports.syncOrderDelete,
-  getReceivedFromSupplier: exports.getReceivedFromSupplier
+  getReceivedFromSupplier: exports.getReceivedFromSupplier,
+  getReceivedOrderDetail: exports.getReceivedOrderDetail
 };

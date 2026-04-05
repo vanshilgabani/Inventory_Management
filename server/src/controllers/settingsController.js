@@ -2114,6 +2114,7 @@ const excludeAccountFromVariant = async (req, res) => {
 };
 
 // ── VARIANT-LEVEL: Re-include account for specific variant ────────────────
+// ✅ FIXED
 const includeAccountForVariant = async (req, res) => {
   try {
     const { design, color, size, accountName } = req.body;
@@ -2126,11 +2127,16 @@ const includeAccountForVariant = async (req, res) => {
     const sizeVariant  = colorVariant?.sizes.find(s => s.size === size);
     if (!sizeVariant) return res.status(404).json({ message: 'Variant not found' });
 
-    sizeVariant.excludedFromAutoAllocation = (sizeVariant.excludedFromAutoAllocation || [])
-      .filter(a => a !== accountName);
+    // ✅ Use splice() — mutates the existing DocumentArray in place (same pattern as push)
+    // DO NOT use filter() + reassign — Mongoose loses track of nested subdoc changes
+    const idx = (sizeVariant.excludedFromAutoAllocation || []).indexOf(accountName);
+    if (idx !== -1) {
+      sizeVariant.excludedFromAutoAllocation.splice(idx, 1);
+    }
 
     product.markModified('colors');
     await product.save();
+
     res.json({ success: true, message: `${accountName} re-included for ${design}-${color}-${size}` });
   } catch (error) {
     res.status(500).json({ message: error.message });

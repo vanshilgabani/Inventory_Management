@@ -11,33 +11,41 @@ const manualPaymentRequestSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-  
-  // Payment details
+
   planType: {
     type: String,
-    enum: ['monthly', 'yearly', 'order-based', 'invoice-payment'], // 🆕 Added invoice-payment
+    enum: ['monthly', 'yearly', 'order-based', 'invoice-payment'],
     required: true
   },
   amount: {
     type: Number,
     required: true
   },
-  
-  // Payment method
+
+  // ✅ Issue 6: Store server-calculated expected amount for admin cross-check
+  expectedAmount: {
+    type: Number,
+    default: null
+  },
+
+  // ✅ Issue 2: Store credit applied (proration) so invoice reflects it
+  creditApplied: {
+    type: Number,
+    default: 0
+  },
+
   paymentMethod: {
     type: String,
     enum: ['upi', 'cash'],
     required: true
   },
-  
-  // Status tracking
+
   status: {
     type: String,
     enum: ['pending', 'approved', 'rejected'],
     default: 'pending'
   },
-  
-  // 🆕 Invoice payment tracking
+
   invoiceId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Invoice'
@@ -45,30 +53,27 @@ const manualPaymentRequestSchema = new mongoose.Schema({
   invoiceNumber: {
     type: String
   },
-  
-  // User information at time of request
+
   userDetails: {
     name: String,
     email: String,
     phone: String,
     businessName: String
   },
-  
-  // Admin actions
+
   reviewedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
   reviewedAt: Date,
   rejectionReason: String,
-  
-  // Razorpay order attempt (optional)
+
   razorpayOrderId: String,
-  
+
 }, { timestamps: true });
 
 manualPaymentRequestSchema.index({ userId: 1, status: 1 });
 manualPaymentRequestSchema.index({ status: 1, createdAt: -1 });
-manualPaymentRequestSchema.index({ invoiceId: 1 }); // 🆕 Added index
+manualPaymentRequestSchema.index({ invoiceId: 1 });
 
 module.exports = mongoose.model('ManualPaymentRequest', manualPaymentRequestSchema);

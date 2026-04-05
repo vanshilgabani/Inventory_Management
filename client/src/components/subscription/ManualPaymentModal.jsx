@@ -4,10 +4,24 @@ import toast from 'react-hot-toast';
 import api from '../../services/api';
 import upiQRCode from '../../../public/upi-qr-code.png.jpeg';
 
-const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrderId, invoiceId, onSuccess }) => {
+
+const ManualPaymentModal = ({ 
+  onClose, 
+  planType, 
+  planName, 
+  amount,        // ✅ Final amount to pay (prorated)
+  fullAmount,    // ✅ Original plan price (for showing credit deduction)
+  razorpayOrderId, 
+  invoiceId, 
+  onSuccess 
+}) => {
   const [paymentMethod, setPaymentMethod] = useState('');
-  const [confirming, setConfirming] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // ✅ Calculate credit applied (if any)
+  const creditApplied = fullAmount && fullAmount > amount
+    ? Math.round((fullAmount - amount) * 100) / 100
+    : 0;
 
   const paymentDetails = {
     upiId: 'vanshilgabani-1@oksbi',
@@ -15,13 +29,11 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
     name: 'Vanshil Rajubhai Gabani'
   };
 
-  // ✅ Copy to clipboard function
   const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text);
     toast.success('Copied to clipboard!');
   };
 
-  // 🔧 UPDATED: Handle both subscription and invoice payments
   const handleConfirmPayment = async () => {
     if (!paymentMethod) {
       toast.error('Please select a payment method');
@@ -30,15 +42,14 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
 
     try {
       setLoading(true);
-      
-      // 🆕 Use different endpoint for invoice payments
-      const endpoint = invoiceId 
+
+      const endpoint = invoiceId
         ? `/subscription/invoices/${invoiceId}/pay-request`
         : '/payment/manual-payment-request';
-      
+
       const payload = invoiceId
-        ? { paymentMethod } // For invoice payment
-        : { planType, paymentMethod, amount, razorpayOrderId }; // For subscription
+        ? { paymentMethod }
+        : { planType, paymentMethod, amount, razorpayOrderId };
 
       const response = await api.post(endpoint, payload);
 
@@ -58,7 +69,8 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        {/* Header */}
+
+        {/* ── Header ── */}
         <div className="sticky top-0 bg-gradient-to-r from-blue-600 to-purple-600 text-white p-6 rounded-t-xl flex items-center justify-between">
           <div>
             <h2 className="text-2xl font-bold">Complete Payment</h2>
@@ -73,7 +85,8 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
         </div>
 
         <div className="p-6 space-y-6">
-          {/* Plan Details */}
+
+          {/* ── Plan / Invoice Details ── */}
           <div className="bg-gradient-to-br from-blue-50 to-purple-50 p-4 rounded-lg border border-blue-200">
             <div className="flex items-center justify-between">
               <div>
@@ -83,15 +96,40 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
               <div className="text-right">
                 <p className="text-sm text-gray-600">Amount</p>
                 <p className="text-2xl font-bold text-blue-600">₹{amount.toLocaleString()}</p>
+
+                {/* ✅ Show credit breakdown only when proration applied */}
+                {creditApplied > 0 && (
+                  <div className="mt-1">
+                    <p className="text-sm text-gray-400 line-through">
+                      ₹{fullAmount.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-green-600 font-semibold">
+                      − ₹{creditApplied.toLocaleString()} credit applied
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
+
+            {/* ✅ Credit explanation banner */}
+            {creditApplied > 0 && (
+              <div className="mt-3 pt-3 border-t border-blue-200 flex items-start gap-2">
+                <span className="text-green-500 text-lg">✓</span>
+                <p className="text-xs text-gray-600">
+                  <span className="font-semibold text-green-700">
+                    ₹{creditApplied.toLocaleString()} credit
+                  </span>{' '}
+                  from your current plan's remaining days has been deducted from the full price of ₹{fullAmount.toLocaleString()}.
+                </p>
+              </div>
+            )}
           </div>
 
-          {/* Payment Method Selection */}
+          {/* ── Payment Method Selection ── */}
           <div className="space-y-4">
             <h3 className="font-semibold text-gray-800 text-lg">Select Payment Method</h3>
 
-            {/* UPI Payment Option */}
+            {/* ── UPI Option ── */}
             <div
               onClick={() => setPaymentMethod('upi')}
               className={`p-4 border-2 rounded-lg cursor-pointer transition ${
@@ -105,7 +143,10 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
                   <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
                     paymentMethod === 'upi' ? 'bg-blue-500' : 'bg-gray-200'
                   }`}>
-                    <FiCreditCard className={paymentMethod === 'upi' ? 'text-white' : 'text-gray-500'} size={20} />
+                    <FiCreditCard
+                      className={paymentMethod === 'upi' ? 'text-white' : 'text-gray-500'}
+                      size={20}
+                    />
                   </div>
                   <div>
                     <p className="font-semibold text-gray-800">UPI Payment</p>
@@ -117,26 +158,28 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
                 )}
               </div>
 
-              {/* ✅ UPI Details - Show when selected */}
+              {/* UPI Details — shown when selected */}
               {paymentMethod === 'upi' && (
                 <div className="mt-4 pt-4 border-t border-gray-200 space-y-4">
-                  {/* ✅ OPTION 1: Use static QR code image (Recommended) */}
+
+                  {/* QR Code */}
                   <div className="flex flex-col items-center bg-white p-4 rounded-lg border border-gray-200">
                     <p className="text-sm font-semibold text-gray-700 mb-3">Scan QR Code to Pay</p>
                     <div className="bg-white p-3 rounded-lg border-2 border-gray-300">
-                      {/* ✅ Replace with your actual QR code image */}
-                      <img 
-                        src={upiQRCode} 
-                        alt="UPI QR Code" 
+                      <img
+                        src={upiQRCode}
+                        alt="UPI QR Code"
                         className="w-48 h-48"
                         onError={(e) => {
-                          // Fallback: Show text if image not found
                           e.target.style.display = 'none';
-                          e.target.nextSibling.style.display = 'block';
+                          e.target.nextSibling.style.display = 'flex';
                         }}
                       />
-                      <div style={{ display: 'none' }} className="w-48 h-48 flex items-center justify-center bg-gray-100 text-gray-500 text-sm text-center p-4">
-                        QR Code not available.<br/>Please use UPI ID below.
+                      <div
+                        style={{ display: 'none' }}
+                        className="w-48 h-48 flex items-center justify-center bg-gray-100 text-gray-500 text-sm text-center p-4"
+                      >
+                        QR Code not available.<br />Please use UPI ID below.
                       </div>
                     </div>
                     <p className="text-xs text-gray-500 mt-2 text-center">
@@ -144,10 +187,10 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
                     </p>
                   </div>
 
-                  {/* UPI Details */}
+                  {/* UPI Manual Details */}
                   <div className="bg-gray-50 p-4 rounded-lg space-y-3">
                     <p className="text-sm font-semibold text-gray-700">Or pay manually using:</p>
-                    
+
                     {/* UPI ID */}
                     <div className="flex items-center justify-between bg-white p-3 rounded border border-gray-200">
                       <div>
@@ -155,27 +198,21 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
                         <p className="font-mono font-semibold text-gray-800">{paymentDetails.upiId}</p>
                       </div>
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          copyToClipboard(paymentDetails.upiId);
-                        }}
+                        onClick={(e) => { e.stopPropagation(); copyToClipboard(paymentDetails.upiId); }}
                         className="text-blue-500 hover:text-blue-600 p-2 hover:bg-blue-50 rounded transition"
                       >
                         <FiCopy size={18} />
                       </button>
                     </div>
 
-                    {/* Mobile Number */}
+                    {/* Mobile */}
                     <div className="flex items-center justify-between bg-white p-3 rounded border border-gray-200">
                       <div>
                         <p className="text-xs text-gray-500">Mobile Number</p>
                         <p className="font-mono font-semibold text-gray-800">{paymentDetails.upiNumber}</p>
                       </div>
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          copyToClipboard(paymentDetails.upiNumber);
-                        }}
+                        onClick={(e) => { e.stopPropagation(); copyToClipboard(paymentDetails.upiNumber); }}
                         className="text-blue-500 hover:text-blue-600 p-2 hover:bg-blue-50 rounded transition"
                       >
                         <FiCopy size={18} />
@@ -190,27 +227,45 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
                       </div>
                     </div>
 
-                    {/* Amount to Pay */}
-                    <div className="flex items-center justify-between bg-blue-50 p-3 rounded border border-blue-200">
-                      <div>
-                        <p className="text-xs text-blue-600 font-semibold">Amount to Pay</p>
-                        <p className="font-bold text-xl text-blue-600">₹{amount.toLocaleString()}</p>
+                    {/* ✅ Amount to Pay — with credit note if applicable */}
+                    <div className="bg-blue-50 p-3 rounded border border-blue-200">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-xs text-blue-600 font-semibold">Amount to Pay</p>
+                          <p className="font-bold text-xl text-blue-600">₹{amount.toLocaleString()}</p>
+                          {creditApplied > 0 && (
+                            <p className="text-xs text-green-600 mt-1">
+                              ✓ Includes ₹{creditApplied.toLocaleString()} credit from your previous plan
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); copyToClipboard(amount.toString()); }}
+                          className="text-blue-500 hover:text-blue-600 p-2 hover:bg-blue-100 rounded transition"
+                          title="Copy amount"
+                        >
+                          <FiCopy size={16} />
+                        </button>
                       </div>
                     </div>
                   </div>
 
-                  {/* Instructions */}
+                  {/* Note */}
                   <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
                     <p className="text-sm text-yellow-800">
                       <strong>Note:</strong> After making the payment, click "I Have Paid" below.
-                      Admin will verify and {invoiceId ? 'mark your invoice as paid' : 'activate your subscription'} within 24 hours.
+                      Admin will verify and{' '}
+                      {invoiceId
+                        ? 'mark your invoice as paid'
+                        : 'activate your subscription'}{' '}
+                      within 24 hours.
                     </p>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Cash Payment Option */}
+            {/* ── Cash Option ── */}
             <div
               onClick={() => setPaymentMethod('cash')}
               className={`p-4 border-2 rounded-lg cursor-pointer transition ${
@@ -224,7 +279,10 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
                   <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
                     paymentMethod === 'cash' ? 'bg-green-500' : 'bg-gray-200'
                   }`}>
-                    <FiDollarSign className={paymentMethod === 'cash' ? 'text-white' : 'text-gray-500'} size={20} />
+                    <FiDollarSign
+                      className={paymentMethod === 'cash' ? 'text-white' : 'text-gray-500'}
+                      size={20}
+                    />
                   </div>
                   <div>
                     <p className="font-semibold text-gray-800">Cash Payment</p>
@@ -237,16 +295,24 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
               </div>
 
               {paymentMethod === 'cash' && (
-                <div className="mt-4 pt-4 border-t border-gray-200 bg-green-50 p-4 rounded">
+                <div className="mt-4 pt-4 border-t border-gray-200 bg-green-50 p-4 rounded space-y-2">
                   <p className="text-sm text-gray-700">
                     Please arrange to pay cash of{' '}
                     <strong className="text-green-600">₹{amount.toLocaleString()}</strong> to our office.
                   </p>
-                  <p className="text-sm text-gray-600 mt-2">
-                    <strong>Note:</strong> After confirming, admin will review your request.
-                    {invoiceId 
-                      ? ' Your invoice will be marked as paid after verification.'
-                      : ' Your subscription will be activated after payment verification.'
+
+                  {/* ✅ Credit note for cash too */}
+                  {creditApplied > 0 && (
+                    <p className="text-xs text-green-700 font-semibold">
+                      ✓ ₹{creditApplied.toLocaleString()} credit from your previous plan already deducted
+                    </p>
+                  )}
+
+                  <p className="text-sm text-gray-600">
+                    <strong>Note:</strong> After confirming, admin will review your request.{' '}
+                    {invoiceId
+                      ? 'Your invoice will be marked as paid after verification.'
+                      : 'Your subscription will be activated after payment verification.'
                     }
                   </p>
                 </div>
@@ -254,12 +320,12 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
             </div>
           </div>
 
-          {/* Action Buttons */}
+          {/* ── Action Buttons ── */}
           <div className="flex gap-3">
             <button
               onClick={onClose}
-              className="flex-1 px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition font-semibold"
               disabled={loading}
+              className="flex-1 px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition font-semibold disabled:opacity-50"
             >
               Cancel
             </button>
@@ -272,9 +338,17 @@ const ManualPaymentModal = ({ onClose, planType, planName, amount, razorpayOrder
                   : 'bg-gray-300 text-gray-500 cursor-not-allowed'
               }`}
             >
-              {loading ? 'Processing...' : 'I Have Paid'}
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+                  Processing...
+                </span>
+              ) : (
+                'I Have Paid'
+              )}
             </button>
           </div>
+
         </div>
       </div>
     </div>

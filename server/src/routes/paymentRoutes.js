@@ -5,14 +5,8 @@ const manualPaymentController = require('../controllers/manualPaymentController'
 const { protect } = require('../middleware/auth');
 const isDeveloper = require('../middleware/isDeveloper'); // NEW
 
-router.get(
-  '/dev/independent-payment-requests',
-  protect,
-  isDeveloper,
-  manualPaymentController.getIndependentUserPaymentRequests
-);
-
 // Existing routes
+router.post('/calculate-upgrade', protect, paymentController.calculateUpgrade);
 router.get('/pricing', protect, paymentController.getPricing);
 router.post('/create-order', protect, paymentController.createOrder);
 router.post('/verify-payment', protect, paymentController.verifyPayment);
@@ -22,8 +16,8 @@ router.post('/manual-payment-request', protect, manualPaymentController.createMa
 router.get('/my-payment-requests', protect, manualPaymentController.getMyPaymentRequests);
 
 // Admin routes for manual payment verification
-router.get('/admin/payment-requests', protect, manualPaymentController.getAllPaymentRequests);
-router.put('/admin/payment-requests/:requestId/approve', protect, manualPaymentController.approvePaymentRequest);
-router.put('/admin/payment-requests/:requestId/reject', protect, manualPaymentController.rejectPaymentRequest);
+router.get('/admin/payment-requests', protect, isDeveloper, manualPaymentController.getAllPaymentRequests);
+router.put('/admin/payment-requests/:requestId/approve', protect, isDeveloper, manualPaymentController.approvePaymentRequest);
+router.put('/admin/payment-requests/:requestId/reject', protect, isDeveloper, manualPaymentController.rejectPaymentRequest);
 
 module.exports = router;

@@ -20,8 +20,9 @@ exports.getCustomers = async (req, res) => {
       });
     }
 
+    const orgId = req.user.organizationId || userId;
     const wholesaleBuyers = await WholesaleBuyer.find({
-      organizationId: userId,
+      organizationId: orgId,
       customerUserId: { $ne: null },
       isCustomer: true
     })
@@ -326,9 +327,10 @@ exports.updateSidebarPermissions = async (req, res) => {
     }
 
     // Verify this customer belongs to this supplier
+    const orgId = req.user.organizationId || req.user.id;
     const wholesaleBuyer = await WholesaleBuyer.findOne({
       customerUserId: customerId,
-      organizationId: req.user.id // Your organization
+      organizationId: orgId   // ← whole org
     });
 
     if (!wholesaleBuyer) {
@@ -540,9 +542,10 @@ exports.generateCustomerInvoice = async (req, res) => {
     }
 
     // Verify this customer belongs to this admin
+    const orgId = req.user.organizationId || adminId;
     const buyer = await WholesaleBuyer.findOne({
       customerUserId: customerId,
-      organizationId: adminId
+      organizationId: orgId 
     }).session(session);
 
     if (!buyer) {

@@ -258,23 +258,29 @@ exports.upgradePlan = async (req, res) => {
       });
     }
 
-    // ✅ CHECK FOR UNPAID INVOICES BEFORE ALLOWING UPGRADE
+    // ✅ ISSUE 1 FIX: Order-based → new plan
     if (subscription.planType === 'order-based' && planType !== 'order-based') {
-      const unpaidInvoices = await Invoice.find({
+      const MarketplaceSale = require('../models/MarketplaceSale');
+      const DirectSale = require('../models/DirectSale');
+      const WholesaleOrder = require('../models/WholesaleOrder');
+
+      const now = new Date();
+
+      // ✅ STEP 1: Block if there are OLDER unpaid invoices (from previous months)
+      const oldUnpaidInvoices = await Invoice.find({
         userId,
         planType: 'order-based',
         status: { $in: ['generated', 'pending'] }
       }).session(session);
 
-      if (unpaidInvoices.length > 0) {
-        const totalUnpaid = unpaidInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0);
-        
+      if (oldUnpaidInvoices.length > 0) {
+        const totalUnpaid = oldUnpaidInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0);
         await session.abortTransaction();
         return res.status(400).json({
           success: false,
-          message: `You have ${unpaidInvoices.length} unpaid invoice(s) totaling ₹${totalUnpaid.toLocaleString()}. Please clear all pending payments before upgrading.`,
+          message: `You have ${oldUnpaidInvoices.length} unpaid invoice(s) totaling ₹${totalUnpaid.toLocaleString()}. Please clear all pending payments before upgrading.`,
           data: {
-            unpaidInvoices: unpaidInvoices.map(inv => ({
+            unpaidInvoices: oldUnpaidInvoices.map(inv => ({
               invoiceId: inv._id,
               amount: inv.totalAmount,
               dueDate: inv.paymentDueDate,
@@ -282,6 +288,93 @@ exports.upgradePlan = async (req, res) => {
             }))
           }
         });
+      }
+
+      // ✅ STEP 2: Auto-generate final bill for current month's unbilled orders
+      // Only generate if current cycle hasn't already been invoiced
+      if (!subscription.currentBillingCycle?.invoiceGenerated) {
+        const billingStart = subscription.currentBillingCycle?.startDate
+          || new Date(now.getFullYear(), now.getMonth(), 1);
+        const billingEnd = now;
+
+        const [marketplaceCount, directCount, wholesaleCount] = await Promise.all([
+          MarketplaceSale.countDocuments({
+            organizationId: userId,
+            deletedAt: null,
+            createdAt: { $gte: billingStart, $lte: billingEnd }
+          }),
+          DirectSale.countDocuments({
+            organizationId: userId,
+            deletedAt: null,
+            createdAt: { $gte: billingStart, $lte: billingEnd }
+          }),
+          WholesaleOrder.countDocuments({
+            organizationId: userId,
+            deletedAt: null,
+            createdAt: { $gte: billingStart, $lte: billingEnd }
+          })
+        ]);
+
+        const ordersCount = marketplaceCount + directCount + wholesaleCount;
+
+        if (ordersCount > 0) {
+          const pricePerOrder = subscription.pricePerOrder
+            || parseFloat(process.env.ORDER_BASED_PRICE) || 0.5;
+          const totalAmount = ordersCount * pricePerOrder;
+
+          const user = await User.findById(userId).session(session);
+          const invoiceCount = await Invoice.countDocuments({ userId }).session(session);
+          const userShortId = userId.toString().slice(-6).toUpperCase();
+          const invoiceNumber = `INV-${now.getFullYear()}-${userShortId}-${String(invoiceCount + 1).padStart(3, '0')}`;
+          const gracePeriodEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+          const finalBillInvoice = await Invoice.create([{
+            userId,
+            organizationId: subscription.organizationId,
+            invoiceNumber,
+            customerName: user.name,
+            customerEmail: user.email,
+            customerPhone: user.phone,
+            billingPeriod: {
+              startDate: billingStart,
+              endDate: billingEnd,
+              month: billingEnd.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
+            },
+            invoiceType: 'order-based',
+            planType: 'order-based',
+            items: [{
+              description: `Final order-based bill before plan upgrade (${marketplaceCount} marketplace + ${directCount} direct + ${wholesaleCount} wholesale = ${ordersCount} orders × ₹${pricePerOrder})`,
+              quantity: ordersCount,
+              unitPrice: pricePerOrder,
+              amount: totalAmount
+            }],
+            subtotal: totalAmount,
+            gstRate: 0,
+            cgst: 0,
+            sgst: 0,
+            igst: 0,
+            totalAmount,
+            status: 'generated',
+            paymentDueDate: gracePeriodEnd,
+            generatedAt: now,
+            notes: `Auto-generated on plan upgrade from order-based to ${planType}. Please pay this invoice separately.`
+          }], { session });
+
+          // Mark current billing cycle as invoiced so it doesn't get double-billed
+          subscription.currentBillingCycle.invoiceGenerated = true;
+          subscription.currentBillingCycle.invoiceId = finalBillInvoice[0]._id;
+          subscription.currentBillingCycle.ordersCount = ordersCount;
+          subscription.currentBillingCycle.totalAmount = totalAmount;
+          // Do NOT save yet — will be saved with plan change below
+
+          logger.info('Auto-generated final order-based bill before upgrade', {
+            userId,
+            invoiceId: finalBillInvoice[0]._id,
+            ordersCount,
+            totalAmount,
+            upgradingTo: planType
+          });
+        }
       }
     }
 
@@ -307,7 +400,7 @@ exports.upgradePlan = async (req, res) => {
       subscription.planType = 'order-based';
       subscription.status = 'active';
       subscription.orderBasedStartDate = startDate;
-      subscription.pricePerOrder = Number(process.env.PRICE_PER_ORDER) || 0.5;
+      subscription.pricePerOrder = parseFloat(process.env.ORDER_BASED_PRICE) || 0.5;
       subscription.ordersUsedThisMonth = 0;
       subscription.ordersUsedTotal = 0;
       subscription.currentBillingCycle = {
@@ -317,8 +410,6 @@ exports.upgradePlan = async (req, res) => {
         totalAmount: 0,
         invoiceGenerated: false
       };
-
-      // Clear previous plan data
       subscription.yearlyStartDate = undefined;
       subscription.yearlyEndDate = undefined;
       subscription.yearlyPrice = undefined;
@@ -330,14 +421,13 @@ exports.upgradePlan = async (req, res) => {
       subscription.notificationsSent = {};
 
       await subscription.save({ session });
+      await session.commitTransaction();
 
       logger.info('Order-based subscription activated', { userId });
 
-      await session.commitTransaction();
-
       return res.json({
         success: true,
-        message: `Successfully switched to Order-Based Plan! You will be charged ₹${subscription.pricePerOrder} per marketplace order at the end of each month.`,
+        message: `Successfully switched to Order-Based Plan! You will be charged ₹${subscription.pricePerOrder} per order at the end of each month.`,
         data: {
           subscription,
           pricePerOrder: subscription.pricePerOrder,
@@ -349,7 +439,6 @@ exports.upgradePlan = async (req, res) => {
 
     // ✅ HANDLE YEARLY PLAN
     if (planType === 'yearly') {
-      // Validate payment for yearly plan
       if (!paymentTransactionId && !razorpayOrderId) {
         await session.abortTransaction();
         return res.status(400).json({
@@ -361,18 +450,17 @@ exports.upgradePlan = async (req, res) => {
       const now = new Date();
       let startDate, endDate;
 
-      // If expired, start fresh from today
       if (isExpired) {
         startDate = now;
         endDate = new Date(now);
         endDate.setFullYear(endDate.getFullYear() + 1);
       } else if (isSamePlan && subscription.yearlyEndDate) {
-        // Extending same plan - add 1 year to existing expiry
+        // Renewing active yearly — extend from current expiry
         startDate = subscription.yearlyStartDate;
         endDate = new Date(subscription.yearlyEndDate);
         endDate.setFullYear(endDate.getFullYear() + 1);
       } else {
-        // New yearly subscription
+        // Upgrading from trial/monthly/order-based → new yearly
         startDate = now;
         endDate = new Date(now);
         endDate.setFullYear(endDate.getFullYear() + 1);
@@ -387,8 +475,6 @@ exports.upgradePlan = async (req, res) => {
       subscription.yearlyPrice = yearlyPrice;
       subscription.lastPaymentDate = now;
       subscription.nextPaymentDue = endDate;
-
-      // ✅ Clear other plan data including order-based
       subscription.monthlyStartDate = undefined;
       subscription.monthlyEndDate = undefined;
       subscription.monthlyPrice = undefined;
@@ -402,11 +488,10 @@ exports.upgradePlan = async (req, res) => {
 
       await subscription.save({ session });
 
-      // Create invoice for yearly plan
-      const invoiceCount = await Invoice.countDocuments({ userId });
-      const invoiceNumber = `INV-${new Date().getFullYear()}-${String(invoiceCount + 1).padStart(5, '0')}`;
+      const invoiceCount = await Invoice.countDocuments({ userId }).session(session);
+      const userShortId = userId.toString().slice(-6).toUpperCase();
+      const invoiceNumber = `INV-${now.getFullYear()}-${userShortId}-${String(invoiceCount + 1).padStart(3, '0')}`;
 
-      const totalAmount = yearlyPrice;
       const invoice = await Invoice.create([{
         userId,
         organizationId: req.user.organizationId || userId,
@@ -426,6 +511,7 @@ exports.upgradePlan = async (req, res) => {
         gstRate: 0,
         cgst: 0,
         sgst: 0,
+        igst: 0,
         totalAmount: yearlyPrice,
         status: 'paid',
         paidAt: now,
@@ -439,23 +525,18 @@ exports.upgradePlan = async (req, res) => {
       }], { session });
 
       logger.info('Yearly subscription activated', { userId, invoiceId: invoice[0]._id });
-
       await session.commitTransaction();
 
       return res.json({
         success: true,
-        message: isExpired 
+        message: isExpired
           ? 'Successfully renewed Yearly Plan! Your subscription is valid for 1 year.'
           : 'Successfully upgraded to Yearly Plan! Your subscription is valid for 1 year.',
-        data: {
-          subscription,
-          invoice: invoice[0],
-          expiryDate: endDate
-        }
+        data: { subscription, invoice: invoice[0], expiryDate: endDate }
       });
     }
 
-    // ✅ HANDLE MONTHLY PLAN (similar to yearly)
+    // ✅ HANDLE MONTHLY PLAN
     if (planType === 'monthly') {
       if (!paymentTransactionId && !razorpayOrderId) {
         await session.abortTransaction();
@@ -473,10 +554,12 @@ exports.upgradePlan = async (req, res) => {
         endDate = new Date(now);
         endDate.setMonth(endDate.getMonth() + 1);
       } else if (isSamePlan && subscription.monthlyEndDate) {
+        // Renewing active monthly — extend from current expiry
         startDate = subscription.monthlyStartDate;
         endDate = new Date(subscription.monthlyEndDate);
         endDate.setMonth(endDate.getMonth() + 1);
       } else {
+        // Upgrading from trial/order-based → new monthly
         startDate = now;
         endDate = new Date(now);
         endDate.setMonth(endDate.getMonth() + 1);
@@ -491,8 +574,6 @@ exports.upgradePlan = async (req, res) => {
       subscription.monthlyPrice = monthlyPrice;
       subscription.lastPaymentDate = now;
       subscription.nextPaymentDue = endDate;
-
-      // ✅ Clear other plan data including order-based
       subscription.yearlyStartDate = undefined;
       subscription.yearlyEndDate = undefined;
       subscription.yearlyPrice = undefined;
@@ -506,11 +587,10 @@ exports.upgradePlan = async (req, res) => {
 
       await subscription.save({ session });
 
-      // Create invoice
-      const invoiceCount = await Invoice.countDocuments({ userId });
-      const invoiceNumber = `INV-${new Date().getFullYear()}-${String(invoiceCount + 1).padStart(5, '0')}`;
+      const invoiceCount = await Invoice.countDocuments({ userId }).session(session);
+      const userShortId = userId.toString().slice(-6).toUpperCase();
+      const invoiceNumber = `INV-${now.getFullYear()}-${userShortId}-${String(invoiceCount + 1).padStart(3, '0')}`;
 
-      const totalAmount = monthlyPrice;
       const invoice = await Invoice.create([{
         userId,
         organizationId: req.user.organizationId || userId,
@@ -530,6 +610,7 @@ exports.upgradePlan = async (req, res) => {
         gstRate: 0,
         cgst: 0,
         sgst: 0,
+        igst: 0,
         totalAmount: monthlyPrice,
         status: 'paid',
         paidAt: now,
@@ -543,7 +624,6 @@ exports.upgradePlan = async (req, res) => {
       }], { session });
 
       logger.info('Monthly subscription activated', { userId, invoiceId: invoice[0]._id });
-
       await session.commitTransaction();
 
       return res.json({
@@ -551,11 +631,7 @@ exports.upgradePlan = async (req, res) => {
         message: isExpired
           ? 'Successfully renewed Monthly Plan! Your subscription is valid for 1 month.'
           : 'Successfully upgraded to Monthly Plan! Your subscription is valid for 1 month.',
-        data: {
-          subscription,
-          invoice: invoice[0],
-          expiryDate: endDate
-        }
+        data: { subscription, invoice: invoice[0], expiryDate: endDate }
       });
     }
 

@@ -9,5 +9,6 @@ router.post('/:syncId/accept', protect, supplierSyncController.acceptSyncRequest
 router.post('/:syncId/reject', protect, supplierSyncController.rejectSyncRequest);
 router.post('/resend/:orderId', protect, supplierSyncController.resendSyncRequest);
 router.get('/received-from-supplier', protect, supplierSyncController.getReceivedFromSupplier);
+router.get('/received-from-supplier/:orderId', protect, supplierSyncController.getReceivedOrderDetail);
 
 module.exports = router;

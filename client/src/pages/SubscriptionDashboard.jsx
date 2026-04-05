@@ -14,7 +14,8 @@ const SubscriptionDashboard = () => {
   const [usageStats, setUsageStats] = useState(null);
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null); // ✅ Add error state
+  const [error, setError] = useState(null);
+  const [useRazorpay, setUseRazorpay] = useState(true); 
 
   useEffect(() => {
     fetchData();
@@ -65,6 +66,7 @@ const SubscriptionDashboard = () => {
       // Build plans array with fetched pricing
       if (pricingResponse.data.success) {
         const pricing = pricingResponse.data.data;
+        setUseRazorpay(pricing.useRazorpay !== false);
 
         const plansData = [
           {
@@ -219,6 +221,7 @@ const SubscriptionDashboard = () => {
             currentPlan={subscription}
             user={user}
             onUpgrade={handleUpgradeSuccess}
+            useRazorpay={useRazorpay}
           />
         ))}
       </div>
