@@ -13,6 +13,8 @@ const {
   refillVariantLock,
   allocateReservedStock,
   getReservedStockByAccount,
+  bulkStockCheck, 
+  buyerStockCheck
 } = require('../controllers/inventoryController');
 const { protect } = require('../middleware/auth');
 const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
@@ -22,6 +24,8 @@ router.get('/', protect, getAllProducts);
 router.get('/low-stock', protect, getLowStockItems);
 router.get('/stock-status', protect, getStockStatus);
 router.get('/:id', protect, getProductById);
+router.post('/bulk-stock-check', protect, bulkStockCheck);
+router.post('/buyer-stock-check', protect, buyerStockCheck);
 router.post('/:id/allocate-reserved-stock', protect, allocateReservedStock);
 router.get('/reserved-stock/by-account', protect, getReservedStockByAccount);
 // Create routes (no middleware needed - admin only handled in controller)

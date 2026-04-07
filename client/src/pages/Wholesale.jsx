@@ -53,7 +53,8 @@ const Wholesale = () => {
     totalDue: 0, pendingCount: 0, partialCount: 0, paidCount: 0,
   });
 
-  const [showCSVImport,  setShowCSVImport]  = useState(false);
+  const [showCSVImport, setShowCSVImport] = useState(false);
+  const [csvFulfillmentType, setCsvFulfillmentType] = useState('warehouse');
   const [csvPrefillItems, setCsvPrefillItems] = useState(null);
 
   const [qzStatus, setQzStatus]                 = useState('checking');
@@ -400,6 +401,9 @@ const Wholesale = () => {
         getSizesForDesign={getSizesForDesign}
         enabledSizes={enabledSizes}
         onPrefill={handleCSVPrefill}
+        fulfillmentType={csvFulfillmentType}             // ← ADD
+        onFulfillmentTypeChange={setCsvFulfillmentType}
+        allBuyers={allBuyers}
       />
 
       {showBorrow && borrowData && (

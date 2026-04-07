@@ -1,5 +1,6 @@
 const Product = require('../models/Product');
 const Settings = require('../models/Settings');
+const User = require('../models/User');
 const AllocationChange = require('../models/AllocationChange');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
@@ -935,6 +936,139 @@ const getReservedStockByAccount = async (req, res) => {
   }
 };
 
+// ── Bulk Stock Check for CSV Import ──────────────────────────────────────────
+// @desc  Return warehouse/reserved stock for an array of design+color+size variants
+// @route POST /api/inventory/bulk-stock-check
+// @access Private
+const bulkStockCheck = async (req, res) => {
+  try {
+    const { variants, mode } = req.body;
+    const organizationId = req.organizationId;
+
+    if (!variants || !Array.isArray(variants) || variants.length === 0) {
+      return res.status(400).json({ message: 'variants array is required' });
+    }
+
+    // Single DB call — fetch only relevant products
+    const uniqueDesigns = [...new Set(variants.map(v => v.design).filter(Boolean))];
+
+    const products = await Product.find({
+      design: { $in: uniqueDesigns },
+      organizationId,
+    }).lean();
+
+    // Build lookup map: design → product
+    const productMap = {};
+    for (const product of products) {
+      productMap[product.design] = product;
+    }
+
+    // Map each requested variant to its stock values
+    const stocks = variants.map(({ design, color, size }) => {
+      const product      = productMap[design];
+      const colorVariant = product?.colors?.find(c => c.color === color);
+      // Schema stores size as uppercase — normalise incoming size
+      const sizeEntry    = colorVariant?.sizes?.find(
+        s => s.size === (size?.trim().toUpperCase())
+      );
+
+      return {
+        design,
+        color,
+        size,
+        reservedStock : sizeEntry?.reservedStock ?? 0,  // sizes[].reservedStock
+        warehouseStock: sizeEntry?.currentStock  ?? 0,  // sizes[].currentStock
+      };
+    });
+
+    console.log(`✅ bulkStockCheck: ${stocks.length} variants checked, mode=${mode}`);
+    return res.json({ stocks });
+
+  } catch (err) {
+    console.error('❌ Bulk stock check error:', err);
+    return res.status(500).json({ message: 'Server error during stock check', error: err.message });
+  }
+};
+
+// ── Buyer Stock Check for CSV Import ─────────────────────────────────────────
+// @desc  Check buyer's own inventory for given variants
+// @route POST /api/inventory/buyer-stock-check
+// @access Private
+const buyerStockCheck = async (req, res) => {
+  try {
+    const { buyerContact, variants, mode } = req.body;
+    const organizationId = req.organizationId;
+
+    if (!buyerContact) {
+      return res.status(400).json({ message: 'buyerContact is required' });
+    }
+    if (!variants || !Array.isArray(variants) || variants.length === 0) {
+      return res.status(400).json({ message: 'variants array is required' });
+    }
+
+    // Step 1: Find the buyer in YOUR org and verify they are linked
+    const WholesaleBuyer = require('../models/WholesaleBuyer');
+    const buyer = await WholesaleBuyer.findOne({
+      mobile: buyerContact,
+      organizationId,
+    }).lean();
+
+    if (!buyer) {
+      return res.status(404).json({ message: 'Buyer not found' });
+    }
+    if (!buyer.customerTenantId) {
+      return res.status(403).json({ message: 'Buyer is not linked to any customer account' });
+    }
+
+    // Step 2: Resolve buyer's actual organizationId
+    const customerUser = await User.findById(buyer.customerTenantId).lean();
+    if (!customerUser) {
+      return res.status(404).json({ message: 'Buyer customer account not found' });
+    }
+    if (!customerUser.isActive) {
+      return res.status(403).json({ message: 'Buyer customer account is deactivated' });
+    }
+    const buyerOrgId = customerUser.organizationId || customerUser._id;
+
+    const uniqueDesigns = [...new Set(variants.map(v => v.design).filter(Boolean))];
+
+    const buyerProducts = await Product.find({
+      design: { $in: uniqueDesigns },
+      organizationId: buyerOrgId,
+    }).lean();
+
+    // Build lookup map: design → product
+    const productMap = {};
+    for (const product of buyerProducts) {
+      productMap[product.design] = product;
+    }
+
+    // Step 3: Map each variant to buyer's stock
+    const stocks = variants.map(({ design, color, size }) => {
+      const product      = productMap[design];
+      const colorVariant = product?.colors?.find(c => c.color === color);
+      const sizeEntry    = colorVariant?.sizes?.find(
+        s => s.size === (size?.trim().toUpperCase())
+      );
+
+      return {
+        design,
+        color,
+        size,
+        reservedStock : sizeEntry?.reservedStock ?? 0,
+        warehouseStock: sizeEntry?.currentStock  ?? 0,
+      };
+    });
+
+    console.log(`✅ buyerStockCheck: ${stocks.length} variants checked for buyer ${buyerContact}, mode=${mode}`);
+    return res.json({ stocks, buyerName: buyer.businessName || buyer.name });
+
+  } catch (err) {
+    console.error('❌ Buyer stock check error:', err);
+    return res.status(500).json({ message: 'Server error during buyer stock check', error: err.message });
+  }
+};
+
 module.exports = {
   getAllProducts,
   createProduct,
@@ -948,4 +1082,6 @@ module.exports = {
   refillVariantLock,
   allocateReservedStock,
   getReservedStockByAccount,
+  bulkStockCheck, 
+  buyerStockCheck
 };
