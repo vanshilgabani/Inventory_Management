@@ -10,7 +10,7 @@ import toast from 'react-hot-toast';
 
 
 const STEP = { UPLOAD: 'upload', PREVIEW: 'preview', RESULT: 'result' };
-const BATCH_SIZE = 100;
+const BATCH_SIZE = 30;
 
 const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => {
   const [step, setStep] = useState(STEP.UPLOAD);
