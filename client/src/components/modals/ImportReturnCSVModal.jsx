@@ -10,9 +10,7 @@ import toast from 'react-hot-toast';
 
 
 const STEP = { UPLOAD: 'upload', PREVIEW: 'preview', RESULT: 'result' };
-const BATCH_SIZE = 200;
-
-
+const BATCH_SIZE = 100;
 
 const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => {
   const [step, setStep] = useState(STEP.UPLOAD);
@@ -186,9 +184,7 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
     });
   };
 
-
-
-  // ✅ Sequential batch import — sends one batch at a time (safe on Render free tier)
+  // ✅ Parallel batch import — all batches fire simultaneously via Promise.allSettled
   const handleImport = async () => {
     setIsLoading(true);
     try {
@@ -197,24 +193,46 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
         chunks.push(parsedRows.slice(i, i + BATCH_SIZE));
       }
 
-      console.log(`🚀 Importing ${parsedRows.length} rows in ${chunks.length} sequential batch(es) of ${BATCH_SIZE}`);
+      console.log(
+        `🚀 Importing ${parsedRows.length} rows in ${chunks.length} parallel batch(es) of ${BATCH_SIZE}`
+      );
 
-      const aggregated = { updated: 0, unmatched: 0, skipped: 0, errors: [], failedBatches: 0 };
+      // Fire all batches at once — Promise.allSettled never throws,
+      // so a single failed batch doesn't abort the rest
+      const batchResults = await Promise.allSettled(
+        chunks.map((chunk, i) =>
+          salesService.importReturnCSV(chunk).catch(err => {
+            console.error(`❌ Batch ${i + 1}/${chunks.length} failed:`, err.message);
+            throw err; // re-throw so allSettled marks it as rejected
+          })
+        )
+      );
 
-      for (let i = 0; i < chunks.length; i++) {
-        try {
-          const res = await salesService.importReturnCSV(chunks[i]);
-          if (res.success) {
-            aggregated.updated   += res.data.updated   || 0;
-            aggregated.unmatched += res.data.unmatched || 0;
-            aggregated.skipped   += res.data.skipped   || 0;
-            aggregated.errors     = [...aggregated.errors, ...(res.data.errors || [])];
-          }
-        } catch (err) {
+      const aggregated = {
+        updated:      0,
+        unmatched:    0,
+        skipped:      0,
+        errors:       [],
+        failedBatches: 0,
+      };
+
+      batchResults.forEach((result, i) => {
+        if (result.status === 'fulfilled' && result.value?.success) {
+          aggregated.updated   += result.value.data.updated   || 0;
+          aggregated.unmatched += result.value.data.unmatched || 0;
+          aggregated.skipped   += result.value.data.skipped   || 0;
+          aggregated.errors     = [
+            ...aggregated.errors,
+            ...(result.value.data.errors || []),
+          ];
+        } else {
           aggregated.failedBatches++;
-          console.error(`❌ Batch ${i + 1}/${chunks.length} failed:`, err.message);
+          console.error(
+            `❌ Batch ${i + 1}/${chunks.length} rejected:`,
+            result.reason?.message
+          );
         }
-      }
+      });
 
       setResult(aggregated);
       setStep(STEP.RESULT);
@@ -234,8 +252,6 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
       setIsLoading(false);
     }
   };
-
-
 
   if (!isOpen) return null;
 
@@ -495,7 +511,7 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
                   <span>
                     {parsedRows.length} orders will be imported in{' '}
                     <strong>
-                      {Math.ceil(parsedRows.length / BATCH_SIZE)} sequential batches
+                      {Math.ceil(parsedRows.length / BATCH_SIZE)} parallel batches
                     </strong>{' '}
                     of {BATCH_SIZE}.
                   </span>

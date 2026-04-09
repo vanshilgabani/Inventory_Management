@@ -212,7 +212,7 @@ export const salesService = {
 
   // Import return CSV — updates existing orders
   importReturnCSV: async (rows) => {
-    const response = await api.post('/sales/import-return-csv', { rows });
+    const response = await api.post('/sales/import-return-csv', { rows }, { timeout: 60000 });
     return response.data;
   },
 
