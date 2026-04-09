@@ -19,7 +19,10 @@ const {
   getOrdersByDateGroups,
   searchByDate,
   getDateSummaries,
-  getOrdersForDate
+  getOrdersForDate,
+  detectCSVType,
+  previewReturnCSV,
+  importReturnCSV
 } = require('../controllers/salesController');
 const { protect } = require('../middleware/auth');
 const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
@@ -39,6 +42,11 @@ router.get('/search-global', protect, searchOrderGlobally);
 router.post('/', protect, createSale);
 router.post('/with-main-stock', protect, createSaleWithMainStock);
 router.post('/import-csv', protect, importFromCSV);
+
+// ── Return CSV routes ─────────────────────────────────────────────────────
+router.post('/detect-csv-type', protect, detectCSVType);
+router.post('/preview-return-csv', protect, previewReturnCSV);
+router.post('/import-return-csv', protect, importReturnCSV);
 
 // Read routes (no middleware needed)
 router.get('/', protect, getAllSales);

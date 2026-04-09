@@ -204,6 +204,18 @@ export const salesService = {
     return { found: response.data.data?.length > 0, orders: response.data.data || [] };
   },
 
+  // Preview return CSV before importing
+  previewReturnCSV: async (rows) => {
+    const response = await api.post('/sales/preview-return-csv', { rows });
+    return response.data;
+  },
+
+  // Import return CSV — updates existing orders
+  importReturnCSV: async (rows) => {
+    const response = await api.post('/sales/import-return-csv', { rows });
+    return response.data;
+  },
+
   // Import orders from CSV
   async importFromCSV(csvData, accountName, dispatchDate) {
     const payload = {

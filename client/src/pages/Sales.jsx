@@ -21,6 +21,7 @@ import SettlementsView from '../components/SettlementsView';
 import ScrollToTop from '../components/common/ScrollToTop';
 import SKUMappingModal from '../components/modals/SKUMappingModal';
 import ImportPreviewModal from '../components/modals/ImportPreviewModal';
+import ImportReturnCSVModal from '../components/modals/ImportReturnCSVModal';
 import PatternDetectionModal from '../components/modals/PatternDetectionModal';
 import BulkSKUMappingModal from '../components/modals/BulkSKUMappingModal';
 import FinalImportPreviewModal from '../components/modals/FinalImportPreviewModal';
@@ -37,6 +38,9 @@ const Sales = () => {
   // SKU Mapping states (add after existing state declarations)
   const [showSKUMappingModal, setShowSKUMappingModal] = useState(false);
   const [showImportPreviewModal, setShowImportPreviewModal] = useState(false);
+  const [showImportReturnModal, setShowImportReturnModal] = useState(false);
+  const [pendingReturnCSVFile, setPendingReturnCSVFile] = useState(null);
+  const [pendingOrderCSVFile, setPendingOrderCSVFile] = useState(null);
   const [showPatternDetectionModal, setShowPatternDetectionModal] = useState(false);
   const [currentUnmappedSKUs, setCurrentUnmappedSKUs] = useState([]);
   const [currentMappingIndex, setCurrentMappingIndex] = useState(0);
@@ -112,6 +116,8 @@ const Sales = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchInput, setSearchInput] = useState(''); 
   const searchTimeoutRef = useRef(null);
+  const trackingInputRef = useRef(null);
+  const smartCSVInputRef = useRef(null); 
   const [filteredOrders, setFilteredOrders] = useState(null); // For date-filtered orders
   const [searchType, setSearchType] = useState(null); // 'date' | 'order' | null
   const [showSearchModal, setShowSearchModal] = useState(false); // For order ID search results
@@ -529,6 +535,27 @@ const fetchSettlements = async () => {
     };
   }, []);
 
+  // ✅ Barcode scanner support — any keypress outside an input auto-focuses the tracking bar
+  useEffect(() => {
+    const handleGlobalKey = (e) => {
+      // Ignore modifier keys, special keys, and function keys
+      if (e.key.length !== 1) return;
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+      const tag = document.activeElement.tagName;
+      const isEditable = document.activeElement.isContentEditable;
+
+      // Only hijack if user is NOT already typing in a field
+      if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) && !isEditable) {
+        trackingInputRef.current?.focus();
+        // Don't preventDefault — the character naturally types into the now-focused input
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKey);
+    return () => window.removeEventListener('keydown', handleGlobalKey);
+  }, []); // no deps needed — ref is stable
+
 useEffect(() => {
   if (!loading) {
     if (activeTab === 'settlements' && showSettlementsTab) {
@@ -801,7 +828,8 @@ const handleTrackingSearch = useCallback(async (value) => {
   // Search locally first in loaded orders
   const allOrders = Object.values(loadedOrders).flat();
   const localResults = allOrders.filter(sale =>
-    sale.trackingId?.toLowerCase().includes(q)
+    sale.trackingId?.toLowerCase().includes(q) ||
+    sale.returnTrackingId?.toLowerCase().includes(q)
   );
 
   if (localResults.length > 0) {
@@ -988,8 +1016,8 @@ const parseFlipkartSKU = (sku) => {
   };
 };
 
-const handleCSVUpload = (e) => {
-  const file = e.target.files[0];
+const handleCSVUpload = (e, overrideFile = null) => {
+  const file = overrideFile || e?.target?.files?.[0];
   if (!file) return;
 
   if (!importAccount) {
@@ -1013,132 +1041,174 @@ const handleCSVUpload = (e) => {
     skipEmptyLines: true,
     complete: (results) => {
       console.log('CSV Parsed - Total rows:', results.data.length);
+      console.log('📋 CSV Column Headers:', results.data.length > 0 ? Object.keys(results.data[0]) : 'No rows');
+      console.log('📋 First row sample:', results.data[0]);
 
-      // ✅ STEP 1: AUTO-DETECT CSV TYPE
-      const allStatuses = new Set();
-      results.data.forEach(row => {
-        const status = row['Order State'];
-        if (status) allStatuses.add(status);
-      });
+      // ✅ STEP 1: AUTO-DETECT CSV TYPE by column signature
+      const headers = results.data.length > 0 ? Object.keys(results.data[0]) : [];
 
-      const hasPending = allStatuses.has('Ready to dispatch');
-      const hasShipped = allStatuses.has('Shipped');
-      const hasReturnRequested = allStatuses.has('Return Requested');
-      const hasReturned = allStatuses.has('Returned');
+      const isReturnCSV   = headers.includes('Return Status');   // Flipkart return report
+      const isPendingOrDispatchCSV = headers.includes('Order State'); // Flipkart seller panel CSV
 
-      let detectedType = null;
-      let validStatuses = [];
-      let skipStatuses = [];
-
-      // Detection logic
-      if (hasPending && !hasShipped && !hasReturnRequested && !hasReturned) {
-        detectedType = 'pending';
-        validStatuses = ['Ready to dispatch'];
-        skipStatuses = [];
-      } else if (!hasPending && (hasShipped || hasReturnRequested || hasReturned)) {
-        detectedType = 'dispatched';
-        validStatuses = ['Shipped'];
-        skipStatuses = ['Return Requested', 'Returned'];
-      } else {
-        toast.error('Mixed CSV detected! Please download separate CSVs for pending and dispatched orders.');
+      if (!isReturnCSV && !isPendingOrDispatchCSV) {
+        toast.error(`Unrecognised CSV format. Please upload a Flipkart order or return CSV.`);
         return;
       }
 
-      console.log(`🔍 Detected CSV Type: ${detectedType}`);
-      console.log(`✅ Valid Statuses: ${validStatuses.join(', ')}`);
-      console.log(`⚠️ Skip Statuses: ${skipStatuses.join(', ')}`);
+      // RETURN CSV PATH → use the dedicated Import Return CSV modal
+      if (isReturnCSV) {
+        toast.success('↩️ Return CSV detected — opening returns importer!', { duration: 2500 });
+        setShowImportModal(false);
+        setPendingReturnCSVFile(file);
+        setShowImportReturnModal(true);
+        return;
+      }
 
-      // ✅ STEP 2: GENERATE PREVIEW
-      const preview = {
-        success: [],
-        failed: [],
-        skipped: [],
-        detectedType,
-        productBreakdown: new Map()
-      };
+// ── PENDING / DISPATCHED CSV PATH (existing logic) ───────────────────────────
+const allStatuses = new Set();
+results.data.forEach(row => {
+  const status = row['Order State']?.trim();
+  if (status) allStatuses.add(status);
+});
 
-      results.data.forEach((row, idx) => {
-        const rowNumber = idx + 2;
-        const status = row['Order State'];
+console.log('📋 All unique statuses found in CSV:', [...allStatuses]);
 
-        // Skip orders
-        if (skipStatuses.includes(status)) {
-          preview.skipped.push({
-            orderId: row['Order Id'],
-            sku: row['SKU'],
-            status: status
-          });
-          return;
-        }
+const hasPending         = allStatuses.has('Ready to dispatch');
+const hasShipped         = allStatuses.has('Shipped');
+const hasReturnRequested = allStatuses.has('Return Requested');
+const hasReturned        = allStatuses.has('Returned');
 
-        // Check if status is valid
-        if (!validStatuses.includes(status)) {
-          preview.failed.push({
-            row: rowNumber,
-            reason: `Invalid status "${status}"`,
-            sku: row['SKU'],
-            orderId: row['Order Id']
-          });
-          return;
-        }
+let detectedType = null;
+let validStatuses = [];
+let skipStatuses = [];
 
-        // Parse SKU
-        const sku = row['SKU'];
-        const { design, color, size } = parseFlipkartSKU(sku);
+if (hasPending && !hasShipped && !hasReturnRequested && !hasReturned) {
+  detectedType  = 'pending';
+  validStatuses = ['Ready to dispatch'];
+  skipStatuses  = [];
+} else if (!hasPending && (hasShipped || hasReturnRequested || hasReturned)) {
+  detectedType  = 'dispatched';
+  validStatuses = ['Shipped'];
+  skipStatuses  = ['Return Requested', 'Returned'];
+} else {
+  toast.error('Mixed CSV detected! Please download separate CSVs for pending and dispatched orders.');
+  return;
+}
 
-        // ── If SKU is completely absent, fail it — nothing to work with ──
-        if (!sku || !sku.trim()) {
-          preview.failed.push({
-            row: rowNumber,
-            reason: 'Missing SKU — no product identifier found',
-            sku: 'NA',
-            orderId: row['Order Id']
-          });
-          return;
-        }
+console.log(`🔍 Detected CSV Type: ${detectedType}`);
 
-        const quantity = parseInt(row['Quantity']) || 1;
+const preview = {
+  success: [],
+  failed: [],
+  skipped: [],
+  detectedType,
+  productBreakdown: new Map()
+};
 
-        // Add to success — even if design/color/size are null (unmapped SKU will be caught later)
-        preview.success.push({
-          design:      design || '',
-          color:       color  || '',
-          size:        size   || '',
-          quantity,
-          orderId:     row['Order Id'],
-          orderItemId: row['ORDER ITEM ID']?.replace(/\s/g, '').trim(),
-          trackingId: row['Tracking ID']?.trim() || null,
-          sku,          // ← always include raw SKU so unmapped detection can key on it
-        });
+results.data.forEach((row, idx) => {
+  const rowNumber = idx + 2;
+  const status = row['Order State']?.trim();
 
-        // Product breakdown — only add if fully parsed (for the preview table display)
-        if (design && color && size) {
-          const variantKey = `${design}-${color}-${size}`;
-          if (preview.productBreakdown.has(variantKey)) {
-            const existing = preview.productBreakdown.get(variantKey);
-            existing.quantity += quantity;
-            existing.orderCount += 1;
-          } else {
-            preview.productBreakdown.set(variantKey, { design, color, size, quantity, orderCount: 1 });
-          }
-        }
-      });
+  if (skipStatuses.includes(status)) {
+    preview.skipped.push({ orderId: row['Order Id'], sku: row['SKU'], status });
+    return;
+  }
 
-      setImportPreview(preview);
-      setParsedCsvData(preview.success);
+  if (!validStatuses.includes(status)) {
+    preview.failed.push({ row: rowNumber, reason: `Invalid status "${status}"`, sku: row['SKU'], orderId: row['Order Id'] });
+    return;
+  }
 
-      const typeLabel = detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS';
-      toast.success(
-        `🔍 Detected: ${typeLabel}\n` +
-        `✅ ${preview.success.length} orders to import\n` +
-        `⚠️ ${preview.skipped.length} orders skipped (returns)`,
-        { duration: 5000 }
-      );
+  const sku = row['SKU'];
+  const { design, color, size } = parseFlipkartSKU(sku);
+
+  if (!sku || !sku.trim()) {
+    preview.failed.push({ row: rowNumber, reason: 'Missing SKU — no product identifier found', sku: 'NA', orderId: row['Order Id'] });
+    return;
+  }
+
+  const quantity = parseInt(row['Quantity']) || 1;
+
+  preview.success.push({
+    design:      design || '',
+    color:       color  || '',
+    size:        size   || '',
+    quantity,
+    orderId:     row['Order Id'],
+    orderItemId: row['ORDER ITEM ID']?.replace(/\r/g, '').trim().replace(/^'/, ''),
+    trackingId:  row['Tracking ID']?.trim() || null,
+    sku,
+  });
+
+  if (design && color && size) {
+    const variantKey = `${design}-${color}-${size}`;
+    if (preview.productBreakdown.has(variantKey)) {
+      const existing = preview.productBreakdown.get(variantKey);
+      existing.quantity += quantity;
+      existing.orderCount += 1;
+    } else {
+      preview.productBreakdown.set(variantKey, { design, color, size, quantity, orderCount: 1 });
+    }
+  }
+});
+
+setImportPreview(preview);
+setParsedCsvData(preview.success);
+
+const typeLabel = detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS';
+toast.success(
+  `🔍 Detected: ${typeLabel}\n` +
+  `✅ ${preview.success.length} orders to import\n` +
+  `⚠️ ${preview.skipped.length} orders skipped (returns)`,
+  { duration: 5000 }
+);
     },
     error: (error) => {
       console.error('CSV Parse Error:', error);
       toast.error('Failed to parse CSV file');
     }
+  });
+};
+
+// ✅ NEW: Single entry-point — detects CSV type from headers before opening any modal
+const handleSmartCSVDetect = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = ''; // reset so same file can be re-selected
+
+  Papa.parse(file, {
+    header: true,
+    skipEmptyLines: true,
+    preview: 1, // only peek at headers — fast
+    complete: (results) => {
+      const headers = results.meta?.fields || (results.data.length > 0 ? Object.keys(results.data[0]) : []);
+      const isReturnCSV   = headers.includes('Return Status');
+      const isOrderCSV    = headers.includes('Order State');
+
+      if (!isReturnCSV && !isOrderCSV) {
+        toast.error('Unrecognised CSV format. Please upload a Flipkart order or return CSV.');
+        return;
+      }
+
+      if (isReturnCSV) {
+        toast.success('↩️ Return CSV detected — opening returns importer!', { duration: 2500 });
+        setPendingReturnCSVFile(file);
+        setShowImportReturnModal(true);
+      } else {
+        toast.success('📦 Order CSV detected — select account & dispatch date.', { duration: 2500 });
+        setPendingOrderCSVFile(file);
+        const today = new Date();
+        const y = today.getFullYear();
+        const m = String(today.getMonth() + 1).padStart(2, '0');
+        const d = String(today.getDate()).padStart(2, '0');
+        setImportFilterDate(`${y}-${m}-${d}`);
+        // ✅ Auto-select if only 1 account exists
+        if (marketplaceAccounts.length === 1) {
+          setImportAccount(marketplaceAccounts[0].accountName);
+        }
+        setShowImportModal(true);
+      }
+    },
   });
 };
 
@@ -2135,7 +2205,6 @@ const handleDelete = async (id) => {
       
       {/* ============ HEADER CONTROLS ============ */}
       <div className="flex flex-col md:flex-row justify-between md:items-center gap-4">
-        
         {/* Title */}
         <div>
           <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
@@ -2199,6 +2268,7 @@ const handleDelete = async (id) => {
                     )
                 }
                 <input
+                  ref={trackingInputRef}
                   value={trackingInput}
                   onChange={e => setTrackingInput(e.target.value)}
                   onKeyDown={e => {
@@ -2211,7 +2281,6 @@ const handleDelete = async (id) => {
                   className="w-full pl-9 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                 />
               </div>
-
             </div>
               
               {/* COMPACT SEARCH BUTTON */}
@@ -2268,22 +2337,20 @@ const handleDelete = async (id) => {
                 </button>
 
                 <button
-                  onClick={() => {
-                    // Auto-fill today's date in YYYY-MM-DD format (for date input)
-                    const today = new Date();
-                    const year = today.getFullYear();
-                    const month = String(today.getMonth() + 1).padStart(2, '0');
-                    const day = String(today.getDate()).padStart(2, '0');
-                    const formattedDate = `${year}-${month}-${day}`;
-                    
-                    setImportFilterDate(formattedDate);
-                    setShowImportModal(true);
-                  }}
+                  onClick={() => smartCSVInputRef.current?.click()}
                   className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors shadow-sm"
                 >
                   <FiUpload className="w-4 h-4" />
                   <span>Import CSV</span>
                 </button>
+                {/* Hidden smart file input — handles both order & return CSVs */}
+                <input
+                  ref={smartCSVInputRef}
+                  type="file"
+                  accept=".csv"
+                  className="hidden"
+                  onChange={handleSmartCSVDetect}
+                />
               </>
             )}
 
@@ -3822,12 +3889,23 @@ const handleDelete = async (id) => {
                         className="border rounded-lg bg-white overflow-hidden"
                         // Change this style on the outer card div:
                         style={{
-                          borderColor: isHovered ? '#6366f1' : '#e5e7eb',
-                          boxShadow: isHovered
-                            ? '0 4px 16px rgba(99,102,241,0.12)'
-                            : '0 1px 3px rgba(0,0,0,0.06)',
+                          // ✅ Background tint + border by status
+                          background: ({
+                            dispatched:  '#ffffff',
+                            RTO:         '#f5f5f5',
+                            returned:    '#fff7ed',
+                            wrongreturn: '#fff1f1',
+                            cancelled:   '#fafafa',
+                          }[sale.status] ?? '#ffffff'),
+                          borderColor: isHovered ? '#6366f1' : ({
+                            RTO:         '#d1d5db',
+                            returned:    '#fdba74',
+                            wrongreturn: '#fca5a5',
+                            cancelled:   '#e5e7eb',
+                          }[sale.status] ?? '#e5e7eb'),
+                          boxShadow: isHovered ? '0 4px 16px rgba(99,102,241,0.12)' : '0 1px 3px rgba(0,0,0,0.06)',
                           transform: isHovered ? 'translateY(-1px)' : 'translateY(0)',
-                          transition: 'all 0.1s ease',   // was 0.2s — now snappy
+                          transition: 'all 0.1s ease',
                         }}
                         onMouseEnter={() => setHoveredOrderId(sale._id)}
                         onMouseLeave={() => setHoveredOrderId(null)}
@@ -3837,14 +3915,26 @@ const handleDelete = async (id) => {
                           <div className="flex justify-between items-start">
                             {/* Left Side - Order Details */}
                             <div className="flex-1 space-y-2">
-                              <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-3 flex-wrap">
                                 {getStatusBadge(sale.status)}
-                                <span className="text-xs text-gray-500">
-                                  {formatDateCustom(sale.saleDate)}
-                                </span>
-                                <span className="text-xs font-medium text-gray-600">
-                                  {sale.accountName}
-                                </span>
+                                <span className="text-xs text-gray-500">{formatDateCustom(sale.saleDate)}</span>
+                                <span className="text-xs font-medium text-gray-600">{sale.accountName}</span>
+                                {/* ✅ Detect both "[system note]" style AND "Imported from CSV" style */}
+                                {(sale.notes?.trim().startsWith('[') || /imported from csv/i.test(sale.notes || '')) ? (
+                                  <span
+                                    title="Imported via CSV"
+                                    className="inline-flex items-center gap-1 text-xs text-blue-500 bg-blue-50 border border-blue-100 px-1.5 py-0.5 rounded-full font-medium"
+                                  >
+                                    <FiUpload className="text-xs" /> CSV
+                                  </span>
+                                ) : (
+                                  <span
+                                    title="Manually created"
+                                    className="inline-flex items-center gap-1 text-xs text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-full font-medium"
+                                  >
+                                    <FiEdit2 className="text-xs" /> Manual
+                                  </span>
+                                )}
                               </div>
 
                               {/* Highlight matching text */}
@@ -3855,7 +3945,12 @@ const handleDelete = async (id) => {
                                   <p
                                     className="font-semibold cursor-pointer hover:text-indigo-600 hover:underline transition-colors"
                                     title="Click to copy Order Item ID"
-                                    onClick={() => { navigator.clipboard.writeText(sale.orderItemId); toast.success('Order Item ID copied!'); }}
+                                    onClick={() => {
+                                      // ✅ Strip Excel's leading apostrophe before copying
+                                      const cleanId = sale.orderItemId?.replace(/^'/, '') || sale.orderItemId;
+                                      navigator.clipboard.writeText(cleanId);
+                                      toast.success('Order Item ID copied!');
+                                    }}
                                   >
                                     {activeSearchField === 'order' && searchQuery && sale.orderItemId?.toLowerCase().includes(searchQuery.toLowerCase())
                                       ? <span className="bg-yellow-200 px-1 rounded">{sale.orderItemId}</span>
@@ -3883,29 +3978,89 @@ const handleDelete = async (id) => {
                                   </p>
                                 </div>
                                 {/* Tracking ID — shown if exists */}
-                                {sale.trackingId && (
+                                {(sale.trackingId || sale.returnTrackingId) && (
                                   <div className="mt-1">
                                     <span className="text-xs text-gray-500">Tracking ID</span>
-                                    <p
-                                      className="font-semibold text-sm cursor-pointer hover:text-indigo-600 hover:underline transition-colors flex items-center gap-1"
-                                      title="Click to copy Tracking ID"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        navigator.clipboard.writeText(sale.trackingId);
-                                        toast.success('Tracking ID copied!');
-                                      }}
-                                    >
-                                      <FiTruck className="text-xs text-gray-400" />
-                                      {activeSearchField === 'tracking' && trackingInput && sale.trackingId?.toLowerCase().includes(trackingInput.toLowerCase())
-                                        ? <span className="bg-yellow-200 px-1 rounded">{sale.trackingId}</span>
-                                        : sale.trackingId}
-                                    </p>
+                                    <div className="flex items-center gap-1.5 min-w-0 mt-0.5">
+                                      <FiTruck className="text-xs text-gray-400 flex-shrink-0" />
+                                      {/* ✅ Forward tracking — copies ONLY itself */}
+                                      {sale.trackingId && (
+                                        <span
+                                          className={`font-semibold text-sm cursor-pointer hover:text-indigo-600 hover:underline transition-colors ${
+                                            activeSearchField === 'tracking' && trackingInput &&
+                                            sale.trackingId?.toLowerCase().includes(trackingInput.toLowerCase())
+                                              ? 'bg-yellow-200 px-1 rounded'
+                                              : ''
+                                          }`}
+                                          title="Click to copy forward tracking ID"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            navigator.clipboard.writeText(sale.trackingId);
+                                            toast.success('Forward tracking ID copied!');
+                                          }}
+                                        >
+                                          {sale.trackingId}
+                                        </span>
+                                      )}
+                                      {/* Separator */}
+                                      {sale.trackingId && sale.returnTrackingId && (
+                                        <span className="text-gray-300 select-none">/</span>
+                                      )}
+                                      {/* ✅ Return tracking — copies ONLY itself */}
+                                      {sale.returnTrackingId && (
+                                        <span
+                                          className={`font-semibold text-sm cursor-pointer text-red-500 hover:text-red-700 hover:underline transition-colors ${
+                                            activeSearchField === 'tracking' && trackingInput &&
+                                            sale.returnTrackingId?.toLowerCase().includes(trackingInput.toLowerCase())
+                                              ? 'bg-yellow-200 px-1 rounded text-gray-800'
+                                              : ''
+                                          }`}
+                                          title="Click to copy return tracking ID"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            navigator.clipboard.writeText(sale.returnTrackingId);
+                                            toast.success('Return tracking ID copied!');
+                                          }}
+                                        >
+                                          {sale.returnTrackingId}
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                 )}
                                 <div>
-                                  <span className="text-gray-500">Quantity:</span>
+                                  <span className="text-gray-500">Quantity</span>
                                   <p className="font-semibold">{sale.quantity}</p>
                                 </div>
+                                {/* ✅ Return info row: [Reason] [Sub-reason] .............. [Comments] */}
+                                {(sale.returnReason || sale.returnSubReason || sale.returnComments) && (
+                                  <div className="col-span-2 flex items-center gap-2 mt-1 min-w-0">
+                                    {sale.returnReason && (
+                                      <span className="text-xs text-red-600 bg-red-50 border border-red-100 px-1.5 py-0.5 rounded font-medium whitespace-nowrap">
+                                        {sale.returnReason}
+                                      </span>
+                                    )}
+                                    {sale.returnSubReason && (
+                                      <span className="text-xs text-orange-600 bg-orange-50 border border-orange-100 px-1.5 py-0.5 rounded font-medium whitespace-nowrap">
+                                        {sale.returnSubReason}
+                                      </span>
+                                    )}
+                                    {sale.returnComments && (
+                                    <span
+                                      className="text-sm text-gray-500 italic ml-auto"
+                                      style={{
+                                        display: '-webkit-box',
+                                        WebkitLineClamp: 2,
+                                        WebkitBoxOrient: 'vertical',
+                                        overflow: 'visible',
+                                        wordBreak: 'break-word',
+                                      }}
+                                    >
+                                      "{sale.returnComments}"
+                                    </span>
+                                  )}
+                                  </div>
+                                )}
                               </div>
                             </div>
 
@@ -3947,10 +4102,12 @@ const handleDelete = async (id) => {
                             </div>
                           </div>
 
-                          {/* Notes */}
-                          {sale.notes && (
-                            <div className="mt-3 pt-3 border-t border-gray-200">
-                              <p className="text-xs text-gray-500">Notes:</p>
+                          {/* Show ONLY user-written notes — hide system notes like [Imported from CSV], [Used main stock] */}
+                          {sale.notes &&
+                            !sale.notes.trim().startsWith('[') &&
+                            !/imported from csv/i.test(sale.notes.trim()) && (
+                            <div className="mt-2 pt-2 border-t border-gray-100">
+                              <p className="text-xs text-gray-400 mb-0.5">Notes</p>
                               <p className="text-sm text-gray-700">{sale.notes}</p>
                             </div>
                           )}
@@ -4178,6 +4335,7 @@ const handleDelete = async (id) => {
                         setImportPreview(null);
                         setImportAccount('');
                         setImportFilterDate(''); // Dispatch date
+                        setPendingOrderCSVFile(null); 
                       }}
                       className="text-gray-400 hover:text-gray-600 transition-colors"
                     >
@@ -4226,7 +4384,6 @@ const handleDelete = async (id) => {
                                 max={new Date().toISOString().split('T')[0]} // Can't be future date
                                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                               />
-                              <FiCalendar className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" />
                             </div>
                             <p className="text-xs text-gray-500 mt-1">
                               All orders in this CSV will be marked as dispatched on this date
@@ -4238,21 +4395,43 @@ const handleDelete = async (id) => {
                         {importAccount && importFilterDate && (
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-2">
-                              Upload CSV File *
+                              CSV File *
                             </label>
-                            <input
-                              type="file"
-                              accept=".csv"
-                              onChange={handleCSVUpload}
-                              className="block w-full text-sm text-gray-500
-                                file:mr-4 file:py-3 file:px-6
-                                file:rounded-lg file:border-0
-                                file:text-sm file:font-semibold
-                                file:bg-indigo-50 file:text-indigo-700
-                                hover:file:bg-indigo-100
-                                file:cursor-pointer cursor-pointer
-                                border border-gray-300 rounded-lg"
-                            />
+
+                            {pendingOrderCSVFile && !parsedCsvData.length ? (
+                              // ✅ File already selected via smart button — show it and let user process
+                              <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                                <FiFileText className="text-green-600 flex-shrink-0 text-lg" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium text-green-800 truncate">{pendingOrderCSVFile.name}</p>
+                                  <p className="text-xs text-green-600">File detected and ready to process</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCSVUpload(null, pendingOrderCSVFile)}
+                                  className="px-4 py-2 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+                                >
+                                  <FiUpload className="text-sm" />
+                                  Process CSV
+                                </button>
+                              </div>
+                            ) : (
+                              // Fallback: manual file pick (e.g. user opened modal directly)
+                              <input
+                                type="file"
+                                accept=".csv"
+                                onChange={handleCSVUpload}
+                                className="block w-full text-sm text-gray-500
+                                  file:mr-4 file:py-3 file:px-6
+                                  file:rounded-lg file:border-0
+                                  file:text-sm file:font-semibold
+                                  file:bg-indigo-50 file:text-indigo-700
+                                  hover:file:bg-indigo-100
+                                  file:cursor-pointer cursor-pointer
+                                  border border-gray-300 rounded-lg"
+                              />
+                            )}
+
                             <p className="text-xs text-gray-500 mt-2">
                               Download CSV from Flipkart Seller Portal → Orders → Pending Handover (OR) Dispatched Orders → Download Orders List
                             </p>
@@ -4286,7 +4465,11 @@ const handleDelete = async (id) => {
                         <div className="flex items-center gap-2 mb-3">
                           <FiInfo className="text-blue-600 text-xl" />
                           <h3 className="font-semibold text-blue-900">
-                            🔍 Detected: {importPreview.detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS'}
+                            🔍 Detected: {importPreview.detectedType === 'pending'
+                              ? 'PENDING HANDOVER'
+                              : importPreview.detectedType === 'return'
+                              ? 'RETURN ORDERS'
+                              : 'DISPATCHED ORDERS'}
                           </h3>
                         </div>
                         
@@ -4541,6 +4724,17 @@ const handleDelete = async (id) => {
               </div>
           </div>
       )}
+
+      {/* ✅ Import Return CSV Modal */}
+      <ImportReturnCSVModal
+        isOpen={showImportReturnModal}
+        onClose={() => {
+          setShowImportReturnModal(false);
+          setPendingReturnCSVFile(null); // ✅ clean up
+        }}
+        onSuccess={() => { fetchStats(); fetchDateSummaries(); }}
+        preloadedFile={pendingReturnCSVFile} // ✅ pass the file
+      />
       <ScrollToTop />
     </div>
   );

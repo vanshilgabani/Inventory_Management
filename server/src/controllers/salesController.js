@@ -13,6 +13,32 @@ const { parseMarketplaceSKU, matchColor, suggestDesign } = require('../utils/sku
 const { convertSizeToLetter } = require('../utils/sizeMappings');
 const { runAutoAllocation } = require('./autoAllocationController');
 
+// Escape special regex characters for safe use in MongoDB $regex queries
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const detectFlipkartCSVType = (headers) => {
+  const normalized = headers.map(h => (h || '').trim().toLowerCase());
+
+  // Return CSV signature: at least 2 of these unique columns must be present
+  const returnSignature = [
+    'return id',
+    'return reason',
+    'return sub-reason',
+    'return status',
+    'return type',
+  ];
+  const returnMatchCount = returnSignature.filter(col => normalized.includes(col)).length;
+  if (returnMatchCount >= 2) return 'return';
+
+  // Dispatch CSV: has 'order item id' and 'tracking id' but NOT 'return id'
+  const hasOrderItemId = normalized.includes('order item id');
+  const hasTrackingId  = normalized.includes('tracking id');
+  const noReturnId     = !normalized.includes('return id');
+  if (hasOrderItemId && hasTrackingId && noReturnId) return 'dispatch';
+
+  return 'unknown';
+};
+
 // ✅ ADD THIS HELPER AT THE TOP OF EACH CONTROLLER FILE
 const decrementEditSession = async (req, action, module, itemId) => {
   // Only decrement for salespeople with active sessions, not admins
@@ -1109,14 +1135,19 @@ exports.searchSales = async (req, res) => {
     // Search across multiple fields
     const searchTerm = query.trim();
     if (field === 'trackingId') {
-      filter.trackingId = { $regex: searchTerm, $options: 'i' };
+      filter.$or = [
+        { trackingId:       { $regex: searchTerm, $options: 'i' } },  // forward tracking
+        { returnTrackingId: { $regex: searchTerm, $options: 'i' } },  // return tracking (NEW)
+      ];
     } else {
       filter.$or = [
         { design: { $regex: searchTerm, $options: 'i' } },
         { orderItemId: { $regex: searchTerm, $options: 'i' } },
         { marketplaceOrderId: { $regex: searchTerm, $options: 'i' } },
         { color: { $regex: searchTerm, $options: 'i' } },
-        { size: { $regex: searchTerm, $options: 'i' } }
+        { size: { $regex: searchTerm, $options: 'i' } },
+        { trackingId:         { $regex: searchTerm, $options: 'i' } }, 
+        { returnTrackingId:   { $regex: searchTerm, $options: 'i' } },
       ];
     }
 
@@ -2475,6 +2506,295 @@ exports.importFromCSV = async (req, res) => {
   }
 };
 
+exports.detectCSVType = async (req, res) => {
+  try {
+    const { headers } = req.body;
+
+    if (!headers || !Array.isArray(headers) || headers.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'headers array is required',
+      });
+    }
+
+    const csvType = detectFlipkartCSVType(headers);
+
+    const messages = {
+      return:   'Flipkart Return CSV detected',
+      dispatch: 'Flipkart Dispatch/Order CSV detected',
+      unknown:  'Unrecognized CSV format — please verify the file',
+    };
+
+    return res.json({
+      success: true,
+      csvType,
+      message: messages[csvType],
+    });
+  } catch (error) {
+    logger.error('detectCSVType error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to detect CSV type' });
+  }
+};
+
+// ─── ENDPOINT: Preview Return CSV (dry-run, no DB writes) ─────────────────
+// POST /api/sales/preview-return-csv
+// Body: { rows: object[] }  ← parsed CSV rows from frontend
+// Returns matched/unmatched summary so user can confirm before importing
+// ──────────────────────────────────────────────────────────────────────────
+exports.previewReturnCSV = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { rows } = req.body;
+
+    if (!rows || !Array.isArray(rows) || rows.length === 0)
+      return res.status(400).json({ success: false, message: 'No CSV rows provided' });
+
+    const firstRowKeys = Object.keys(rows[0] || {});
+    if (detectFlipkartCSVType(firstRowKeys) !== 'return')
+      return res.status(400).json({
+        success: false,
+        message: 'This does not appear to be a Flipkart Return CSV. Please upload the correct file.',
+        detectedType: detectFlipkartCSVType(firstRowKeys),
+      });
+
+    const matched = [];
+    const unmatched = [];
+    let skipped = 0;
+
+    for (const row of rows) {
+      // ✅ Strip Excel's leading apostrophe
+      const orderItemId = row['Order Item ID']?.trim().replace(/^'/, '') || null;
+      const orderId     = row['Order ID']?.trim() || null;
+
+      // ✅ Skip entirely empty rows
+      if (!orderItemId && !orderId) { results.skipped++; continue; }
+
+      // ✅ Declare ALL row variables BEFORE they are used below
+      const returnType      = row['Return Type']?.trim()       || null;
+      const returnReason    = row['Return Reason']?.trim()     || null;
+      const returnSubReason = row['Return Sub-reason']?.trim() || null;
+      const trackingId      = row['Tracking ID']?.trim()       || null;
+      const returnId        = row['Return ID']?.trim()         || null;
+      const comments        = row['Comments']?.trim()          || null;
+
+      // ✅ Regex matches both 'OD12345 (old stored) and OD12345 (clean)
+      const query = { organizationId, deletedAt: null };
+      if (orderItemId && orderId) {
+        query.orderItemId        = { $regex: `^'?${escapeRegex(orderItemId)}$` };
+        query.marketplaceOrderId = orderId;
+      } else if (orderItemId) {
+        query.orderItemId = { $regex: `^'?${escapeRegex(orderItemId)}$` };
+      } else {
+        query.marketplaceOrderId = orderId;
+      }
+
+      const sale = await MarketplaceSale.findOne(query)
+        .select('orderItemId marketplaceOrderId trackingId returnTrackingId design color size status accountName returnReason returnSubReason returnComments')
+        .lean();
+
+      const isRTO            = (returnType || '').toLowerCase().includes('rto');
+      const willStoreTracking = !isRTO && !!trackingId;
+
+      if (sale) {
+        matched.push({
+          orderItemId:            sale.orderItemId,
+          orderId:                sale.marketplaceOrderId,
+          design:                 sale.design,
+          color:                  sale.color,
+          size:                   sale.size,
+          accountName:            sale.accountName,
+          currentStatus:          sale.status,
+          forwardTrackingId:      sale.trackingId        || null,
+          existingReturnTracking: sale.returnTrackingId  || null,
+          returnId,
+          returnType,
+          returnReason,
+          returnSubReason,
+          comments,
+          newReturnTrackingId: willStoreTracking ? trackingId : null,
+          isRTO,
+          willStoreTracking,
+          note: isRTO
+            ? 'RTO order — tracking ID will NOT be stored'
+            : willStoreTracking
+              ? 'Customer return — tracking ID will be stored'
+              : 'No tracking ID in CSV row',
+        });
+      } else {
+        unmatched.push({ orderItemId, orderId, returnType, returnReason });
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        totalRows:      rows.length,
+        matchedCount:   matched.length,
+        unmatchedCount: unmatched.length,
+        skippedCount:   skipped,
+        matched,
+        unmatched,
+      },
+    });
+
+  } catch (error) {
+    logger.error('previewReturnCSV error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to preview return CSV' });
+  }
+};
+
+// ─── ENDPOINT: Import Return CSV (actual DB writes) ───────────────────────
+// POST /api/sales/import-return-csv
+// Body: { rows: object[] }  ← parsed CSV rows from frontend
+// ──────────────────────────────────────────────────────────────────────────
+exports.importReturnCSV = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { rows } = req.body;
+
+    if (!rows || !Array.isArray(rows) || rows.length === 0)
+      return res.status(400).json({ success: false, message: 'No CSV rows provided' });
+
+    const firstRowKeys = Object.keys(rows[0] || {});
+    if (detectFlipkartCSVType(firstRowKeys) !== 'return')
+      return res.status(400).json({
+        success: false,
+        message: 'This does not appear to be a Flipkart Return CSV. Please upload the correct file.',
+        detectedType: detectFlipkartCSVType(firstRowKeys),
+      });
+
+    // Safely parse Flipkart date strings (handles empty / dash values)
+    const parseFlipkartDate = (dateStr) => {
+      if (!dateStr || !dateStr.trim() || dateStr.trim() === '-') return null;
+      const d = new Date(dateStr.trim());
+      return isNaN(d.getTime()) ? null : d;
+    };
+
+    const results = {
+      updated:        0,
+      unmatched:      0,
+      skipped:        0,
+      errors:         [],
+      updatedOrders:  [],
+      unmatchedOrders:[],
+    };
+
+    for (const row of rows) {
+      try {
+        // ✅ Strip Excel's leading apostrophe from IDs
+        const orderItemId = row['Order Item ID']?.trim().replace(/^'/, '') || null;
+        const orderId     = row['Order ID']?.trim() || null;
+
+        if (!orderItemId && !orderId) { results.skipped++; continue; }
+
+        // ✅ All row variables declared BEFORE query building
+        const returnType      = row['Return Type']?.trim() || null;
+        const returnReason    = row['Return Reason']?.trim() || null;
+        const returnSubReason = row['Return Sub-reason']?.trim() || null;
+        const trackingId      = row['Tracking ID']?.trim() || null;
+        const returnId        = row['Return ID']?.trim() || null;
+        const returnStatus        = row['Return Status']?.trim() || null;
+        const returnRequestedDate = parseFlipkartDate(row['Return Requested Date']);
+        const returnCompletedDate = parseFlipkartDate(row['Completed Date']);
+        const returnComments      = row['Comments']?.trim() || null;
+
+        // ✅ Regex matches both 'OD12345 (old records) and OD12345 (clean records)
+        const query = { organizationId, deletedAt: null };
+        if (orderItemId && orderId) {
+          query.orderItemId        = { $regex: `^'?${escapeRegex(orderItemId)}$` };
+          query.marketplaceOrderId = orderId;
+        } else if (orderItemId) {
+          query.orderItemId = { $regex: `^'?${escapeRegex(orderItemId)}$` };
+        } else {
+          query.marketplaceOrderId = orderId;
+        }
+
+        const sale = await MarketplaceSale.findOne(query).lean();
+
+        if (!sale) {
+          results.unmatched++;
+          results.unmatchedOrders.push({ orderItemId, orderId, returnType, returnReason });
+          continue;
+        }
+
+        // Tracking ID rule:
+        // Customer Return → store the new tracking ID Flipkart assigns for the return shipment
+        // RTO             → DO NOT store (user requirement)
+        const isRTO = returnType === 'courier_return';
+        const returnTrackingId = (!isRTO && trackingId) ? trackingId : null;
+
+        // Build $set payload — only overwrite with non-null values so re-imports
+        // don't accidentally blank out fields that weren't in this CSV batch
+        const updateFields = {};
+        if (returnId)            updateFields.returnId            = returnId;
+        if (returnType)          updateFields.returnType          = returnType;
+        if (returnReason)        updateFields.returnReason        = returnReason;
+        if (returnSubReason)     updateFields.returnSubReason     = returnSubReason;
+        if (returnStatus)        updateFields.returnStatus        = returnStatus;
+        if (returnRequestedDate) updateFields.returnRequestedDate = returnRequestedDate;
+        if (returnCompletedDate) updateFields.returnCompletedDate = returnCompletedDate;
+        if (returnTrackingId)    updateFields.returnTrackingId    = returnTrackingId;
+        if (returnComments)      updateFields.returnComments      = returnComments; // ✅ FIX
+
+        await MarketplaceSale.findByIdAndUpdate(sale._id, { $set: updateFields });
+
+        results.updated++;
+        results.updatedOrders.push({
+          orderItemId:     sale.orderItemId,
+          orderId:         sale.marketplaceOrderId,
+          design:          sale.design,
+          color:           sale.color,
+          size:            sale.size,
+          accountName:     sale.accountName,
+          returnType:      returnType      || '—',
+          returnReason:    returnReason    || '—',
+          returnSubReason: returnSubReason || '—',
+          returnComments:  returnComments  || '—',   // ✅ FIX
+          returnTrackingId: returnTrackingId || null,
+          isRTO,
+          trackingNote: isRTO
+            ? 'RTO — tracking ID not stored'
+            : returnTrackingId
+              ? `Stored: ${returnTrackingId}`
+              : 'No tracking ID in CSV',
+        });
+
+      } catch (rowError) {
+        results.errors.push({
+          orderItemId: row['Order Item ID'] || 'unknown',
+          error: rowError.message,
+        });
+        logger.error('Return CSV row error:', {
+          orderItemId: row['Order Item ID'],
+          error: rowError.message,
+        });
+      }
+    }
+
+    logger.info('Return CSV import complete', {
+      organizationId,
+      updated:  results.updated,
+      unmatched: results.unmatched,
+      skipped:  results.skipped,
+      errors:   results.errors.length,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Return CSV imported: ${results.updated} orders updated, ${results.unmatched} unmatched, ${results.skipped} skipped`,
+      data: results,
+    });
+
+  } catch (error) {
+    logger.error('importReturnCSV error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error processing return CSV',
+      error: error.message,
+    });
+  }
+};
+
 // ✅ ADD THIS - Get date summary
 exports.getDateSummary = async (req, res) => {
   try {
@@ -2635,6 +2955,8 @@ exports.searchOrderGlobally = async (req, res) => {
       $or: [
         { orderItemId: { $regex: searchTerm, $options: 'i' } },
         { marketplaceOrderId: { $regex: searchTerm, $options: 'i' } },
+        { trackingId: { $regex: searchTerm, $options: 'i' } },  
+        { returnTrackingId: { $regex: searchTerm, $options: 'i' } },
         { design: { $regex: searchTerm, $options: 'i' } },
         { color: { $regex: searchTerm, $options: 'i' } },
         { size: { $regex: searchTerm, $options: 'i' } }

@@ -91,6 +91,51 @@ const marketplaceSaleSchema = new mongoose.Schema({
     enum: ['dispatched', 'returned', 'wrongreturn', 'cancelled', 'RTO'],
     default: 'dispatched'
   },
+
+  returnTrackingId: {
+    type: String,
+    default: null,
+    trim: true,
+  },
+  returnId: {
+    type: String,
+    default: null,
+    trim: true,
+  },
+  returnType: {
+    type: String,
+    default: null,
+    trim: true,
+    // e.g. "Customer Return", "Seller RTO", "Return", etc.
+  },
+  returnReason: {
+    type: String,
+    default: null,
+    trim: true,
+  },
+  returnSubReason: {
+    type: String,
+    default: null,
+    trim: true,
+  },
+  returnComments: {
+    type: String,
+    default: null,
+    trim: true,
+  },
+  returnStatus: {
+    type: String,
+    default: null,
+    trim: true,
+  },
+  returnRequestedDate: {
+    type: Date,
+    default: null,
+  },
+  returnCompletedDate: {
+    type: Date,
+    default: null,
+  },
   stockRestoredAmount: {
     type: Number,
     default: 0
