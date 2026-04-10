@@ -1644,7 +1644,7 @@ exports.updateSale = async (req, res) => {
             userName: req.user.name || req.user.email,
             userRole: req.user.role
           },
-          changedAt: changedAt ? new Date(changedAt + 'T00:00:00.000Z') : new Date(),
+          changedAt: new Date(),
           comments: comments || `Status updated by admin`
         });
 
@@ -1682,7 +1682,7 @@ exports.updateSale = async (req, res) => {
           userName: req.user.name || req.user.email,
           userRole: req.user.role
         },
-        changedAt: changedAt ? new Date(changedAt + 'T00:00:00.000Z') : new Date(),
+        changedAt: new Date(),
         comments: comments || `Status updated to ${status}`
       });
 
@@ -2803,10 +2803,10 @@ exports.importReturnCSV = async (req, res) => {
         });
 
         if (isRTO) {
-          results.rtoCount++;
-        } else if (returnTrackingId) {
-          results.trackingStored++;
-        }
+        results.rtoCount++;
+      } else if (returnTrackingId) {
+        results.trackingStored++;
+      }
         results.updated++;
 
       } catch (rowError) {

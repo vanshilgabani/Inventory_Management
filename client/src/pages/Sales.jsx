@@ -1861,7 +1861,7 @@ const handleSaleSubmit = async (e) => {
       const updateData = {
         status: saleFormData.status,
         comments: saleFormData.comments,
-        changedAt: saleFormData.statusDate,
+        changedAt: new Date().toISOString(),
       };
 
       // Only include returnedProduct when marking as returned AND all fields filled
@@ -2162,7 +2162,7 @@ const handleDelete = async (id) => {
       const response = await salesService.updateSale(sale._id, {
         status: newStatus,
         comments: `Quick update to ${newStatus} from search`,
-        changedAt: new Date().toISOString().split('T')[0],
+        changedAt: new Date().toISOString(),
       });
 
       // Update badge in modal instantly
