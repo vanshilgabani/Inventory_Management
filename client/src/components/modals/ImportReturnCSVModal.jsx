@@ -166,30 +166,13 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
 
         try {
           setParsedRows(slimRows);
-
-          // Build preview in memory from the already-parsed slim rows
-          const clientPreview = {
-            matchedCount:   slimRows.length,
-            unmatchedCount: 0,
-            skippedCount:   stats.invalid,
-            matched: slimRows.slice(0, 8).map(row => ({
-              orderItemId:         row['Order Item ID'],
-              orderId:             row['Order ID'],
-              returnReason:        row['Return Reason'],
-              returnSubReason:     row['Return Sub-reason'],
-              returnStatus:        row['Return Status'],
-              returnType:          row['Return Type'],
-              isRTO:               row['Return Type'] === 'courier_return',
-              newReturnTrackingId: row['Tracking ID'] || null,
-              comments:            row['Comments'],
-            })),
-            unmatched: [],
-          };
-
-          setPreview(clientPreview);
-          setStep(STEP.PREVIEW);
+          const res = await salesService.previewReturnCSV(slimRows);
+          if (res.success) {
+            setPreview(res.data);
+            setStep(STEP.PREVIEW);
+          }
         } catch (err) {
-          toast.error('Preview failed. Please try again.');
+          toast.error(err.response?.data?.message || 'Preview failed. Please try again.');
         } finally {
           setIsLoading(false);
         }
