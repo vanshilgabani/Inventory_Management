@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   FiX, FiUpload, FiCheckCircle, FiAlertCircle,
-  FiFileText, FiRotateCcw, FiFilter, FiRefreshCw
+  FiFileText, FiRotateCcw, FiFilter, FiRefreshCw, FiCopy, FiDownload
 } from 'react-icons/fi';
 import Papa from 'papaparse';
 import { salesService } from '../../services/salesService';
@@ -166,13 +166,29 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
 
         try {
           setParsedRows(slimRows);
-          const res = await salesService.previewReturnCSV(slimRows);
-          if (res.success) {
-            setPreview(res.data);
-            setStep(STEP.PREVIEW);
-          }
+
+          // Build preview entirely from CSV data
+          const clientPreview = {
+            matchedCount:  slimRows.length,    // "orders to attempt"
+            skippedCount:  stats.invalid,
+            matched: slimRows.slice(0, 8).map(row => ({
+              orderItemId:         row['Order Item ID'],
+              orderId:             row['Order ID'],
+              returnType:          row['Return Type'],
+              returnReason:        row['Return Reason'],
+              returnSubReason:     row['Return Sub-reason'],
+              returnStatus:        row['Return Status'],
+              isRTO:               row['Return Type'] === 'courier_return',
+              newReturnTrackingId: row['Tracking ID'] || null,
+              comments:            row['Comments'],
+            })),
+            unmatched: [], // unknown until server processes — shown in result
+          };
+
+          setPreview(clientPreview);
+          setStep(STEP.PREVIEW);
         } catch (err) {
-          toast.error(err.response?.data?.message || 'Preview failed. Please try again.');
+          toast.error('Failed to build preview.');
         } finally {
           setIsLoading(false);
         }
@@ -197,34 +213,37 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
         `🚀 Importing ${parsedRows.length} rows in ${chunks.length} parallel batch(es) of ${BATCH_SIZE}`
       );
 
-      // Fire all batches at once — Promise.allSettled never throws,
-      // so a single failed batch doesn't abort the rest
       const batchResults = await Promise.allSettled(
         chunks.map((chunk, i) =>
           salesService.importReturnCSV(chunk).catch(err => {
             console.error(`❌ Batch ${i + 1}/${chunks.length} failed:`, err.message);
-            throw err; // re-throw so allSettled marks it as rejected
+            throw err;
           })
         )
       );
 
+      // ✅ All 6 fields initialized
       const aggregated = {
-        updated:      0,
-        unmatched:    0,
-        skipped:      0,
-        errors:       [],
-        failedBatches: 0,
+        updated:         0,
+        unmatched:       0,
+        skipped:         0,
+        rtoCount:        0,   // ✅ ADD
+        trackingStored:  0,   // ✅ ADD
+        errors:          [],
+        unmatchedOrders: [],  // ✅ ADD
+        failedBatches:   0,
       };
 
       batchResults.forEach((result, i) => {
         if (result.status === 'fulfilled' && result.value?.success) {
-          aggregated.updated   += result.value.data.updated   || 0;
-          aggregated.unmatched += result.value.data.unmatched || 0;
-          aggregated.skipped   += result.value.data.skipped   || 0;
-          aggregated.errors     = [
-            ...aggregated.errors,
-            ...(result.value.data.errors || []),
-          ];
+          const d = result.value.data;
+          aggregated.updated         += d.updated         || 0;
+          aggregated.unmatched       += d.unmatched       || 0;
+          aggregated.skipped         += d.skipped         || 0;
+          aggregated.rtoCount        += d.rtoCount        || 0;  // ✅ collect
+          aggregated.trackingStored  += d.trackingStored  || 0;  // ✅ collect
+          aggregated.errors           = [...aggregated.errors,         ...(d.errors          || [])];
+          aggregated.unmatchedOrders  = [...aggregated.unmatchedOrders, ...(d.unmatchedOrders || [])]; // ✅ collect
         } else {
           aggregated.failedBatches++;
           console.error(
@@ -398,75 +417,48 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
               )}
 
               {/* Summary cards */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-bold text-green-700">{preview.matchedCount}</p>
-                  <p className="text-xs text-green-600 font-medium mt-1">Will Update</p>
-                </div>
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-bold text-amber-600">{preview.unmatchedCount}</p>
-                  <p className="text-xs text-amber-600 font-medium mt-1">Not Found</p>
+              <div className="grid grid-cols-2 gap-3">  {/* 2 cols, not 3 */}
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-blue-700">{preview.matchedCount}</p>
+                  <p className="text-xs text-blue-600 font-medium mt-1">Orders to Process</p>
+                  <p className="text-xs text-blue-400 mt-0.5">Exact results shown after update</p>
                 </div>
                 <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-center">
                   <p className="text-2xl font-bold text-gray-400">{preview.skippedCount}</p>
-                  <p className="text-xs text-gray-400 font-medium mt-1">Skipped</p>
+                  <p className="text-xs text-gray-400 font-medium mt-1">Empty Rows Skipped</p>
                 </div>
               </div>
-
-              {/* No matches */}
-              {preview.matchedCount === 0 && (
-                <div className="text-center py-6">
-                  <FiAlertCircle className="mx-auto text-3xl text-amber-400 mb-2" />
-                  <p className="font-semibold text-gray-700">No matching orders found</p>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Make sure the dispatch CSV was imported first
-                  </p>
-                </div>
-              )}
 
               {/* Matched orders sample */}
               {preview.matched?.length > 0 && (
                 <div>
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
-                    Orders to be updated
+                    Sample of orders to process
                   </p>
                   <div className="space-y-2 max-h-60 overflow-y-auto pr-0.5">
                     {preview.matched.slice(0, 8).map((item, i) => (
-                      <div
-                        key={i}
-                        className="border border-gray-100 rounded-xl p-3 bg-gray-50/80 text-xs"
-                      >
+                      <div key={i} className="border border-gray-100 rounded-xl p-3 bg-gray-50/80 text-xs">
                         <div className="flex items-center justify-between mb-1.5">
                           <span className="font-mono font-semibold text-gray-800">
-                            {item.orderItemId}
+                            {item.orderItemId || item.orderId}
                           </span>
-                          <div className="flex items-center gap-2">
-                            <span className="text-gray-400">
-                              {item.design} · {item.color} · {item.size}
-                            </span>
-                            <span className={`px-2 py-0.5 rounded-full font-medium ${
-                              item.isRTO
-                                ? 'bg-gray-100 text-gray-500'
-                                : 'bg-orange-100 text-orange-700'
-                            }`}>
-                              {item.isRTO ? 'RTO' : 'Return'}
-                            </span>
-                          </div>
+                          <span className={`px-2 py-0.5 rounded-full font-medium ${
+                            item.isRTO
+                              ? 'bg-gray-100 text-gray-500'
+                              : 'bg-orange-100 text-orange-700'
+                          }`}>
+                            {item.isRTO ? 'RTO' : 'Return'}
+                          </span>
                         </div>
                         <div className="space-y-0.5 text-gray-500">
                           {item.newReturnTrackingId && (
-                            <p>
-                              🚚{' '}
-                              <span className="text-gray-700 font-medium">
-                                {item.newReturnTrackingId}
-                              </span>
-                            </p>
+                            <p>🚚 <span className="text-gray-700 font-medium">{item.newReturnTrackingId}</span></p>
                           )}
                           {item.returnReason && (
-                            <p>
-                              {item.returnReason}
-                              {item.returnSubReason ? ` → ${item.returnSubReason}` : ''}
-                            </p>
+                            <p>{item.returnReason}{item.returnSubReason ? ` → ${item.returnSubReason}` : ''}</p>
+                          )}
+                          {item.returnStatus && (
+                            <p className="text-gray-400">Status: {item.returnStatus}</p>
                           )}
                           {item.comments && (
                             <p className="italic text-gray-400">"{item.comments}"</p>
@@ -477,27 +469,6 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
                     {preview.matched.length > 8 && (
                       <p className="text-xs text-center text-gray-400 py-2">
                         +{preview.matched.length - 8} more orders
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Unmatched */}
-              {preview.unmatched?.length > 0 && (
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
-                  <p className="text-xs font-semibold text-amber-800 mb-1.5">
-                    ⚠ {preview.unmatchedCount} orders not in system — will be skipped
-                  </p>
-                  <div className="space-y-0.5">
-                    {preview.unmatched.slice(0, 4).map((item, i) => (
-                      <p key={i} className="text-xs font-mono text-amber-700">
-                        {item.orderItemId || item.orderId}
-                      </p>
-                    ))}
-                    {preview.unmatched.length > 4 && (
-                      <p className="text-xs text-amber-500 mt-1">
-                        +{preview.unmatched.length - 4} more
                       </p>
                     )}
                   </div>
@@ -538,12 +509,13 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
                 </h3>
                 <p className="text-sm text-gray-400 mt-1">
                   {result.failedBatches > 0
-                    ? `${result.failedBatches} batch(es) failed — you can retry below`
-                    : 'Return data saved to matched orders'
+                    ? `${result.failedBatches} batch(es) failed — retry below`
+                    : 'Exact results from server shown below'
                   }
                 </p>
               </div>
 
+              {/* ✅ Accurate result cards */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
                   <p className="text-2xl font-bold text-green-700">{result.updated}</p>
@@ -553,35 +525,98 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
                   <p className="text-2xl font-bold text-amber-600">{result.unmatched}</p>
                   <p className="text-xs text-amber-600 font-medium mt-1">Not Found</p>
                 </div>
-                <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-bold text-red-500">{result.errors?.length || 0}</p>
-                  <p className="text-xs text-red-500 font-medium mt-1">Errors</p>
+                <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-gray-500">{result.skipped}</p>
+                  <p className="text-xs text-gray-400 font-medium mt-1">Skipped</p>
                 </div>
               </div>
 
-              {/* ✅ Retry banner — only shown when batches failed */}
-              {result.failedBatches > 0 && (
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-sm font-semibold text-amber-800">
-                      {result.failedBatches} batch(es) did not complete
-                    </p>
-                    <p className="text-xs text-amber-600 mt-0.5">
-                      Already-updated orders are safe. Retrying is safe — re-importing the same
-                      return data only overwrites existing fields.
-                    </p>
+              {/* ✅ ADD-ON 1: RTO + Tracking summary */}
+              {(result.rtoCount > 0 || result.trackingStored > 0) && (
+                <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 flex items-center gap-3">
+                  <FiFileText className="text-blue-500 flex-shrink-0" />
+                  <div className="text-xs text-blue-700 space-y-0.5">
+                    {result.trackingStored > 0 && (
+                      <p>🚚 <strong>{result.trackingStored}</strong> return tracking IDs stored</p>
+                    )}
+                    {result.rtoCount > 0 && (
+                      <p>📦 <strong>{result.rtoCount}</strong> RTOs — tracking skipped (as expected)</p>
+                    )}
                   </div>
-                  <button
-                    onClick={handleImport}
-                    disabled={isLoading}
-                    className="flex-shrink-0 flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors"
-                  >
-                    <FiRefreshCw className={`text-xs ${isLoading ? 'animate-spin' : ''}`} />
-                    {isLoading ? 'Retrying...' : 'Retry'}
-                  </button>
                 </div>
               )}
 
+              {/* ✅ ADD-ON 2: Unmatched orders list with Copy + Download */}
+              {result.unmatchedOrders?.length > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold text-amber-800">
+                      ⚠ {result.unmatchedOrders.length} orders not found in system
+                    </p>
+                    <div className="flex items-center gap-2">
+                      {/* ✅ ADD-ON 3: Copy unmatched IDs */}
+                      <button
+                        onClick={() => {
+                          const ids = result.unmatchedOrders
+                            .map(o => o.orderItemId || o.orderId)
+                            .join('\n');
+                          navigator.clipboard.writeText(ids);
+                          toast.success('Copied to clipboard!');
+                        }}
+                        className="flex items-center gap-1 px-2 py-1 bg-amber-200 hover:bg-amber-300 text-amber-800 text-xs font-medium rounded-lg transition-colors"
+                      >
+                        <FiCopy className="text-xs" /> Copy IDs
+                      </button>
+
+                      {/* ✅ ADD-ON 4: Download unmatched as CSV */}
+                      {result.unmatchedOrders.length >= 5 && (
+                        <button
+                          onClick={() => {
+                            const csv = [
+                              'Order Item ID,Order ID,Return Type,Return Reason',
+                              ...result.unmatchedOrders.map(o =>
+                                `${o.orderItemId || ''},${o.orderId || ''},${o.returnType || ''},${o.returnReason || ''}`
+                              )
+                            ].join('\n');
+                            const blob = new Blob([csv], { type: 'text/csv' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `unmatched-returns-${new Date().toISOString().slice(0,10)}.csv`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                          className="flex items-center gap-1 px-2 py-1 bg-amber-200 hover:bg-amber-300 text-amber-800 text-xs font-medium rounded-lg transition-colors"
+                        >
+                          <FiDownload className="text-xs" /> Download
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 max-h-36 overflow-y-auto">
+                    {result.unmatchedOrders.slice(0, 6).map((item, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs">
+                        <span className="font-mono text-amber-800">
+                          {item.orderItemId || item.orderId}
+                        </span>
+                        {item.returnReason && (
+                          <span className="text-amber-500 truncate ml-2 max-w-[160px]">
+                            {item.returnReason}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                    {result.unmatchedOrders.length > 6 && (
+                      <p className="text-xs text-amber-500 pt-1">
+                        +{result.unmatchedOrders.length - 6} more — download CSV to see all
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Errors */}
               {result.errors?.length > 0 && (
                 <div className="bg-red-50 border border-red-200 rounded-xl p-3">
                   <p className="text-xs font-semibold text-red-800 mb-1.5">Row-level errors:</p>
@@ -590,6 +625,28 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
                       {e.orderItemId}: {e.error}
                     </p>
                   ))}
+                </div>
+              )}
+
+              {/* Retry banner */}
+              {result.failedBatches > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-800">
+                      {result.failedBatches} batch(es) did not complete
+                    </p>
+                    <p className="text-xs text-amber-600 mt-0.5">
+                      Safe to retry — return import only overwrites, never duplicates.
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleImport}
+                    disabled={isLoading}
+                    className="flex-shrink-0 flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-colors"
+                  >
+                    <FiRefreshCw className={`text-xs ${isLoading ? 'animate-spin' : ''}`} />
+                    {isLoading ? 'Retrying...' : 'Retry'}
+                  </button>
                 </div>
               )}
             </div>

@@ -2675,6 +2675,8 @@ exports.importReturnCSV = async (req, res) => {
       updated:         0,
       unmatched:       0,
       skipped:         0,
+      rtoCount:        0,  // ✅ ADD — count of RTO rows (tracking skipped)
+      trackingStored:  0,  // ✅ ADD — count where returnTrackingId was saved
       errors:          [],
       unmatchedOrders: [],
     };
@@ -2800,6 +2802,11 @@ exports.importReturnCSV = async (req, res) => {
           },
         });
 
+        if (isRTO) {
+          results.rtoCount++;
+        } else if (returnTrackingId) {
+          results.trackingStored++;
+        }
         results.updated++;
 
       } catch (rowError) {
