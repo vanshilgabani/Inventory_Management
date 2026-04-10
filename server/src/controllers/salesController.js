@@ -2652,6 +2652,7 @@ exports.importReturnCSV = async (req, res) => {
     const { organizationId } = req.user;
     const { rows } = req.body;
 
+    // ── Validation ──────────────────────────────────────────────────────────
     if (!rows || !Array.isArray(rows) || rows.length === 0)
       return res.status(400).json({ success: false, message: 'No CSV rows provided' });
 
@@ -2663,7 +2664,7 @@ exports.importReturnCSV = async (req, res) => {
         detectedType: detectFlipkartCSVType(firstRowKeys),
       });
 
-    // Safely parse Flipkart date strings (handles empty / dash values)
+    // ── Helpers ─────────────────────────────────────────────────────────────
     const parseFlipkartDate = (dateStr) => {
       if (!dateStr || !dateStr.trim() || dateStr.trim() === '-') return null;
       const d = new Date(dateStr.trim());
@@ -2671,60 +2672,116 @@ exports.importReturnCSV = async (req, res) => {
     };
 
     const results = {
-      updated:        0,
-      unmatched:      0,
-      skipped:        0,
-      errors:         [],
-      updatedOrders:  [],
-      unmatchedOrders:[],
+      updated:         0,
+      unmatched:       0,
+      skipped:         0,
+      errors:          [],
+      updatedOrders:   [],
+      unmatchedOrders: [],
     };
 
+    // ── STEP 1: Extract & clean IDs from ALL rows upfront ───────────────────
+    // (same as importFromCSV STEP 1 bulk duplicate check)
+    const csvItems = [];
     for (const row of rows) {
+      const orderItemId = row['Order Item ID']?.trim().replace(/^'/, '') || null;
+      const orderId     = row['Order ID']?.trim() || null;
+
+      if (!orderItemId && !orderId) {
+        results.skipped++;
+        continue;
+      }
+
+      csvItems.push({ orderItemId, orderId, row });
+    }
+
+    if (csvItems.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: `No valid rows to process. ${results.skipped} rows skipped.`,
+        data: results,
+      });
+    }
+
+    // ── STEP 2: ONE bulk query — prefetch all matching sales at once ─────────
+    // (same as importFromCSV STEP 1 existingOrders bulk find)
+    const allOrderItemIds = csvItems.map(i => i.orderItemId).filter(Boolean);
+    const allOrderIds     = csvItems.map(i => i.orderId).filter(Boolean);
+
+    const matchedSales = await MarketplaceSale.find({
+      organizationId,
+      deletedAt: null,
+      $or: [
+        ...(allOrderItemIds.length > 0
+          ? [{ orderItemId: { $in: allOrderItemIds.flatMap(id => [id, `'${id}`]) } }]
+          : []),
+        ...(allOrderIds.length > 0
+          ? [{ marketplaceOrderId: { $in: allOrderIds } }]
+          : []),
+      ],
+    }).lean();
+
+    logger.info('Return CSV: bulk fetched matching sales', {
+      organizationId,
+      csvRows:      csvItems.length,
+      salesFetched: matchedSales.length,
+    });
+
+    // ── STEP 3: Build in-memory lookup maps — O(1) per row ──────────────────
+    // (same as importFromCSV skuMappingMap + productMap pattern)
+    const byOrderItemId = new Map(); // stripped orderItemId → sale
+    const byOrderId     = new Map(); // marketplaceOrderId   → sale
+
+    for (const sale of matchedSales) {
+      if (sale.orderItemId) {
+        byOrderItemId.set(sale.orderItemId.replace(/^'/, ''), sale);
+      }
+      if (sale.marketplaceOrderId) {
+        byOrderId.set(sale.marketplaceOrderId, sale);
+      }
+    }
+
+    // ── STEP 4: Process all rows in memory — ZERO DB calls in this loop ──────
+    // (same as importFromCSV STEP 4 in-memory processing loop)
+    const bulkOps = []; // collect all updateOne ops
+
+    for (const item of csvItems) {
       try {
-        // ✅ Strip Excel's leading apostrophe from IDs
-        const orderItemId = row['Order Item ID']?.trim().replace(/^'/, '') || null;
-        const orderId     = row['Order ID']?.trim() || null;
+        const { orderItemId, orderId, row } = item;
 
-        if (!orderItemId && !orderId) { results.skipped++; continue; }
-
-        // ✅ All row variables declared BEFORE query building
-        const returnType      = row['Return Type']?.trim() || null;
-        const returnReason    = row['Return Reason']?.trim() || null;
-        const returnSubReason = row['Return Sub-reason']?.trim() || null;
-        const trackingId      = row['Tracking ID']?.trim() || null;
-        const returnId        = row['Return ID']?.trim() || null;
-        const returnStatus        = row['Return Status']?.trim() || null;
-        const returnRequestedDate = parseFlipkartDate(row['Return Requested Date']);
-        const returnCompletedDate = parseFlipkartDate(row['Completed Date']);
-        const returnComments      = row['Comments']?.trim() || null;
-
-        // ✅ Regex matches both 'OD12345 (old records) and OD12345 (clean records)
-        const query = { organizationId, deletedAt: null };
-        if (orderItemId && orderId) {
-          query.orderItemId        = { $regex: `^'?${escapeRegex(orderItemId)}$` };
-          query.marketplaceOrderId = orderId;
-        } else if (orderItemId) {
-          query.orderItemId = { $regex: `^'?${escapeRegex(orderItemId)}$` };
-        } else {
-          query.marketplaceOrderId = orderId;
-        }
-
-        const sale = await MarketplaceSale.findOne(query).lean();
+        // Lookup from in-memory map — no DB call at all
+        const sale =
+          (orderItemId && byOrderItemId.get(orderItemId)) ||
+          (orderId     && byOrderId.get(orderId))         ||
+          null;
 
         if (!sale) {
           results.unmatched++;
-          results.unmatchedOrders.push({ orderItemId, orderId, returnType, returnReason });
+          results.unmatchedOrders.push({
+            orderItemId,
+            orderId,
+            returnType:   row['Return Type']?.trim()   || null,
+            returnReason: row['Return Reason']?.trim() || null,
+          });
           continue;
         }
 
-        // Tracking ID rule:
-        // Customer Return → store the new tracking ID Flipkart assigns for the return shipment
-        // RTO             → DO NOT store (user requirement)
-        const isRTO = returnType === 'courier_return';
+        // Parse all fields
+        const returnType          = row['Return Type']?.trim()       || null;
+        const returnReason        = row['Return Reason']?.trim()     || null;
+        const returnSubReason     = row['Return Sub-reason']?.trim() || null;
+        const trackingId          = row['Tracking ID']?.trim()       || null;
+        const returnId            = row['Return ID']?.trim()         || null;
+        const returnStatus        = row['Return Status']?.trim()     || null;
+        const returnRequestedDate = parseFlipkartDate(row['Return Requested Date']);
+        const returnCompletedDate = parseFlipkartDate(row['Completed Date']);
+        const returnComments      = row['Comments']?.trim()          || null;
+
+        // RTO rule — don't store tracking ID for courier returns
+        const isRTO            = returnType === 'courier_return';
         const returnTrackingId = (!isRTO && trackingId) ? trackingId : null;
 
-        // Build $set payload — only overwrite with non-null values so re-imports
-        // don't accidentally blank out fields that weren't in this CSV batch
+        // Only set non-null values — re-imports won't blank out existing fields
         const updateFields = {};
         if (returnId)            updateFields.returnId            = returnId;
         if (returnType)          updateFields.returnType          = returnType;
@@ -2734,22 +2791,28 @@ exports.importReturnCSV = async (req, res) => {
         if (returnRequestedDate) updateFields.returnRequestedDate = returnRequestedDate;
         if (returnCompletedDate) updateFields.returnCompletedDate = returnCompletedDate;
         if (returnTrackingId)    updateFields.returnTrackingId    = returnTrackingId;
-        if (returnComments)      updateFields.returnComments      = returnComments; // ✅ FIX
+        if (returnComments)      updateFields.returnComments      = returnComments;
 
-        await MarketplaceSale.findByIdAndUpdate(sale._id, { $set: updateFields });
+        // Queue update op — no DB call yet
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: sale._id },
+            update: { $set: updateFields },
+          },
+        });
 
         results.updated++;
         results.updatedOrders.push({
-          orderItemId:     sale.orderItemId,
-          orderId:         sale.marketplaceOrderId,
-          design:          sale.design,
-          color:           sale.color,
-          size:            sale.size,
-          accountName:     sale.accountName,
-          returnType:      returnType      || '—',
-          returnReason:    returnReason    || '—',
-          returnSubReason: returnSubReason || '—',
-          returnComments:  returnComments  || '—',   // ✅ FIX
+          orderItemId:      sale.orderItemId,
+          orderId:          sale.marketplaceOrderId,
+          design:           sale.design,
+          color:            sale.color,
+          size:             sale.size,
+          accountName:      sale.accountName,
+          returnType:       returnType      || '—',
+          returnReason:     returnReason    || '—',
+          returnSubReason:  returnSubReason || '—',
+          returnComments:   returnComments  || '—',
           returnTrackingId: returnTrackingId || null,
           isRTO,
           trackingNote: isRTO
@@ -2761,27 +2824,40 @@ exports.importReturnCSV = async (req, res) => {
 
       } catch (rowError) {
         results.errors.push({
-          orderItemId: row['Order Item ID'] || 'unknown',
+          orderItemId: item.orderItemId || 'unknown',
           error: rowError.message,
         });
         logger.error('Return CSV row error:', {
-          orderItemId: row['Order Item ID'],
+          orderItemId: item.orderItemId,
           error: rowError.message,
         });
       }
     }
 
+    // ── STEP 5: ONE bulkWrite — all updates in a single DB round trip ────────
+    // (same as importFromCSV STEP 6 insertMany pattern)
+    if (bulkOps.length > 0) {
+      await MarketplaceSale.bulkWrite(bulkOps, { ordered: false });
+      // ordered: false — one bad op won't abort the rest
+      logger.info('Return CSV: bulk write complete', {
+        organizationId,
+        updated:  results.updated,
+        bulkOps:  bulkOps.length,
+      });
+    }
+
     logger.info('Return CSV import complete', {
       organizationId,
-      updated:  results.updated,
+      updated:   results.updated,
       unmatched: results.unmatched,
-      skipped:  results.skipped,
-      errors:   results.errors.length,
+      skipped:   results.skipped,
+      errors:    results.errors.length,
+      dbCalls:   '2 total (1 find + 1 bulkWrite)',
     });
 
     return res.status(200).json({
       success: true,
-      message: `Return CSV imported: ${results.updated} orders updated, ${results.unmatched} unmatched, ${results.skipped} skipped`,
+      message: `Return CSV imported: ${results.updated} updated, ${results.unmatched} unmatched, ${results.skipped} skipped`,
       data: results,
     });
 
