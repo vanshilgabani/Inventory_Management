@@ -2676,7 +2676,6 @@ exports.importReturnCSV = async (req, res) => {
       unmatched:       0,
       skipped:         0,
       errors:          [],
-      updatedOrders:   [],
       unmatchedOrders: [],
     };
 
@@ -2802,25 +2801,6 @@ exports.importReturnCSV = async (req, res) => {
         });
 
         results.updated++;
-        results.updatedOrders.push({
-          orderItemId:      sale.orderItemId,
-          orderId:          sale.marketplaceOrderId,
-          design:           sale.design,
-          color:            sale.color,
-          size:             sale.size,
-          accountName:      sale.accountName,
-          returnType:       returnType      || '—',
-          returnReason:     returnReason    || '—',
-          returnSubReason:  returnSubReason || '—',
-          returnComments:   returnComments  || '—',
-          returnTrackingId: returnTrackingId || null,
-          isRTO,
-          trackingNote: isRTO
-            ? 'RTO — tracking ID not stored'
-            : returnTrackingId
-              ? `Stored: ${returnTrackingId}`
-              : 'No tracking ID in CSV',
-        });
 
       } catch (rowError) {
         results.errors.push({
