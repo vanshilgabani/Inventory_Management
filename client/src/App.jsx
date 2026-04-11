@@ -34,6 +34,7 @@ import DeletedOrders from './pages/DeletedOrders';
 import ReceivedFromSupplier from './pages/ReceivedFromSupplier';
 import SupplierSyncLogs from './pages/SupplierSyncLogs';
 import CustomerManagement from './pages/CustomerManagement';
+import ForgotPassword from './pages/ForgotPassword';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -91,7 +92,8 @@ const AppRoutes = () => {
         {/* Public Routes */}
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
-
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        
         {/* Protected Routes - WRAPPED with Layout */}
         <Route 
           path="/" 

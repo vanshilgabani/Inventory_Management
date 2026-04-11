@@ -19,6 +19,11 @@ const userSchema = new mongoose.Schema({
     minlength: 6,
     select: false,
   },
+  
+  passwordResetOTP:         { type: String,   default: null },
+  passwordResetOTPExpiry:   { type: Date,     default: null },
+  passwordResetOTPVerified: { type: Boolean,  default: false },
+
   businessName: {
     type: String,
   },

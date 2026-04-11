@@ -1,11 +1,34 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const { sendOTPEmail } = require('../utils/emailService');
+
+// ── Helper: milliseconds until next 12 AM ──
+const getExpiryUntilMidnight = () => {
+  const now         = new Date();
+  const nextMidnight = new Date();
+  nextMidnight.setHours(0, 0, 0, 0);
+
+  if (now >= nextMidnight) {
+    nextMidnight.setDate(nextMidnight.getDate() + 1);
+  }
+
+  return Math.floor((nextMidnight - now) / 1000);
+};
+
+{/*// ⬇️ TEMPORARILY change for testing
+const getExpiryUntil3AM = () => {
+  return 1 * 60; // expires in 2 minutes
+}; */}
 
 // Generate JWT token
 const generateToken = (id, role, email, name) => {
-  return jwt.sign({ id, role, email, name }, process.env.JWT_SECRET, {
-    expiresIn: '30d',
-  });
+  return jwt.sign(
+    { id, role, email, name },
+    process.env.JWT_SECRET,
+    { expiresIn: getExpiryUntilMidnight() } 
+  );
 };
 
 // @desc Register new user
@@ -315,6 +338,197 @@ const deleteUser = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────────────
+// FORGOT PASSWORD — STEP 1: Request OTP
+// POST /api/auth/forgot-password
+// ─────────────────────────────────────────────────────
+const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: 'Email is required' });
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+
+    // Generic response — never reveal if email exists or not
+    if (!user) {
+      return res.status(200).json({ message: 'If this email is registered, an OTP will be sent.' });
+    }
+
+    // ── Block non-admin roles ──
+    if (user.role !== 'admin') {
+      return res.status(403).json({
+        message: 'Password reset is not available for this account type. Please contact your administrator.',
+        blocked: true,
+      });
+    }
+
+    // ── Rate limit: 60s between OTP requests ──
+    if (user.passwordResetOTPExpiry) {
+      const otpSentAt = new Date(user.passwordResetOTPExpiry.getTime() - 10 * 60 * 1000);
+      const secondsSinceSent = (Date.now() - otpSentAt.getTime()) / 1000;
+      if (secondsSinceSent < 60) {
+        const wait = Math.ceil(60 - secondsSinceSent);
+        return res.status(429).json({ message: `Please wait ${wait} seconds before requesting a new OTP.` });
+      }
+    }
+
+    // ── Generate 6-digit OTP ──
+    const otp       = crypto.randomInt(100000, 999999).toString();
+    const otpHashed = await bcrypt.hash(otp, 10);
+    const expiry    = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    await User.findByIdAndUpdate(user._id, {
+      passwordResetOTP:         otpHashed,
+      passwordResetOTPExpiry:   expiry,
+      passwordResetOTPVerified: false,
+    });
+
+    await sendOTPEmail({ toEmail: user.email, toName: user.name, otp });
+
+    // Mask email: ab***@gmail.com
+    const masked = user.email.replace(/(.{2})(.*)(@.*)/, '$1***$3');
+
+    return res.status(200).json({
+      message: 'OTP sent to your email address.',
+      email:   masked,
+    });
+
+  } catch (error) {
+    console.error('forgotPassword error:', error);
+    return res.status(500).json({ message: 'Server error. Please try again.' });
+  }
+};
+
+
+// ─────────────────────────────────────────────────────
+// FORGOT PASSWORD — STEP 2: Verify OTP
+// POST /api/auth/verify-otp
+// ─────────────────────────────────────────────────────
+const verifyOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ message: 'Email and OTP are required' });
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+
+    if (!user || !user.passwordResetOTP) {
+      return res.status(400).json({ message: 'Invalid or expired OTP. Please request a new one.' });
+    }
+
+    // ── Check expiry ──
+    if (new Date() > user.passwordResetOTPExpiry) {
+      await User.findByIdAndUpdate(user._id, {
+        passwordResetOTP: null, passwordResetOTPExpiry: null, passwordResetOTPVerified: false,
+      });
+      return res.status(400).json({ message: 'OTP has expired. Please request a new one.' });
+    }
+
+    // ── Compare OTP ──
+    const isMatch = await bcrypt.compare(otp.toString().trim(), user.passwordResetOTP);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Incorrect OTP. Please try again.' });
+    }
+
+    // ── Mark verified (keep expiry alive for step 3) ──
+    await User.findByIdAndUpdate(user._id, { passwordResetOTPVerified: true });
+
+    return res.status(200).json({ message: 'OTP verified successfully.' });
+
+  } catch (error) {
+    console.error('verifyOTP error:', error);
+    return res.status(500).json({ message: 'Server error. Please try again.' });
+  }
+};
+
+
+// ─────────────────────────────────────────────────────
+// FORGOT PASSWORD — STEP 3: Reset Password
+// POST /api/auth/reset-password
+// ─────────────────────────────────────────────────────
+const resetPassword = async (req, res) => {
+  try {
+    const { email, newPassword, confirmPassword } = req.body;
+
+    if (!email || !newPassword || !confirmPassword) {
+      return res.status(400).json({ message: 'All fields are required' });
+    }
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ message: 'Passwords do not match' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+
+    if (!user || !user.passwordResetOTPVerified) {
+      return res.status(400).json({ message: 'OTP not verified. Please complete OTP verification first.' });
+    }
+
+    // ── Check session hasn't expired ──
+    if (!user.passwordResetOTPExpiry || new Date() > user.passwordResetOTPExpiry) {
+      await User.findByIdAndUpdate(user._id, {
+        passwordResetOTP: null, passwordResetOTPExpiry: null, passwordResetOTPVerified: false,
+      });
+      return res.status(400).json({ message: 'Session expired. Please restart the process.' });
+    }
+
+    // ── Hash and save new password ──
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+    await User.findByIdAndUpdate(user._id, {
+      password:                 hashedPassword,
+      passwordResetOTP:         null,
+      passwordResetOTPExpiry:   null,
+      passwordResetOTPVerified: false,
+    });
+
+    console.log(`✅ Password reset for admin: ${user.email}`);
+    return res.status(200).json({ message: 'Password reset successfully. You can now log in.' });
+
+  } catch (error) {
+    console.error('resetPassword error:', error);
+    return res.status(500).json({ message: 'Server error. Please try again.' });
+  }
+};
+
+// ─────────────────────────────────────────────────────
+// ADMIN: Reset any user's password
+// PUT /api/auth/users/:id/password
+// ─────────────────────────────────────────────────────
+const adminResetUserPassword = async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // Only allow resetting users within same organization
+    if (user.organizationId.toString() !== req.organizationId.toString()) {
+      return res.status(403).json({ message: 'Not authorized' });
+    }
+
+    // Prevent resetting another admin's password (optional safety)
+    if (user.role === 'admin' && user._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Cannot reset another admin\'s password from here' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    await User.findByIdAndUpdate(user._id, { password: hashedPassword });
+
+    console.log(`✅ Admin ${req.user.email} reset password for: ${user.email}`);
+    return res.status(200).json({ message: 'Password updated successfully' });
+
+  } catch (error) {
+    console.error('adminResetUserPassword error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
@@ -322,4 +536,8 @@ module.exports = {
   getAllUsers,
   updateUser,
   deleteUser,
+  forgotPassword,
+  verifyOTP,
+  resetPassword,
+  adminResetUserPassword,
 };

@@ -7,6 +7,10 @@ const {
   getAllUsers,
   updateUser,
   deleteUser,
+  forgotPassword,
+  verifyOTP,
+  resetPassword,
+  adminResetUserPassword
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { isAdmin } = require('../middleware/roleCheck');
@@ -14,6 +18,10 @@ const { isAdmin } = require('../middleware/roleCheck');
 // Public routes
 router.post('/register', registerUser); // First user auto-becomes admin
 router.post('/login', loginUser);
+router.post('/forgot-password', forgotPassword);  
+router.post('/verify-otp',      verifyOTP);      
+router.post('/reset-password',  resetPassword);
+router.put('/users/:id/password', protect, isAdmin, adminResetUserPassword); 
 
 // Protected routes
 router.get('/profile', protect, getUserProfile);

@@ -6,7 +6,7 @@ const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASSWORD
+    pass: process.env.EMAIL_PASS
   }
 });
 
@@ -207,8 +207,76 @@ const sendWholesaleChallan = async (buyerEmail, subject, text, pdfBuffer, filena
   }
 };
 
+const sendOTPEmail = async ({ toEmail, toName, otp }) => {
+  const businessSettings = await getBusinessSettings();
+
+  const mailOptions = {
+    from: `"GarmentFlow Team" <${process.env.EMAIL_USER}>`,
+    to: toEmail,
+    subject: `${otp} is your GarmentFlow password reset OTP`,
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background: #f0fdf4; }
+          .wrapper { max-width: 520px; margin: 40px auto; background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,.08); }
+          .header { background: linear-gradient(135deg, #022c22 0%, #065f46 100%); padding: 32px 40px; text-align: center; }
+          .header-logo { font-size: 26px; font-weight: 900; color: #fff; letter-spacing: -0.03em; }
+          .header-sub { font-size: 11px; color: rgba(110,231,183,.7); letter-spacing: .08em; text-transform: uppercase; margin-top: 4px; }
+          .body { padding: 36px 40px; }
+          .greeting { font-size: 17px; font-weight: 700; color: #0f172a; margin-bottom: 10px; }
+          .message { font-size: 14px; color: #475569; line-height: 1.7; margin-bottom: 26px; }
+          .otp-box { background: #f0fdf4; border: 2px dashed #10b981; border-radius: 14px; padding: 24px; text-align: center; margin-bottom: 26px; }
+          .otp-label { font-size: 11px; font-weight: 700; color: #059669; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 8px; }
+          .otp-code { font-size: 44px; font-weight: 900; color: #064e3b; letter-spacing: 0.2em; }
+          .otp-expiry { font-size: 12px; color: #64748b; margin-top: 8px; }
+          .warning { background: #fefce8; border-left: 4px solid #fbbf24; border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #92400e; margin-bottom: 22px; line-height: 1.6; }
+          .footer { background: #f8fafc; padding: 20px 40px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #f1f5f9; }
+          .footer strong { color: #059669; }
+        </style>
+      </head>
+      <body>
+        <div class="wrapper">
+          <div class="header">
+            <div class="header-logo">GarmentFlow</div>
+            <div class="header-sub">Inventory System</div>
+          </div>
+          <div class="body">
+            <div class="greeting">Hello, ${toName} 👋</div>
+            <div class="message">
+              We received a request to reset the password for your <strong>Admin</strong> account on GarmentFlow.
+              Use the OTP below to verify your identity. It is valid for <strong>10 minutes only</strong>.
+            </div>
+            <div class="otp-box">
+              <div class="otp-label">Your One-Time Password</div>
+              <div class="otp-code">${otp}</div>
+              <div class="otp-expiry">⏱ Expires in 10 minutes · Single use only</div>
+            </div>
+            <div class="warning">
+              🔒 <strong>Never share this OTP</strong> with anyone. GarmentFlow staff will never ask for it.
+              If you did not request a password reset, please ignore this email — your account is safe.
+            </div>
+          </div>
+          <div class="footer">
+            <p><strong>GarmentFlow</strong></p>
+            <p>${businessSettings.address}</p>
+            <p>Email: venrbd@gmail.com &nbsp;
+            <p style="margin-top:10px;">© 2025 <strong>GarmentFlow</strong> Inventory System</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `
+  };
+
+  await transporter.sendMail(mailOptions);
+  console.log(`✅ OTP email sent to ${toEmail}`);
+};
+
 module.exports = {
   sendCreditLimitWarning,
   sendPaymentReminder,
-  sendWholesaleChallan
+  sendWholesaleChallan,
+  sendOTPEmail
 };
