@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import Loader from '../components/common/Loader';
 import { analyticsService } from '../services/analyticsService';
 import TimeRangeSelector from '../components/Analytics/TimeRangeSelector';
 import ExportButton from '../components/Analytics/ExportButton';
@@ -120,7 +121,7 @@ const getFilterLabel = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+        <Loader message='Loading Wholesale Analytics..'/>
       </div>
     );
   }

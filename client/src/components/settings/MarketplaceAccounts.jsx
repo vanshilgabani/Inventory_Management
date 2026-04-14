@@ -1,4 +1,3 @@
-// src/components/settings/MarketplaceAccounts.jsx
 import React from 'react';
 import {
   FiShoppingBag,

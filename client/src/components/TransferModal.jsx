@@ -8,7 +8,7 @@ const TransferModal = ({
   onClose, 
   onConfirm, 
   variant, 
-  direction, // 'to-reserved' or 'to-main'
+  direction,
   mainStock = 0, 
   reservedStock = 0 
 }) => {
@@ -57,17 +57,21 @@ const TransferModal = ({
     }
   };
 
+  // ✅ FIXED: Prevent closing modal while transfer is in progress
   const handleClose = () => {
+    if (loading) return; // Block close during transfer
     setQuantity('');
     setNotes('');
     onClose();
   };
 
   return (
+    // ✅ Pass disableClose so Modal's X button + overlay click are also blocked
     <Modal 
       isOpen={isOpen} 
       onClose={handleClose} 
       title={`Transfer to ${toStock} Inventory`}
+      disableClose={loading}  // ← pass this to your Modal component
     >
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Variant Info */}
@@ -132,6 +136,7 @@ const TransferModal = ({
             className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg text-lg font-semibold focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             required
             autoFocus
+            disabled={loading} // ✅ Also disable input during transfer
           />
           <p className="text-sm text-gray-500 mt-1">
             Available in {fromStock}: <span className="font-semibold">{maxAvailable} units</span>
@@ -147,7 +152,8 @@ const TransferModal = ({
                 key={val}
                 type="button"
                 onClick={() => setQuantity(val.toString())}
-                className="px-3 py-1 bg-blue-100 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-200 transition-colors"
+                disabled={loading} // ✅ Disable quick buttons too
+                className="px-3 py-1 bg-blue-100 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {val}
               </button>
@@ -155,7 +161,8 @@ const TransferModal = ({
             <button
               type="button"
               onClick={() => setQuantity(maxAvailable.toString())}
-              className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-md text-sm font-medium hover:bg-indigo-200 transition-colors"
+              disabled={loading} // ✅ Disable quick buttons too
+              className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-md text-sm font-medium hover:bg-indigo-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               All ({maxAvailable})
             </button>
@@ -173,6 +180,7 @@ const TransferModal = ({
             rows={2}
             placeholder="Add a note about this transfer..."
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+            disabled={loading} // ✅ Disable notes too
           />
         </div>
 

@@ -9,7 +9,7 @@ const BorrowFromReservedModal = ({
   orderType = 'order' // 'order', 'sale', 'direct-sale'
 }) => {
   if (!isOpen) return null;
-
+  const [loading, setLoading] = React.useState(false);
   const totalBorrowNeeded = insufficientItems?.reduce((sum, item) => sum + item.neededFromReserved, 0) || 0;
 
   const getOrderTypeLabel = () => {
@@ -26,7 +26,7 @@ const BorrowFromReservedModal = ({
       {/* Backdrop */}
       <div 
         className="fixed inset-0 bg-black bg-opacity-60 z-50 transition-opacity"
-        onClick={onClose}
+        onClick={() => { if (!loading) onClose(); }}
       />
 
       {/* Modal */}
@@ -44,7 +44,7 @@ const BorrowFromReservedModal = ({
               </div>
             </div>
             <button
-              onClick={onClose}
+              onClick={() => { if (!loading) onClose(); }}
               className="text-white hover:bg-white/20 p-2 rounded-lg transition-colors"
             >
               <FiX size={24} />
@@ -149,17 +149,38 @@ const BorrowFromReservedModal = ({
           {/* Footer Actions */}
           <div className="bg-gray-50 px-6 py-4 rounded-b-xl flex justify-end gap-3">
             <button
-              onClick={onClose}
-              className="px-6 py-3 bg-white border-2 border-gray-300 text-gray-700 rounded-lg font-semibold hover:bg-gray-50 transition-colors"
+              onClick={() => { if (!loading) onClose(); }}
+              disabled={loading}
+              className="px-6 py-3 bg-white border-2 border-gray-300 text-gray-700 rounded-lg font-semibold hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Cancel
             </button>
             <button
-              onClick={onConfirm}
-              className="px-6 py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-lg font-semibold hover:from-orange-600 hover:to-red-600 transition-all shadow-lg hover:shadow-xl flex items-center gap-2"
+              disabled={loading}
+              onClick={async () => {
+                setLoading(true);
+                try {
+                  await onConfirm();
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              className="px-6 py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-lg font-semibold hover:from-orange-600 hover:to-red-600 disabled:from-gray-400 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl flex items-center gap-2"
             >
-              <FiArrowRight size={18} />
-              Confirm & Borrow from Reserved
+              {loading ? (
+                <>
+                  <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span>Borrowing...</span>
+                </>
+              ) : (
+                <>
+                  <FiArrowRight size={18} />
+                  Confirm & Borrow from Reserved
+                </>
+              )}
             </button>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import Loader from '../../common/Loader';
 import Modal from '../../common/Modal';
 import toast from 'react-hot-toast';
 import { useColorPalette } from '../../../hooks/useColorPalette';
@@ -184,10 +185,7 @@ const AddReceivingModal = ({ onClose, onSubmit, products, enabledSizes }) => {
   if (colorsLoading) {
     return (
       <Modal isOpen={true} onClose={onClose} title="📥 Receive Stock" size="xl">
-        <div className="text-center py-8">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="text-gray-600 mt-4">Loading colors...</p>
-        </div>
+        <Loader fullScreen={false} message="Loading colors..." />
       </Modal>
     );
   }

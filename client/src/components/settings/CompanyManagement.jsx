@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import Loader from '../common/Loader';
 import { settingsService } from '../../services/settingsService';
 import toast from 'react-hot-toast';
 import { FiPlus, FiEdit2, FiTrash2, FiCheck, FiX, FiStar, FiEye, FiEyeOff, FiUpload, FiImage } from 'react-icons/fi';
@@ -194,7 +195,7 @@ const CompanyManagement = () => {
     }
   };
 
-  if (loading) return <div className="text-center py-4">Loading companies...</div>;
+  if (loading) return <Loader message="Loading companies..." />;
 
   return (
     <div className="space-y-6">

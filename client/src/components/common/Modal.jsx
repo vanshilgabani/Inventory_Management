@@ -1,7 +1,7 @@
 import { FiX } from 'react-icons/fi';
 import { useEffect } from 'react';
 
-const Modal = ({ isOpen, onClose, title, children, size = 'md' }) => {
+const Modal = ({ isOpen, onClose, title, children, size = 'md', disableClose = false }) => {
   // Add styles to document head on mount
   useEffect(() => {
     if (isOpen) {
@@ -41,7 +41,7 @@ const Modal = ({ isOpen, onClose, title, children, size = 'md' }) => {
   return (
     <div 
       className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999] p-4"
-      onClick={onClose}
+        onClick={() => { if (!disableClose) onClose(); }}
     >
       <div 
         className={`bg-white rounded-xl w-full ${sizeMap[size]} max-h-[90vh] overflow-hidden shadow-2xl animate-slideUp`}
@@ -50,8 +50,9 @@ const Modal = ({ isOpen, onClose, title, children, size = 'md' }) => {
         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <h2 className="text-xl font-bold text-gray-900">{title}</h2>
           <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-all text-gray-600"
+            onClick={() => { if (!disableClose) onClose(); }}
+            disabled={disableClose}
+            className="p-2 hover:bg-gray-100 rounded-lg transition-all text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <FiX className="text-2xl" />
           </button>

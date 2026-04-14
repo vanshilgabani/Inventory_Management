@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import Loader from '../components/common/Loader';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import {
@@ -186,7 +187,7 @@ const SupplierSyncLogs = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen">
-        <FiRefreshCw className="animate-spin text-indigo-600" size={48} />
+        <Loader message='Loading Supplier Sync Logs.' />
       </div>
     );
   }

@@ -340,7 +340,7 @@ const todayStats = useMemo(() => {
     return items.sort((a, b) => b.date - a.date).slice(0, 6);
   }, [todayStats]);
 
-  if (loading || sizesLoading) return <Loader />;
+  if (loading || sizesLoading) return <Loader message='Loading Dashboard..'/>;
 
   return (
     <div className="space-y-4 max-w-7xl mx-auto pb-6">

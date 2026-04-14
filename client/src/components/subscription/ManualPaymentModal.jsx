@@ -24,9 +24,9 @@ const ManualPaymentModal = ({
     : 0;
 
   const paymentDetails = {
-    upiId: 'vanshilgabani-1@oksbi',
+    upiId: 'vanshilgabani@sbi',
     upiNumber: '9328822592',
-    name: 'Vanshil Rajubhai Gabani'
+    name: 'VANSHIL RAJUBHAI GABANI'
   };
 
   const copyToClipboard = (text) => {

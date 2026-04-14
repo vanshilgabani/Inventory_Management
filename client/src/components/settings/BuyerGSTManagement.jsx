@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import Loader from '../common/Loader';
 import { FiUser, FiPlus, FiEdit2, FiTrash2, FiCheck, FiX, FiRefreshCw, FiAlertCircle } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import {wholesaleService} from '../../services/wholesaleService';
@@ -187,7 +188,7 @@ const handleVerifyGST = async () => {
   if (loading && buyers.length === 0) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading buyers...</div>
+        <Loader message="Loading buyers..." />
       </div>
     );
   }

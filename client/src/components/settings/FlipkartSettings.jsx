@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import Loader from '../common/Loader';
 import { flipkartService } from '../../services/flipkartService';
 import { inventoryService } from '../../services/inventoryService';
 import { settingsService } from '../../services/settingsService';
@@ -443,7 +444,7 @@ const FlipkartSettings = () => {
   if (loading || sizesLoading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <FiRefreshCw className="animate-spin text-blue-600" size={32} />
+        <Loader message="Loading Flipkart settings..." />
       </div>
     );
   }

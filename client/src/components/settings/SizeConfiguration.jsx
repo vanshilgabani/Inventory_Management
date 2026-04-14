@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import Loader from '../common/Loader';
 import { settingsService } from '../../services/settingsService';
 import { inventoryService } from '../../services/inventoryService';
 import toast from 'react-hot-toast';
@@ -395,12 +396,7 @@ const SizeConfiguration = () => {
 
   // ── Loading skeleton ──
   if (loading) return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-8 animate-pulse">
-      <div className="h-6 bg-gray-200 rounded-lg w-48 mb-6" />
-      <div className="grid grid-cols-4 gap-4">
-        {[...Array(4)].map((_, i) => <div key={i} className="h-32 bg-gray-100 rounded-2xl" />)}
-      </div>
-    </div>
+    <Loader message='Loading Sizes..'/>
   );
 
   return (

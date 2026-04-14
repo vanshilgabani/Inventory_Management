@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import Loader from './Loader';
 import { NavLink, Link } from 'react-router-dom';
 import {
   FiHome,
@@ -332,10 +333,7 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
   if (loadingPermissions) {
     return (
       <div className="fixed top-0 left-0 z-50 h-screen w-72 bg-white shadow-2xl flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-2"></div>
-          <p className="text-sm text-gray-600 animate-pulse">Loading...</p>
-        </div>
+        <Loader fullScreen={false} message="Loading Sidebar..." />
       </div>
     );
   }

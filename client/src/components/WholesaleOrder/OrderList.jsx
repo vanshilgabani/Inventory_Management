@@ -1,4 +1,5 @@
 import SkeletonCard from '../common/SkeletonCard';
+import Loader from '../common/Loader';
 import { FiChevronLeft, FiChevronRight } from 'react-icons/fi';
 
 export default function OrderList({ orders, loading, pagination, onPageChange, renderCard }) {
@@ -22,7 +23,7 @@ export default function OrderList({ orders, loading, pagination, onPageChange, r
       <div className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 p-4">
-            {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
+            <Loader message='Loading Orders..'/>
           </div>
         ) : !orders.length ? (
           <div className="flex flex-col items-center justify-center py-32 text-center">

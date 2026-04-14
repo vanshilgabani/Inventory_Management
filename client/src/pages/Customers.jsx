@@ -127,7 +127,7 @@ const Customers = () => {
     return { name: 'Bronze', color: 'bg-orange-100 text-orange-700 border-orange-300' };
   };
 
-  if (loading) return <Loader />;
+  if (loading) return <Loader message='Loading Customers..'/>;
 
   return (
     <div className="space-y-6">

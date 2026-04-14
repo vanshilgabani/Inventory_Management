@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
+import Loader from '../components/common/Loader';
 import {
   FiUsers, FiCheckCircle, FiXCircle, FiRefreshCw, FiDollarSign,
   FiMail, FiPhone, FiPackage, FiSearch, FiShoppingCart,
@@ -631,10 +632,7 @@ const CustomerManagement = () => {
             {/* Customer Cards */}
             {loading ? (
               <div className="flex items-center justify-center py-20">
-                <div className="text-center">
-                  <div className="w-16 h-16 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto mb-4"></div>
-                  <p className="text-gray-600 text-lg">Loading customers...</p>
-                </div>
+                <Loader message='Loading Customers..'/>
               </div>
             ) : filteredCustomers.length === 0 ? (
               <div className="bg-white rounded-2xl shadow-lg border border-slate-200 p-12 text-center animate-fade-in">
@@ -982,10 +980,7 @@ const PaymentRequestsTab = ({ requests, loading, filter, onFilterChange, onAppro
       {/* Requests List */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
-          <div className="text-center">
-            <div className="w-16 h-16 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-gray-600 text-lg">Loading requests...</p>
-          </div>
+          <Loader message='Loading Payment Requests..'/>
         </div>
       ) : requests.length === 0 ? (
         <div className="bg-white rounded-2xl shadow-lg border border-slate-200 p-12 text-center">

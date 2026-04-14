@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import Loader from '../common/Loader';
 import { SketchPicker } from 'react-color';
 import { settingsService } from '../../services/settingsService';
 import { inventoryService } from '../../services/inventoryService';
@@ -172,10 +173,7 @@ const ColorPaletteManager = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-indigo-600 mx-auto mb-4"></div>
-          <p className="text-gray-600 font-medium">Loading Color Palette...</p>
-        </div>
+        <Loader message="Loading Color Palette..." />
       </div>
     );
   }

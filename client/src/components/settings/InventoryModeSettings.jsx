@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import Loader from '../common/Loader';
 import { FiPackage, FiShoppingCart, FiInfo, FiZap, FiToggleLeft, FiToggleRight } from 'react-icons/fi';
 import Card from '../common/Card';
 import {settingsService} from '../../services/settingsService';
@@ -98,7 +99,7 @@ const InventoryModeSettings = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+        <Loader message="Loading inventory mode settings..." />
       </div>
     );
   }

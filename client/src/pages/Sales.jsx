@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import Loader from '../components/common/Loader';
 import {salesService} from '../services/salesService';
 import {settlementService} from '../services/settlementService';
 import {settingsService} from '../services/settingsService';
@@ -2193,7 +2194,7 @@ const handleDelete = async (id) => {
   if (loading) {
     return (
       <div className="p-6">
-        <SkeletonCard />
+        <Loader message='Loading Sales..'/>
       </div>
     );
   }
@@ -2664,9 +2665,8 @@ const handleDelete = async (id) => {
                           <div className="rounded-b-xl shadow-lg border-t-0 rounded-t-none border-2 border-indigo-200 bg-gradient-to-b from-indigo-50/30 to-white">
 
                             {loadingDates.has(dateGroup.date) ? (
-                              <div className="flex flex-col items-center justify-center py-14 gap-3">
-                                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-500" />
-                                <p className="text-gray-500 text-sm font-medium">Loading orders...</p>
+                              <div style={{ position: "relative", height: "300px", borderRadius: "12px" }}>
+                                <Loader fullScreen={false} message='Loading Orders..'/>
                               </div>
 
                             ) : loadedOrders[dateGroup.date] === undefined ? (

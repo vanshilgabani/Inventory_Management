@@ -1,5 +1,6 @@
 // src/pages/Settings.jsx
 import { useState, useEffect } from 'react';
+import Loader from '../components/common/Loader';
 import{ useSearchParams } from 'react-router-dom';
 import { settingsService } from '../services/settingsService';
 import { productPricingService } from '../services/productPricingService';
@@ -334,7 +335,7 @@ const Settings = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading settings...</div>
+        <Loader message="Loading settings..." />
       </div>
     );
   }

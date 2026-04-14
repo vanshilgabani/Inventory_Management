@@ -15,6 +15,7 @@ import {
   FiChevronDown 
 } from 'react-icons/fi';
 import Card from '../components/common/Card';
+import Loader from '../components/common/Loader';
 import SkeletonCard from '../components/common/SkeletonCard';
 import TransferModal from '../components/TransferModal';
 import AllocationModal from '../components/modals/AllocationModal'; // ✅ NEW
@@ -57,6 +58,8 @@ const ReservedInventory = () => {
   const [selectedVariant, setSelectedVariant] = useState(null);
 
   // Bulk Transfer Modal
+  const [bulkTransferLoading, setBulkTransferLoading] = useState(false);
+  const [internalTransferLoading, setInternalTransferLoading] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkMode, setBulkMode] = useState('refill'); // 'refill' or 'return'
   const [bulkQuantities, setBulkQuantities] = useState({}); // { productId-color-size: quantity }
@@ -699,9 +702,7 @@ const handleInternalTransferSubmit = async () => {
   if (loading) {
     return (
       <div className="space-y-6">
-        <SkeletonCard />
-        <SkeletonCard />
-        <SkeletonCard />
+        <Loader message='Loading Reserved Inventory..'/>
       </div>
     );
   }
@@ -1160,7 +1161,8 @@ const handleInternalTransferSubmit = async () => {
                 </p>
               </div>
               <button
-                onClick={() => setShowBulkModal(false)}
+                onClick={() => { if (!bulkTransferLoading) setShowBulkModal(false); }}
+                  disabled={bulkTransferLoading}
                 className="p-2 hover:bg-gray-100 rounded-lg"
               >
                 <FiX className="w-6 h-6" />
@@ -1335,23 +1337,39 @@ const handleInternalTransferSubmit = async () => {
                   Clear All
                 </button>
                 <button
-                  onClick={() => setShowBulkModal(false)}
+                  onClick={() => { if (!bulkTransferLoading) setShowBulkModal(false); }}
+                    disabled={bulkTransferLoading}
                   className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-100"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleBulkTransferSubmit}
-                  disabled={getTotalBulkQuantity() === 0}
-                  className={`px-6 py-2 rounded-lg text-white font-semibold ${
-                    getTotalBulkQuantity() === 0
+                  onClick={async () => {
+                    setBulkTransferLoading(true);
+                    try {
+                      await handleBulkTransferSubmit();
+                    } finally {
+                      setBulkTransferLoading(false);
+                    }
+                  }}
+                  disabled={getTotalBulkQuantity() === 0 || bulkTransferLoading}
+                  className={`px-6 py-2 rounded-lg text-white font-semibold flex items-center gap-2 ${
+                    getTotalBulkQuantity() === 0 || bulkTransferLoading
                       ? 'bg-gray-400 cursor-not-allowed'
                       : bulkMode === 'refill'
                       ? 'bg-green-600 hover:bg-green-700'
                       : 'bg-blue-600 hover:bg-blue-700'
                   }`}
                 >
-                  Transfer Stock
+                  {bulkTransferLoading ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Transferring...
+                    </>
+                  ) : 'Transfer Stock'}
                 </button>
               </div>
             </div>
@@ -1374,7 +1392,8 @@ const handleInternalTransferSubmit = async () => {
                 </p>
               </div>
               <button
-                onClick={() => setShowInternalModal(false)}
+                onClick={() => { if (!internalTransferLoading) setShowInternalModal(false); }}
+                  disabled={internalTransferLoading}
                 className="p-2 hover:bg-gray-100 rounded-lg"
               >
                 <FiX className="w-6 h-6" />
@@ -1546,21 +1565,37 @@ const handleInternalTransferSubmit = async () => {
                   Clear All
                 </button>
                 <button
-                  onClick={() => setShowInternalModal(false)}
+                  onClick={() => { if (!internalTransferLoading) setShowInternalModal(false); }}
+                    disabled={internalTransferLoading}
                   className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-100"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleInternalTransferSubmit}
-                  disabled={getTotalInternalQuantity() === 0}
-                  className={`px-6 py-2 rounded-lg text-white font-semibold ${
-                    getTotalInternalQuantity() === 0
+                  onClick={async () => {
+                    setInternalTransferLoading(true);
+                    try {
+                      await handleInternalTransferSubmit();
+                    } finally {
+                      setInternalTransferLoading(false);
+                    }
+                  }}
+                  disabled={getTotalInternalQuantity() === 0 || internalTransferLoading}
+                  className={`px-6 py-2 rounded-lg text-white font-semibold flex items-center gap-2 ${
+                    getTotalInternalQuantity() === 0 || internalTransferLoading
                       ? 'bg-gray-400 cursor-not-allowed'
                       : 'bg-purple-600 hover:bg-purple-700'
                   }`}
                 >
-                  Transfer Stock
+                  {internalTransferLoading ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Transferring...
+                    </>
+                  ) : 'Transfer Stock'}
                 </button>
               </div>
             </div>

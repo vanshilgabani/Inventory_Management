@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import Loader from '../components/common/Loader';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import toast from 'react-hot-toast';
@@ -376,12 +377,8 @@ const UserManagement = () => {
 
           {/* Table */}
           {loading ? (
-            <div style={{ padding: '4rem', textAlign: 'center' }}>
-              <svg style={{ animation: 'ugm-spin .8s linear infinite', width: '32px', height: '32px', color: '#10b981', margin: '0 auto' }} fill="none" viewBox="0 0 24 24">
-                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity=".2" />
-                <path fill="currentColor" opacity=".8" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              <p style={{ color: '#94a3b8', marginTop: '12px', fontSize: '0.875rem' }}>Loading users...</p>
+            <div style={{ position: "relative", minHeight: "300px" }}>
+              <Loader fullScreen={false} message="Fetching Users..." />
             </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>

@@ -1,5 +1,6 @@
 // pages/SubscriptionDashboard.jsx
 import { useState, useEffect } from 'react';
+import Loader from '../components/common/Loader';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import toast from 'react-hot-toast';
@@ -144,7 +145,7 @@ const SubscriptionDashboard = () => {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-indigo-600 mx-auto"></div>
+          <Loader />
           <p className="mt-4 text-gray-600 text-lg">Loading subscription details...</p>
         </div>
       </div>

@@ -18,6 +18,7 @@ import {
   FiBarChart2
 } from 'react-icons/fi';
 import Card from '../components/common/Card';
+import Loader from '../components/common/Loader';
 import SkeletonCard from '../components/common/SkeletonCard';
 import transferService from '../services/transferService';
 import toast from 'react-hot-toast';
@@ -287,9 +288,7 @@ const internalTransfers = useMemo(() =>
   if (loading && statsLoading) {
     return (
       <div className="space-y-6">
-        <SkeletonCard />
-        <SkeletonCard />
-        <SkeletonCard />
+        <Loader />
       </div>
     );
   }
@@ -367,15 +366,9 @@ const internalTransfers = useMemo(() =>
       {/* ✅ CORRECTED: Stats Cards with proper onClick */}
       {statsLoading ? (
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <SkeletonCard />
-            <SkeletonCard />
-            <SkeletonCard />
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <SkeletonCard />
-            <SkeletonCard />
-          </div>
+            <div style={{ position: "relative", height: "100px" }}>
+              <Loader fullScreen={false} />
+            </div>
         </div>
       ) : stats ? (
         <>

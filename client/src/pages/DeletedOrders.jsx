@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import Loader from '../components/common/Loader';
 import deletedOrdersService from '../services/deletedOrdersService';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
@@ -287,15 +288,7 @@ const DeletedOrders = () => {
   if (loading) {
     return (
       <div className="p-6 space-y-6">
-        <div className="animate-pulse space-y-6">
-          <div className="h-20 bg-gray-200 rounded-2xl"></div>
-          <div className="grid grid-cols-4 gap-4">
-            {[1, 2, 3, 4].map(i => (
-              <div key={i} className="h-32 bg-gray-200 rounded-2xl"></div>
-            ))}
-          </div>
-          <div className="h-96 bg-gray-200 rounded-2xl"></div>
-        </div>
+        <Loader message='Loading Deleted Orders..'/>
       </div>
     );
   }

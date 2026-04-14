@@ -311,7 +311,7 @@ const handleAddReceiving = async (receivingData) => {
 
   // ===== LOADING STATE =====
   if (loading || sizesLoading) {
-    return <Loader />;
+    return <Loader message='Loading Factory Receivings..'/>;
   }
 
   // ===== RENDER =====

@@ -555,7 +555,7 @@ const handleViewHistory = async (design) => {
   setClickedDesign(design === clickedDesign ? null : design);
 };
 
-  if (loading || sizesLoading) return <Loader />;
+  if (loading || sizesLoading) return <Loader message='Loading Inventory..'/>;
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
