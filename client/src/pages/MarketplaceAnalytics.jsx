@@ -340,8 +340,8 @@ const fetchReturnRateByAccount = async (account) => {
                 <div className="space-y-3">
                   {/* Order Count */}
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-gray-600">Total Orders</span>
-                    <span className="text-xl font-bold text-gray-900">{account.orderCount}</span>
+                    <span className="text-sm text-gray-600">Total Units</span>
+                    <span className="text-xs text-gray-400"><span className='text-xl font-bold text-gray-900'>{account.totalQuantity ?? account.orderCount} </span>({account.orderCount} orders)</span>
                   </div>
 
                   {/* Settlement */}
@@ -357,25 +357,25 @@ const fetchReturnRateByAccount = async (account) => {
                       <div className="flex items-center gap-2">
                         <FiCheckCircle className="text-green-500" />
                         <span className="text-sm text-gray-700">
-                          Dispatched: <span className="font-semibold">{account.dispatchedCount}</span>
+                          Dispatched: <span className="font-semibold">{account.dispatchedQuantity ?? account.dispatchedCount}</span>
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
                         <FiXCircle className="text-red-500" />
                         <span className="text-sm text-gray-700">
-                          Returned: <span className="font-semibold">{account.returnedCount}</span>
+                          Returned: <span className="font-semibold">{account.returnedQuantity ?? account.returnedCount}</span>
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
                         <FiAlertTriangle className="text-orange-500" />
                         <span className="text-sm text-gray-700">
-                          Wrong Return: <span className="font-semibold">{account.wrongReturnCount}</span>
+                          Wrong Return: <span className="font-semibold">{account.wrongReturnQuantity ?? account.wrongReturnCount}</span>
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
                         <FiXCircle className="text-gray-500" />
                         <span className="text-sm text-gray-700">
-                          RTO: <span className="font-semibold">{account.RTOCount}</span>
+                          RTO: <span className="font-semibold">{account.RTOQuantity ?? account.RTOCount}</span>
                         </span>
                       </div>
                     </div>
@@ -389,8 +389,8 @@ const fetchReturnRateByAccount = async (account) => {
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-sm text-gray-600">Return Rate</span>
                         <span className="text-sm font-semibold text-gray-700">
-                          {account.orderCount > 0
-                            ? (((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100).toFixed(1)
+                          {account.totalQuantity > 0
+                            ? (((account.returnedQuantity ?? account.returnedCount) + (account.wrongReturnQuantity ?? account.wrongReturnCount)) / (account.totalQuantity ?? account.orderCount) * 100).toFixed(1)
                             : 0}%
                         </span>
                       </div>
@@ -403,12 +403,7 @@ const fetchReturnRateByAccount = async (account) => {
                               ? 'bg-yellow-500'
                               : 'bg-red-500'
                           }`}
-                          style={{
-                            width: `${Math.min(
-                              ((account.returnedCount + account.wrongReturnCount) / account.orderCount) * 100,
-                              100
-                            )}%`
-                          }}
+                          style={{ width: `${Math.min(((account.returnedQuantity ?? account.returnedCount) + (account.wrongReturnQuantity ?? account.wrongReturnCount)) / (account.totalQuantity ?? account.orderCount) * 100, 100)}%` }}
                         ></div>
                       </div>
                     </div>
@@ -418,8 +413,8 @@ const fetchReturnRateByAccount = async (account) => {
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-sm text-gray-600">RTO Rate</span>
                         <span className="text-sm font-semibold text-gray-700">
-                          {account.orderCount > 0
-                            ? ((account.RTOCount / account.orderCount) * 100).toFixed(1)
+                          {(account.totalQuantity ?? account.orderCount) > 0
+                            ? ((account.RTOQuantity ?? account.RTOCount) / (account.totalQuantity ?? account.orderCount) * 100).toFixed(1)
                             : 0}%
                         </span>
                       </div>
@@ -432,12 +427,7 @@ const fetchReturnRateByAccount = async (account) => {
                               ? 'bg-yellow-500'
                               : 'bg-red-500'
                           }`}
-                          style={{
-                            width: `${Math.min(
-                              (account.RTOCount / account.orderCount) * 100,
-                              100
-                            )}%`
-                          }}
+                          style={{ width: `${Math.min((account.RTOQuantity ?? account.RTOCount) / (account.totalQuantity ?? account.orderCount) * 100, 100)}%` }}
                         ></div>
                       </div>
                     </div>
@@ -487,10 +477,10 @@ const fetchReturnRateByAccount = async (account) => {
                   onChange={(e) => setReturnSortBy(e.target.value)}
                   className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white cursor-pointer"
                 >
-                  <option value="returnRate">Return Rate (High → Low)</option>
-                  <option value="totalOrders">Total Orders (High → Low)</option>
-                  <option value="returnedCount">Returned Orders (High → Low)</option>
-                  <option value="RTOCount">RTO Count (High → Low)</option>
+                  <option value="returnRateByQty">Return Rate (High → Low)</option>
+                  <option value="totalQuantity">Total Orders (High → Low)</option>
+                  <option value="returnedQuantity">Returned Orders (High → Low)</option>
+                  <option value="RTOQuantity">RTO Count (High → Low)</option>
                   {/*<option value="totalIssueRate">Total Issue Rate (High → Low)</option>*/}
                 </select>
               </div>
@@ -518,7 +508,7 @@ const fetchReturnRateByAccount = async (account) => {
                     {/*{!selectedReturnAccount && (
                       <th className="text-left py-3 px-4 font-semibold text-gray-700">Account</th>
                     )}*/}
-                    <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Orders</th>
+                    <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Units</th>
                     <th className="text-center py-3 px-4 font-semibold text-gray-700">Successful</th>
                     <th className="text-center py-3 px-4 font-semibold text-gray-700">Returned</th>
                     <th className="text-center py-3 px-4 font-semibold text-gray-700">Wrong Return</th>
@@ -551,35 +541,19 @@ const fetchReturnRateByAccount = async (account) => {
                         {/*{!selectedReturnAccount && (
                           <td className="py-3.5 px-4 text-gray-700 text-sm">{item.accountName}</td>
                         )}*/}
-                        <td className="py-3.5 px-4 text-center font-bold text-gray-900">{item.totalOrders}</td>
-                        <td className="py-3.5 px-4 text-center">
-                          <span className="text-green-600 font-semibold">{item.successfulCount}</span>
-                        </td>
-                        <td className="py-3.5 px-4 text-center">
-                          <span className="text-red-600 font-semibold">{item.returnedCount}</span>
-                        </td>
-                        <td className="py-3.5 px-4 text-center">
-                          <span className="text-orange-600 font-semibold">{item.wrongReturnCount}</span>
-                        </td>
-                        <td className="py-3.5 px-4 text-center">
-                          <span className="text-gray-700 font-semibold">{item.RTOCount}</span>
-                        </td>
+                        <td className="py-3.5 px-4 text-center font-bold text-gray-900">{item.totalQuantity ?? item.totalOrders}</td>
+                        <td className="py-3.5 px-4 text-center"><span className="text-green-600 font-semibold">{item.successfulQuantity ?? item.successfulCount}</span></td>
+                        <td className="py-3.5 px-4 text-center"><span className="text-red-600 font-semibold">{item.returnedQuantity ?? item.returnedCount}</span></td>
+                        <td className="py-3.5 px-4 text-center"><span className="text-orange-600 font-semibold">{item.wrongReturnQuantity ?? item.wrongReturnCount}</span></td>
+                        <td className="py-3.5 px-4 text-center"><span className="text-gray-700 font-semibold">{item.RTOQuantity ?? item.RTOCount}</span></td>
                         <td className="py-3.5 px-4 text-center bg-red-50">
-                          <span className={`text-base font-bold ${
-                            item.returnRate < 20 ? 'text-green-600'
-                            : item.returnRate < 30 ? 'text-yellow-600'
-                            : 'text-red-600'
-                          }`}>
-                            {item.returnRate}%
+                          <span className={`text-base font-bold ${(item.returnRateByQty ?? item.returnRate) > 20 ? 'text-green-600' : (item.returnRateByQty ?? item.returnRate) > 30 ? 'text-yellow-600' : 'text-red-600'}`}>
+                            {item.returnRateByQty ?? item.returnRate}
                           </span>
                         </td>
                         <td className="py-3.5 px-4 text-center bg-gray-50">
-                          <span className={`text-base font-bold ${
-                            item.rtoRate < 15 ? 'text-green-600'
-                            : item.rtoRate < 25 ? 'text-yellow-600'
-                            : 'text-red-600'
-                          }`}>
-                            {item.rtoRate}%
+                          <span className={`text-base font-bold ${(item.rtoRateByQty ?? item.rtoRate) > 15 ? 'text-green-600' : (item.rtoRateByQty ?? item.rtoRate) > 25 ? 'text-yellow-600' : 'text-red-600'}`}>
+                            {item.rtoRateByQty ?? item.rtoRate}
                           </span>
                         </td>
                         {/*<td className="py-3.5 px-4 text-center bg-orange-50">

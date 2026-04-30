@@ -1,13 +1,15 @@
 import { useState, useMemo } from 'react';
+import { useEnabledSizes } from '../../../hooks/useEnabledSizes';
 import StatsCard from '../components/StatsCard';
 import FilterBar from '../components/FilterBar';
 import DateGroup from '../components/DateGroup';
 import FlatTableView from '../components/FlatTableView';
 import { filterByDateRange, filterBySearch, exportToExcel } from '../utils/factoryHelpers';
 
-const FactoryTab = ({ data, stats, enabledSizes, canEditDelete, onEdit, onDelete, filters, onFilterChange }) => {
+const FactoryTab = ({ data, stats, canEditDelete, onEdit, onDelete, filters, onFilterChange }) => {
   const [expandedDate, setExpandedDate] = useState(null);
   const [viewMode, setViewMode] = useState('grouped'); // 'grouped' or 'table'
+  const { getSizesForDesign } = useEnabledSizes();
 
   // Apply filters
   const filteredData = useMemo(() => {
@@ -104,7 +106,7 @@ const FactoryTab = ({ data, stats, enabledSizes, canEditDelete, onEdit, onDelete
       ) : viewMode === 'table' ? (
         <FlatTableView
           data={filteredData}
-          enabledSizes={enabledSizes}
+          getSizesForDesign={getSizesForDesign}
           dateFrom={filters.dateFrom}
           dateTo={filters.dateTo}
         />
@@ -114,7 +116,7 @@ const FactoryTab = ({ data, stats, enabledSizes, canEditDelete, onEdit, onDelete
             <DateGroup
               key={dateGroup.date}
               dateGroup={dateGroup}
-              enabledSizes={enabledSizes}
+              getSizesForDesign={getSizesForDesign}
               canEditDelete={canEditDelete}
               onEdit={onEdit}
               onDelete={onDelete}

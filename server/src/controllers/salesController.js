@@ -938,11 +938,9 @@ exports.getOrdersByDateGroups = async (req, res) => {
       const group = dateGroupsMap.get(displayDate);
       group.orders.push(order);
 
-      // Count by account
-      if (!group.accountBreakdown[order.accountName]) {
-        group.accountBreakdown[order.accountName] = 0;
-      }
-      group.accountBreakdown[order.accountName]++;
+    // Count by account
+    if (!group.accountBreakdown[order.accountName]) group.accountBreakdown[order.accountName] = 0;
+      group.accountBreakdown[order.accountName] += (order.quantity || 1);
     });
 
     // Convert to array and sort by date (newest first)
@@ -952,6 +950,7 @@ exports.getOrdersByDateGroups = async (req, res) => {
         date: group.date,
         dateLabel: formatDateLabel(group.date),
         orderCount: group.orders.length,
+        totalQuantity: group.orders.reduce((sum, o) => sum + (o.quantity || 1), 0),
         accountBreakdown: group.accountBreakdown,
         orders: group.orders.map(order => ({
           ...order,
@@ -3164,7 +3163,9 @@ exports.getDateSummaries = async (req, res) => {
         $group: {
           _id: '$displayDate',
           count: { $sum: 1 },
-          accounts: { $push: '$accountName' }
+          totalQuantity: { $sum: '$quantity' },
+          accountDetails: { $push: { accountName: '$accountName', quantity: '$quantity' } 
+          }
         }
       },
       { $sort: { _id: -1 } },
@@ -3175,10 +3176,10 @@ exports.getDateSummaries = async (req, res) => {
 
     const result = summaries.map(s => {
       const accountBreakdown = {};
-      s.accounts.forEach(acc => {
-        accountBreakdown[acc] = (accountBreakdown[acc] || 0) + 1;
+      s.accountDetails.forEach(({ accountName, quantity }) => {
+        accountBreakdown[accountName] = (accountBreakdown[accountName] || 0) + (quantity || 1);
       });
-      return { date: s._id, count: s.count, accountBreakdown };
+      return { date: s._id, count: s.count, totalQuantity: s.totalQuantity, accountBreakdown };
     });
 
     res.json({ success: true, data: result });

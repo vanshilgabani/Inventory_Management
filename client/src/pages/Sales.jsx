@@ -2616,10 +2616,17 @@ const handleDelete = async (id) => {
                                     <span className="inline-block w-16 h-4 bg-gray-200 animate-pulse rounded-md" />
                                   ) : (
                                     <>
-                                      {dateGroup.orderCount} {dateGroup.orderCount === 1 ? 'Order' : 'Orders'}
+                                      {dateGroup.totalQuantity ?? dateGroup.orderCount}{' '}
+                                      {(dateGroup.totalQuantity ?? dateGroup.orderCount) === 1 ? 'Unit' : 'Units'}
+                                      {/*<span className="text-xs text-gray-400 font-normal ml-1">
+                                        ({dateGroup.orderCount} {dateGroup.orderCount === 1 ? 'order' : 'orders'})
+                                      </span>*/}
                                       {someOrdersSelected && (
                                         <span className="ml-2 text-blue-600">
-                                          ({sortedOrders.filter(o => selectedSales.includes(o._id)).length} selected)
+                                          ({sortedOrders
+                                            .filter(o => selectedSales.includes(o._id))
+                                            .reduce((sum, o) => sum + (o.quantity || 1), 0)}{' '}
+                                          units selected)
                                         </span>
                                       )}
                                     </>
@@ -2711,10 +2718,17 @@ const handleDelete = async (id) => {
                                       {allOrdersSelected ? 'Deselect All' : 'Select All'}
                                     </button>
                                     {(someOrdersSelected || allOrdersSelected) && (
-                                      <span className="text-sm font-medium text-gray-600">
-                                        {sortedOrders.filter(o => selectedSales.includes(o._id)).length}/{sortedOrders.length} selected
-                                      </span>
-                                    )}
+                                    <span className="text-sm font-medium text-gray-600">
+                                      {sortedOrders
+                                        .filter(o => selectedSales.includes(o._id))
+                                        .reduce((sum, o) => sum + (o.quantity || 1), 0)}
+                                      /
+                                      {sortedOrders.reduce((sum, o) => sum + (o.quantity || 1), 0)} units selected
+                                      {/*<span className="text-gray-400 font-normal ml-1">
+                                        ({sortedOrders.filter(o => selectedSales.includes(o._id)).length}/{sortedOrders.length} orders)
+                                      </span>*/}
+                                    </span>
+                                  )}
                                   </div>
                                   <button
                                     onClick={(e) => { e.stopPropagation(); setExpandedDate(null); }}

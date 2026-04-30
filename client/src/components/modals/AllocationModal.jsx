@@ -8,7 +8,7 @@ import { inventoryService } from '../../services/inventoryService';
 import toast from 'react-hot-toast';
 
 const AllocationModal = ({ isOpen, onClose, product, onSuccess }) => {
-  const { enabledSizes } = useEnabledSizes(product?.design);
+  const { getSizesForDesign } = useEnabledSizes();
   const { colors: colorPalette, getColorCode } = useColorPalette();
   
   const [marketplaceAccounts, setMarketplaceAccounts] = useState([]);
@@ -53,62 +53,26 @@ const isVariantExcluded = (accountName, color, size) => {
 // ✅ FIXED — no onSuccess(), no auto-reload
 const handleDesignExclusion = async (accountName, exclude) => {
   try {
-    const res = await fetch(
-      `/api/settings/auto-allocation/${exclude ? 'exclude' : 'include'}-design`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-        body: JSON.stringify({ design: localProduct.design, accountName }),
-      }
-    );
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.message || 'Server error');
-    }
-
-    // Only update localProduct — NO onSuccess(), no page reload
+    await settingsService.excludeDesign(localProduct.design, accountName, exclude);
     setLocalProduct(prev => ({
       ...prev,
       excludedAccounts: exclude
         ? [...(prev.excludedAccounts || []), accountName]
         : (prev.excludedAccounts || []).filter(a => a !== accountName),
     }));
-
-    toast.success(
-      exclude
-        ? `${accountName} excluded from all ${localProduct.design} variants`
-        : `${accountName} re-included for ${localProduct.design}`
+    toast.success(exclude
+      ? `${accountName} excluded from all ${localProduct?.design} variants`
+      : `${accountName} re-included for ${localProduct?.design}`
     );
   } catch (err) {
-    toast.error(err.message || 'Failed to update exclusion');
+    toast.error(err.response?.data?.message || err.message || 'Failed to update exclusion');
   }
 };
 
 // ✅ FIXED — no onSuccess(), no auto-reload
 const handleVariantExclusion = async (accountName, color, size, exclude) => {
   try {
-    const res = await fetch(
-      `/api/settings/auto-allocation/${exclude ? 'exclude' : 'include'}-variant`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-        body: JSON.stringify({ design: localProduct.design, color, size, accountName }),
-      }
-    );
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.message || 'Server error');
-    }
-
-    // Only update localProduct — NO onSuccess(), no page reload
+    await settingsService.excludeVariant(localProduct.design, color, size, accountName, exclude);
     setLocalProduct(prev => ({
       ...prev,
       colors: prev.colors.map(cv =>
@@ -125,14 +89,12 @@ const handleVariantExclusion = async (accountName, color, size, exclude) => {
         }
       ),
     }));
-
-    toast.success(
-      exclude
-        ? `${accountName} excluded from ${color}-${size}`
-        : `${accountName} re-included for ${color}-${size}`
+    toast.success(exclude
+      ? `${accountName} excluded from ${color}-${size}`
+      : `${accountName} re-included for ${color}-${size}`
     );
   } catch (err) {
-    toast.error(err.message || 'Failed to update exclusion');
+    toast.error(err.response?.data?.message || err.message || 'Failed to update exclusion');
   }
 };
 
@@ -144,7 +106,9 @@ const handleVariantExclusion = async (accountName, color, size, exclude) => {
 
     const initialAllocations = {};
     product.colors?.forEach(colorData => {
-      colorData.sizes?.forEach(sizeData => {
+    colorData.sizes
+      ?.filter(sizeData => getSizesForDesign(product?.design).includes(sizeData.size))
+      .forEach(sizeData => {
         const key = `${colorData.color}-${sizeData.size}`;
         initialAllocations[key] = {};
       });
@@ -229,9 +193,10 @@ const getVariantStats = (color, size) => {
     let hasError = false;
 
     product.colors?.forEach(colorData => {
-      colorData.sizes?.forEach(sizeData => {
+    colorData.sizes
+      ?.filter(sizeData => getSizesForDesign(product?.design).includes(sizeData.size))
+      .forEach(sizeData => {
         const key = `${colorData.color}-${sizeData.size}`;
-        const stats = getVariantStats(colorData.color, sizeData.size);
 
         if (!stats.isValid) {
           newErrors[key] = `Over-allocated by ${stats.allocated - stats.reservedTotal} units`;
@@ -258,7 +223,9 @@ const handleSubmit = async () => {
     const allocationData = [];
 
     product.colors?.forEach(colorData => {
-      colorData.sizes?.forEach(sizeData => {
+    colorData.sizes
+      ?.filter(sizeData => getSizesForDesign(product?.design).includes(sizeData.size))
+      .forEach(sizeData => {
         const key = `${colorData.color}-${sizeData.size}`;
         const addAmounts = allocations[key] || {};
 
@@ -454,7 +421,7 @@ const handleSubmit = async () => {
                   </thead>
                   <tbody className="divide-y">
                     {colorData.sizes
-                      ?.filter(sizeData => enabledSizes.includes(sizeData.size))
+                      ?.filter(sizeData => getSizesForDesign(localProduct?.design).includes(sizeData.size))
                       .map(sizeData => {
                         const key = `${colorData.color}-${sizeData.size}`;
                         const stats = getVariantStats(colorData.color, sizeData.size);

@@ -373,7 +373,6 @@ const handleAddReceiving = async (receivingData) => {
           <FactoryTab
             data={groupedByDate}
             stats={stats.factory}
-            enabledSizes={enabledSizes}
             canEditDelete={canEditDelete()}
             onEdit={handleEditReceiving}
             onDelete={handleDeleteReceiving}

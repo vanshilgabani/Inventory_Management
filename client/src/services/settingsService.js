@@ -201,6 +201,19 @@ const syncProductsWithSizes = async () => {
   return response.data;
 };
 
+// Auto-allocation exclusion
+const excludeDesign = async (design, accountName, exclude) => {
+  const endpoint = exclude ? 'exclude-design' : 'include-design';
+  const response = await api.post(`settings/auto-allocation/${endpoint}`, { design, accountName });
+  return response.data;
+};
+
+const excludeVariant = async (design, color, size, accountName, exclude) => {
+  const endpoint = exclude ? 'exclude-variant' : 'include-variant';
+  const response = await api.post(`settings/auto-allocation/${endpoint}`, { design, color, size, accountName });
+  return response.data;
+};
+
 export const settingsService = {
   getSettings,
   updateSettings,
@@ -248,5 +261,9 @@ export const settingsService = {
   getFlipkartSettings,
   updateFlipkartSettings,
   testFlipkartCredentials,
-  updateAccountFlipkart
+  updateAccountFlipkart,
+
+  // Auto-allocation exclusion
+  excludeDesign,
+  excludeVariant
 };

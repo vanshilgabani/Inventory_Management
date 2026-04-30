@@ -1,32 +1,43 @@
 // scripts/migrate-status-date.js
-// Migrates ALL statusHistory entries from 07-Apr-2026 → 06-Apr-2026 (any status)
+// Migrates ALL statusHistory entries from 25-Apr-2026 → 24-Apr-2026 IST (any status)
 
 const mongoose = require('mongoose');
+const readline = require('readline');
 require('dotenv').config();
 const MarketplaceSale = require('../server/src/models/MarketplaceSale');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
-const DRY_RUN = false;  // ← Set true to preview without writing to DB
-
-// Full UTC day range for 07-Apr-2026
-const SOURCE_START = new Date('2026-04-07T00:00:00.000Z');
-const SOURCE_END   = new Date('2026-04-07T23:59:59.999Z');
-
-// Target: 06-Apr-2026 midnight UTC
-const TARGET_DATE  = new Date('2026-04-06T00:00:00.000Z');
+const SOURCE_START = new Date('2026-04-24T18:30:00.000Z');  // Apr 25 00:00 IST
+const SOURCE_END   = new Date('2026-04-25T18:29:59.999Z');  // Apr 25 23:59 IST
+const TARGET_DATE  = new Date('2026-04-24T18:30:00.000Z');  // Apr 24 00:00 IST
 // ─────────────────────────────────────────────────────────────────────────────
 
 const isSourceEntry = (entry) => {
   const d = new Date(entry.changedAt);
-  return d >= SOURCE_START && d <= SOURCE_END;  // No status filter
+  return d >= SOURCE_START && d <= SOURCE_END;
 };
+
+// ─── Interactive confirmation prompt ─────────────────────────────────────────
+const confirm = (question) => {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase());
+    });
+  });
+};
+// ─────────────────────────────────────────────────────────────────────────────
 
 const migrate = async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to MongoDB\n');
 
-    // ── Step 1: Fetch all orders with ANY statusHistory entry on 07-Apr ───
+    // ── Step 1: Fetch ALL orders with ANY statusHistory entry on 25-Apr IST ──
     const orders = await MarketplaceSale.find({
       statusHistory: {
         $elemMatch: {
@@ -35,27 +46,58 @@ const migrate = async () => {
       }
     }).lean();
 
-    console.log(`📊 Found ${orders.length} order(s) with statusHistory on 07-Apr-2026`);
+    console.log(`📊 Found ${orders.length} order(s) with statusHistory entries on 25-Apr-2026 IST`);
 
     if (orders.length === 0) {
       console.log('ℹ️  Nothing to migrate.');
       return;
     }
 
-    // ── Step 2: DRY RUN preview ────────────────────────────────────────────
-    if (DRY_RUN) {
-      console.log('\n🔎 DRY RUN — No changes will be written.\n');
-      orders.forEach((order) => {
-        const hits = order.statusHistory.filter(isSourceEntry);
-        console.log(`  📦 Order ${order._id} — ${hits.length} entry(s) would be updated`);
-        hits.forEach((e) =>
-          console.log(`     [${e.status}] changedAt: ${e.changedAt} → ${TARGET_DATE.toISOString()}`)
-        );
+    // ── Step 2: Preview with Order Item IDs ───────────────────────────────
+    console.log('\n🔎 PREVIEW — Changes that will be applied:\n');
+    let totalEntries = 0;
+    const affectedOrders = [];
+
+    orders.forEach((order) => {
+      const hits = order.statusHistory.filter(isSourceEntry);
+      totalEntries += hits.length;
+
+      affectedOrders.push({
+        _id: order._id,
+        marketplaceOrderId: order.marketplaceOrderId,
+        orderItemId: order.orderItemId,
+        entries: hits.map((e) => ({
+          status: e.status || e.newStatus,
+          originalChangedAt: new Date(e.changedAt).toISOString(),
+          willBecome: TARGET_DATE.toISOString()
+        }))
       });
+
+      console.log(`  📦 _id            : ${order._id}`);
+      console.log(`     Marketplace ID : ${order.marketplaceOrderId}`);
+      console.log(`     Order Item ID  : ${order.orderItemId}`);
+      console.log(`     Entries (${hits.length}):`);
+      hits.forEach((e) =>
+        console.log(
+          `       [${e.status || e.newStatus}] ${new Date(e.changedAt).toISOString()} → ${TARGET_DATE.toISOString()}`
+        )
+      );
+      console.log('');
+    });
+
+    console.log(`📝 Summary: ${orders.length} order(s) | ${totalEntries} statusHistory entry(s) will be updated`);
+    console.log(`   FROM : 25-Apr-2026 IST`);
+    console.log(`   TO   : 24-Apr-2026 IST\n`);
+
+    // ── Step 3: Ask for confirmation ──────────────────────────────────────
+    const answer = await confirm('⚠️  Proceed with migration? Type "yes" to confirm: ');
+
+    if (answer !== 'yes') {
+      console.log('\n🚫 Migration cancelled. No changes were made.');
       return;
     }
 
-    // ── Step 3: Build bulkWrite operations ────────────────────────────────
+    // ── Step 4: Build bulkWrite operations ────────────────────────────────
     const bulkOps = orders.map((order) => ({
       updateOne: {
         filter: { _id: order._id },
@@ -69,14 +111,26 @@ const migrate = async () => {
       }
     }));
 
-    // ── Step 4: Execute in bulk (single DB round-trip) ────────────────────
+    // ── Step 5: Execute in bulk (single DB round-trip) ────────────────────
     const result = await MarketplaceSale.bulkWrite(bulkOps, { ordered: false });
 
     console.log('\n✅ Migration complete!');
     console.log(`   ✏️  Modified : ${result.modifiedCount} order(s)`);
     console.log(`   🔍 Matched  : ${result.matchedCount} order(s)`);
 
-    // ── Step 5: Verification ──────────────────────────────────────────────
+    // ── Step 6: Rollback Reference Log ────────────────────────────────────
+    console.log('\n📋 ROLLBACK REFERENCE — Save this if you need to undo:\n');
+    affectedOrders.forEach((o) => {
+      console.log(`  _id            : ${o._id}`);
+      console.log(`  Marketplace ID : ${o.marketplaceOrderId}`);
+      console.log(`  Order Item ID  : ${o.orderItemId}`);
+      o.entries.forEach((e) =>
+        console.log(`  [${e.status}] Restore changedAt to: ${e.originalChangedAt}`)
+      );
+      console.log('');
+    });
+
+    // ── Step 7: Verification ──────────────────────────────────────────────
     const remaining = await MarketplaceSale.countDocuments({
       statusHistory: {
         $elemMatch: {
@@ -85,9 +139,9 @@ const migrate = async () => {
       }
     });
 
-    console.log(`\n🔍 Remaining Apr-07 entries: ${remaining}`);
+    console.log(`🔍 Remaining Apr-25 IST entries: ${remaining}`);
     if (remaining === 0) {
-      console.log('🎉 All entries successfully migrated to 06-Apr-2026!');
+      console.log('🎉 All entries successfully migrated to 24-Apr-2026 IST!');
     } else {
       console.warn(`⚠️  ${remaining} entry(s) were NOT migrated. Investigate manually.`);
     }

@@ -2,7 +2,7 @@ import { FiChevronDown, FiChevronUp, FiCalendar } from 'react-icons/fi';
 import { format, parseISO, isToday, isYesterday } from 'date-fns';
 import DesignTable from './DesignTable';
 
-const DateGroup = ({ dateGroup, enabledSizes, canEditDelete, onEdit, onDelete, isExpanded, onToggle }) => {
+const DateGroup = ({ dateGroup, getSizesForDesign, canEditDelete, onEdit, onDelete, isExpanded, onToggle }) => {
   const getDateLabel = (dateStr) => {
     const date = parseISO(dateStr);
     if (isToday(date)) return 'Today';
@@ -53,7 +53,7 @@ const DateGroup = ({ dateGroup, enabledSizes, canEditDelete, onEdit, onDelete, i
               <DesignTable
                 key={index}
                 design={design}
-                enabledSizes={enabledSizes}
+                getSizesForDesign={getSizesForDesign}   
                 canEditDelete={canEditDelete}
                 onEdit={onEdit}
                 onDelete={onDelete}

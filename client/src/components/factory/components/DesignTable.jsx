@@ -1,8 +1,11 @@
 import { FiEdit, FiTrash2, FiPackage } from 'react-icons/fi';
 import { useColorPalette } from '../../../hooks/useColorPalette';
 
-const DesignTable = ({ design, enabledSizes, canEditDelete, onEdit, onDelete }) => {
+const DesignTable = ({ design, getSizesForDesign, canEditDelete, onEdit, onDelete }) => {
   const { getColorCode } = useColorPalette();
+  const enabledSizes = typeof getSizesForDesign === 'function'
+    ? getSizesForDesign(design.design)
+    : [];
 
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden">

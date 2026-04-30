@@ -483,18 +483,18 @@ const getMarketplaceAccountStats = async (req, res) => {
 
     const dateFilter = {};
     if (startDate) dateFilter.$gte = new Date(startDate);
-    if (endDate) dateFilter.$lte = new Date(endDate);
+    if (endDate)   dateFilter.$lte = new Date(endDate);
 
-    const salesMatch = { 
+    const salesMatch = {
       organizationId: new mongoose.Types.ObjectId(organizationId),
-      deletedAt: null 
+      deletedAt: null
     };
-    const settlementMatch = { 
+    const settlementMatch = {
       organizationId: new mongoose.Types.ObjectId(organizationId)
     };
-    
+
     if (startDate || endDate) {
-      salesMatch.saleDate = dateFilter;
+      salesMatch.saleDate            = dateFilter;
       settlementMatch.settlementDate = dateFilter;
     }
 
@@ -503,20 +503,17 @@ const getMarketplaceAccountStats = async (req, res) => {
         { $match: salesMatch },
         {
           $group: {
-            _id: '$accountName',
-            orderCount: { $sum: 1 },
-            dispatchedCount: {
-              $sum: { $cond: [{ $eq: ['$status', 'dispatched'] }, 1, 0] }
-            },
-            returnedCount: {
-              $sum: { $cond: [{ $eq: ['$status', 'returned'] }, 1, 0] }
-            },
-            wrongReturnCount: {
-              $sum: { $cond: [{ $eq: ['$status', 'wrongreturn'] }, 1, 0] }
-            },
-            RTOCount: {
-              $sum: { $cond: [{ $eq: ['$status', 'RTO'] }, 1, 0] }
-            },
+            _id:                 '$accountName',
+            orderCount:          { $sum: 1 },
+            totalQuantity:       { $sum: '$quantity' },                                                       // ✅ total units all statuses
+            dispatchedCount:     { $sum: { $cond: [{ $eq: ['$status', 'dispatched']  }, 1,          0] } },
+            dispatchedQuantity:  { $sum: { $cond: [{ $eq: ['$status', 'dispatched']  }, '$quantity', 0] } },  // ✅
+            returnedCount:       { $sum: { $cond: [{ $eq: ['$status', 'returned']    }, 1,          0] } },
+            returnedQuantity:    { $sum: { $cond: [{ $eq: ['$status', 'returned']    }, '$quantity', 0] } },  // ✅
+            wrongReturnCount:    { $sum: { $cond: [{ $eq: ['$status', 'wrongreturn'] }, 1,          0] } },
+            wrongReturnQuantity: { $sum: { $cond: [{ $eq: ['$status', 'wrongreturn'] }, '$quantity', 0] } },  // ✅
+            RTOCount:            { $sum: { $cond: [{ $eq: ['$status', 'RTO']         }, 1,          0] } },
+            RTOQuantity:         { $sum: { $cond: [{ $eq: ['$status', 'RTO']         }, '$quantity', 0] } },  // ✅
           }
         }
       ]),
@@ -524,7 +521,7 @@ const getMarketplaceAccountStats = async (req, res) => {
         { $match: settlementMatch },
         {
           $group: {
-            _id: '$accountName',
+            _id:             '$accountName',
             totalSettlement: { $sum: '$settlementAmount' },
             settlementCount: { $sum: 1 }
           }
@@ -534,17 +531,22 @@ const getMarketplaceAccountStats = async (req, res) => {
 
     // Merge both results
     const accountMap = {};
-    
+
     orderStats.forEach(stat => {
       accountMap[stat._id] = {
-        accountName: stat._id,
-        orderCount: stat.orderCount,
-        dispatchedCount: stat.dispatchedCount,
-        returnedCount: stat.returnedCount,
-        wrongReturnCount: stat.wrongReturnCount,
-        RTOCount: stat.RTOCount,
-        totalSettlement: 0,
-        settlementCount: 0
+        accountName:         stat._id,
+        orderCount:          stat.orderCount,
+        totalQuantity:       stat.totalQuantity,        // ✅
+        dispatchedCount:     stat.dispatchedCount,
+        dispatchedQuantity:  stat.dispatchedQuantity,   // ✅
+        returnedCount:       stat.returnedCount,
+        returnedQuantity:    stat.returnedQuantity,     // ✅
+        wrongReturnCount:    stat.wrongReturnCount,
+        wrongReturnQuantity: stat.wrongReturnQuantity,  // ✅
+        RTOCount:            stat.RTOCount,
+        RTOQuantity:         stat.RTOQuantity,          // ✅
+        totalSettlement:     0,
+        settlementCount:     0
       };
     });
 
@@ -554,14 +556,20 @@ const getMarketplaceAccountStats = async (req, res) => {
         accountMap[stat._id].settlementCount = stat.settlementCount;
       } else {
         accountMap[stat._id] = {
-          accountName: stat._id,
-          orderCount: 0,
-          dispatchedCount: 0,
-          returnedCount: 0,
-          wrongReturnCount: 0,
-          cancelledCount: 0,
-          totalSettlement: stat.totalSettlement,
-          settlementCount: stat.settlementCount
+          accountName:         stat._id,
+          orderCount:          0,
+          totalQuantity:       0,   // ✅
+          dispatchedCount:     0,
+          dispatchedQuantity:  0,   // ✅
+          returnedCount:       0,
+          returnedQuantity:    0,   // ✅
+          wrongReturnCount:    0,
+          wrongReturnQuantity: 0,   // ✅
+          cancelledCount:      0,
+          RTOCount:            0,
+          RTOQuantity:         0,   // ✅
+          totalSettlement:     stat.totalSettlement,
+          settlementCount:     stat.settlementCount
         };
       }
     });
@@ -598,8 +606,6 @@ const getReturnRateByProduct = async (req, res) => {
     }
 
     // ✅ KEY FIX: Group key changes based on whether account filter is active
-    // When a specific account is selected → group by design+color+size+accountName
-    // When "All Accounts" is selected  → group by design+color+size only (merges across accounts)
     const groupId = accountName
       ? { design: '$design', color: '$color', size: '$size', accountName: '$accountName' }
       : { design: '$design', color: '$color', size: '$size' };
@@ -608,101 +614,122 @@ const getReturnRateByProduct = async (req, res) => {
       { $match: matchFilter },
       {
         $group: {
-          _id: groupId,
-          totalOrders: { $sum: 1 },
-          successfulCount: {
-            $sum: { $cond: [{ $eq: ['$status', 'dispatched'] }, 1, 0] }
-          },
-          returnedCount: {
-            $sum: { $cond: [{ $eq: ['$status', 'returned'] }, 1, 0] }
-          },
-          wrongReturnCount: {
-            $sum: { $cond: [{ $eq: ['$status', 'wrongreturn'] }, 1, 0] }
-          },
-          RTOCount: {
-            $sum: { $cond: [{ $eq: ['$status', 'RTO'] }, 1, 0] }
-          },
-          cancelledCount: {
-            $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] }
-          }
+          _id:                 groupId,
+          totalOrders:         { $sum: 1 },
+          totalQuantity:       { $sum: '$quantity' },                                                          // ✅ total units for this product
+          successfulCount:     { $sum: { $cond: [{ $eq: ['$status', 'dispatched']  }, 1,          0] } },
+          successfulQuantity:  { $sum: { $cond: [{ $eq: ['$status', 'dispatched']  }, '$quantity', 0] } },     // ✅
+          returnedCount:       { $sum: { $cond: [{ $eq: ['$status', 'returned']    }, 1,          0] } },
+          returnedQuantity:    { $sum: { $cond: [{ $eq: ['$status', 'returned']    }, '$quantity', 0] } },     // ✅
+          wrongReturnCount:    { $sum: { $cond: [{ $eq: ['$status', 'wrongreturn'] }, 1,          0] } },
+          wrongReturnQuantity: { $sum: { $cond: [{ $eq: ['$status', 'wrongreturn'] }, '$quantity', 0] } },     // ✅
+          RTOCount:            { $sum: { $cond: [{ $eq: ['$status', 'RTO']         }, 1,          0] } },
+          RTOQuantity:         { $sum: { $cond: [{ $eq: ['$status', 'RTO']         }, '$quantity', 0] } },     // ✅
+          cancelledCount:      { $sum: { $cond: [{ $eq: ['$status', 'cancelled']   }, 1,          0] } },
+          cancelledQuantity:   { $sum: { $cond: [{ $eq: ['$status', 'cancelled']   }, '$quantity', 0] } }      // ✅
         }
       },
       {
         $addFields: {
+          // ── Order-count based rates (kept for backward compat) ──
           returnRate: {
-            $round: [{
-              $cond: [
-                { $gt: ['$totalOrders', 0] },
-                {
-                  $multiply: [
-                    { $divide: [{ $add: ['$returnedCount', '$wrongReturnCount'] }, '$totalOrders'] },
-                    100
-                  ]
-                },
-                0
-              ]
-            }, 2]
+            $round: [{ $cond: [
+              { $gt: ['$totalOrders', 0] },
+              { $multiply: [{ $divide: [{ $add: ['$returnedCount', '$wrongReturnCount'] }, '$totalOrders'] }, 100] },
+              0
+            ]}, 2]
           },
           rtoRate: {
-            $round: [{
-              $cond: [
-                { $gt: ['$totalOrders', 0] },
-                { $multiply: [{ $divide: ['$RTOCount', '$totalOrders'] }, 100] },
-                0
-              ]
-            }, 2]
+            $round: [{ $cond: [
+              { $gt: ['$totalOrders', 0] },
+              { $multiply: [{ $divide: ['$RTOCount', '$totalOrders'] }, 100] },
+              0
+            ]}, 2]
           },
           wrongReturnRate: {
-            $round: [{
-              $cond: [
-                { $gt: ['$totalOrders', 0] },
-                { $multiply: [{ $divide: ['$wrongReturnCount', '$totalOrders'] }, 100] },
-                0
-              ]
-            }, 2]
+            $round: [{ $cond: [
+              { $gt: ['$totalOrders', 0] },
+              { $multiply: [{ $divide: ['$wrongReturnCount', '$totalOrders'] }, 100] },
+              0
+            ]}, 2]
           },
           totalIssueRate: {
-            $round: [{
-              $cond: [
-                { $gt: ['$totalOrders', 0] },
-                {
-                  $multiply: [
-                    {
-                      $divide: [
-                        { $add: ['$returnedCount', '$wrongReturnCount', '$RTOCount', '$cancelledCount'] },
-                        '$totalOrders'
-                      ]
-                    },
-                    100
-                  ]
-                },
-                0
-              ]
-            }, 2]
+            $round: [{ $cond: [
+              { $gt: ['$totalOrders', 0] },
+              { $multiply: [{ $divide: [{ $add: ['$returnedCount', '$wrongReturnCount', '$RTOCount', '$cancelledCount'] }, '$totalOrders'] }, 100] },
+              0
+            ]}, 2]
+          },
+
+          // ── ✅ Quantity-based rates (accurate when 1 order has qty > 1) ──
+          returnRateByQty: {
+            $round: [{ $cond: [
+              { $gt: ['$totalQuantity', 0] },
+              { $multiply: [{ $divide: [{ $add: ['$returnedQuantity', '$wrongReturnQuantity'] }, '$totalQuantity'] }, 100] },
+              0
+            ]}, 2]
+          },
+          rtoRateByQty: {
+            $round: [{ $cond: [
+              { $gt: ['$totalQuantity', 0] },
+              { $multiply: [{ $divide: ['$RTOQuantity', '$totalQuantity'] }, 100] },
+              0
+            ]}, 2]
+          },
+          wrongReturnRateByQty: {
+            $round: [{ $cond: [
+              { $gt: ['$totalQuantity', 0] },
+              { $multiply: [{ $divide: ['$wrongReturnQuantity', '$totalQuantity'] }, 100] },
+              0
+            ]}, 2]
+          },
+          totalIssueRateByQty: {
+            $round: [{ $cond: [
+              { $gt: ['$totalQuantity', 0] },
+              { $multiply: [{ $divide: [{ $add: ['$returnedQuantity', '$wrongReturnQuantity', '$RTOQuantity', '$cancelledQuantity'] }, '$totalQuantity'] }, 100] },
+              0
+            ]}, 2]
           }
         }
       },
       {
         $project: {
           _id: 0,
-          design: '$_id.design',
-          color: '$_id.color',
-          size: '$_id.size',
-          // ✅ accountName will be undefined in "All Accounts" mode — frontend already handles this
+          design:      '$_id.design',
+          color:       '$_id.color',
+          size:        '$_id.size',
           accountName: '$_id.accountName',
-          totalOrders: 1,
-          successfulCount: 1,
-          returnedCount: 1,
-          wrongReturnCount: 1,
-          RTOCount: 1,
-          cancelledCount: 1,
-          returnRate: 1,
-          rtoRate: 1,
-          wrongReturnRate: 1,
-          totalIssueRate: 1
+
+          // order counts
+          totalOrders:         1,
+          successfulCount:     1,
+          returnedCount:       1,
+          wrongReturnCount:    1,
+          RTOCount:            1,
+          cancelledCount:      1,
+
+          // ✅ unit quantities
+          totalQuantity:       1,
+          successfulQuantity:  1,
+          returnedQuantity:    1,
+          wrongReturnQuantity: 1,
+          RTOQuantity:         1,
+          cancelledQuantity:   1,
+
+          // order-count based rates (backward compat)
+          returnRate:          1,
+          rtoRate:             1,
+          wrongReturnRate:     1,
+          totalIssueRate:      1,
+
+          // ✅ quantity-based rates (use these for accurate reporting)
+          returnRateByQty:      1,
+          rtoRateByQty:         1,
+          wrongReturnRateByQty: 1,
+          totalIssueRateByQty:  1
         }
       },
-      { $sort: { returnRate: -1 } }
+      { $sort: { returnRateByQty: -1 } }  // ✅ sort by accurate qty-based rate
     ]);
 
     const accounts = await MarketplaceSale.distinct('accountName', {
@@ -1544,87 +1571,101 @@ const getTodayMarketplaceSummary = async (req, res) => {
       },
       {
         $group: {
-          _id: '$accountName',
-          count: { $sum: 1 }
+          _id:      '$accountName',
+          count:    { $sum: 1 },
+          quantity: { $sum: '$quantity' }  // ✅ total units dispatched today
         }
       }
     ]);
 
-    // ✅ Returns today — updatedAt = today, status in return statuses
+    // ✅ Returns today — based on effectiveReturnDate from statusHistory
     const returnStats = await MarketplaceSale.aggregate([
-  {
-    $match: {
-      organizationId: new mongoose.Types.ObjectId(organizationId),
-      deletedAt: null,
-      status: { $in: ['returned', 'RTO', 'wrongreturn'] },
-    },
-  },
-  {
-    // Find the last statusHistory entry that matches the current return status
-    $addFields: {
-      effectiveReturnDate: {
-        $let: {
-          vars: {
-            matchingEntry: {
-              $arrayElemAt: [
-                {
-                  $filter: {
-                    input: { $ifNull: ['$statusHistory', []] },
-                    as:    'h',
-                    cond:  { $eq: ['$$h.newStatus', '$status'] },
-                  },
+      {
+        $match: {
+          organizationId: new mongoose.Types.ObjectId(organizationId),
+          deletedAt: null,
+          status: { $in: ['returned', 'RTO', 'wrongreturn'] },
+        },
+      },
+      {
+        $addFields: {
+          effectiveReturnDate: {
+            $let: {
+              vars: {
+                matchingEntry: {
+                  $arrayElemAt: [
+                    {
+                      $filter: {
+                        input: { $ifNull: ['$statusHistory', []] },
+                        as:    'h',
+                        cond:  { $eq: ['$$h.newStatus', '$status'] },
+                      },
+                    },
+                    -1,
+                  ],
                 },
-                -1,  // last matching entry
-              ],
+              },
+              in: {
+                $ifNull: ['$$matchingEntry.changedAt', '$updatedAt'],
+              },
             },
-          },
-          in: {
-            // Use changedAt if found, else fall back to updatedAt
-            $ifNull: ['$$matchingEntry.changedAt', '$updatedAt'],
           },
         },
       },
-    },
-  },
-  {
-    // Now filter by effectiveReturnDate = today
-    $match: {
-      effectiveReturnDate: { $gte: start, $lte: end },
-    },
-  },
-  {
-    $group: {
-      _id: { accountName: '$accountName', status: '$status' },
-      count: { $sum: 1 },
-    },
-  },
-]);
+      {
+        $match: {
+          effectiveReturnDate: { $gte: start, $lte: end },
+        },
+      },
+      {
+        $group: {
+          _id:      { accountName: '$accountName', status: '$status' },
+          count:    { $sum: 1 },
+          quantity: { $sum: '$quantity' },  // ✅ total units returned/RTO/wrongReturn today
+        },
+      },
+    ]);
 
     // Build per-account map
     const accountMap = {};
 
     dispatchedStats.forEach(a => {
       const acc = a._id || 'Unknown';
-      if (!accountMap[acc]) accountMap[acc] = { dispatched: 0, returned: 0, rto: 0, wrongReturn: 0 };
-      accountMap[acc].dispatched = a.count;
+      if (!accountMap[acc]) accountMap[acc] = {
+        dispatched: 0, dispatchedQty: 0,
+        returned:   0, returnedQty:   0,
+        rto:        0, rtoQty:        0,
+        wrongReturn:0, wrongReturnQty: 0
+      };
+      accountMap[acc].dispatched    = a.count;
+      accountMap[acc].dispatchedQty = a.quantity;  // ✅
     });
 
     returnStats.forEach(a => {
       const acc    = a._id.accountName || 'Unknown';
       const status = a._id.status;
-      if (!accountMap[acc]) accountMap[acc] = { dispatched: 0, returned: 0, rto: 0, wrongReturn: 0 };
-      if (status === 'returned')    accountMap[acc].returned    = a.count;
-      if (status === 'RTO')         accountMap[acc].rto         = a.count;
-      if (status === 'wrongreturn') accountMap[acc].wrongReturn = a.count;
+      if (!accountMap[acc]) accountMap[acc] = {
+        dispatched: 0, dispatchedQty: 0,
+        returned:   0, returnedQty:   0,
+        rto:        0, rtoQty:        0,
+        wrongReturn:0, wrongReturnQty: 0
+      };
+      if (status === 'returned')    { accountMap[acc].returned      = a.count; accountMap[acc].returnedQty    = a.quantity; }  // ✅
+      if (status === 'RTO')         { accountMap[acc].rto           = a.count; accountMap[acc].rtoQty         = a.quantity; }  // ✅
+      if (status === 'wrongreturn') { accountMap[acc].wrongReturn   = a.count; accountMap[acc].wrongReturnQty = a.quantity; }  // ✅
     });
 
-    // Overall totals
+    // Overall totals — both order count AND unit quantity
     const totals = Object.values(accountMap).reduce((acc, a) => ({
-      dispatched:  acc.dispatched  + a.dispatched,
-      returned:    acc.returned    + a.returned,
-      rto:         acc.rto         + a.rto,
-      wrongReturn: acc.wrongReturn + a.wrongReturn,
-    }), { dispatched: 0, returned: 0, rto: 0, wrongReturn: 0 });
+      dispatched:     acc.dispatched     + a.dispatched,
+      dispatchedQty:  acc.dispatchedQty  + a.dispatchedQty,   // ✅
+      returned:       acc.returned       + a.returned,
+      returnedQty:    acc.returnedQty    + a.returnedQty,     // ✅
+      rto:            acc.rto            + a.rto,
+      rtoQty:         acc.rtoQty         + a.rtoQty,          // ✅
+      wrongReturn:    acc.wrongReturn    + a.wrongReturn,
+      wrongReturnQty: acc.wrongReturnQty + a.wrongReturnQty,  // ✅
+    }), { dispatched: 0, dispatchedQty: 0, returned: 0, returnedQty: 0, rto: 0, rtoQty: 0, wrongReturn: 0, wrongReturnQty: 0 });
 
     res.json({
       success: true,

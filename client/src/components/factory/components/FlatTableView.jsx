@@ -1,7 +1,7 @@
 import { format, parseISO } from 'date-fns';
 import { useColorPalette } from '../../../hooks/useColorPalette';
 
-const FlatTableView = ({ data, enabledSizes, dateFrom, dateTo }) => {
+const FlatTableView = ({ data, getSizesForDesign, dateFrom, dateTo }) => {
   const { getColorCode } = useColorPalette();
 
   // Group all receivings by design, then merge same colors
@@ -10,11 +10,13 @@ const FlatTableView = ({ data, enabledSizes, dateFrom, dateTo }) => {
 
     data.forEach((dateGroup) => {
       dateGroup.designs.forEach((design) => {
+        const designSizes = getSizesForDesign(design.design);
         if (!designMap[design.design]) {
           designMap[design.design] = {
             design: design.design,
             colorMap: {}, // Use a map to merge same colors
             totalQuantity: 0,
+            sizes: designSizes, // Store enabled sizes for this design
           };
         }
 
@@ -33,7 +35,7 @@ const FlatTableView = ({ data, enabledSizes, dateFrom, dateTo }) => {
           const colorEntry = designMap[design.design].colorMap[colorName];
 
           // Merge quantities for each size
-          enabledSizes.forEach((size) => {
+          designSizes.forEach((size) => {
             if (!colorEntry.quantities[size]) {
               colorEntry.quantities[size] = 0;
             }
@@ -51,11 +53,8 @@ const FlatTableView = ({ data, enabledSizes, dateFrom, dateTo }) => {
     // Convert map to array and format
     return Object.values(designMap).map((designGroup) => ({
       design: designGroup.design,
-      colors: Object.values(designGroup.colorMap).map((color) => ({
-        color: color.color,
-        quantities: color.quantities,
-        totalQuantity: color.totalQuantity,
-      })),
+      sizes: designGroup.sizes,         
+      colors: Object.values(designGroup.colorMap),
       totalQuantity: designGroup.totalQuantity,
     }));
   };
@@ -131,7 +130,7 @@ const FlatTableView = ({ data, enabledSizes, dateFrom, dateTo }) => {
                     <th className="px-3 py-2 text-center text-xs font-semibold text-gray-600 uppercase w-16">
                       Color
                     </th>
-                    {enabledSizes.map((size) => (
+                    {designGroup.sizes.map((size) => (
                       <th
                         key={size}
                         className="px-3 py-2 text-center text-xs font-semibold text-gray-600 uppercase"
@@ -158,7 +157,7 @@ const FlatTableView = ({ data, enabledSizes, dateFrom, dateTo }) => {
                             />
                           </div>
                         </td>
-                        {enabledSizes.map((size) => {
+                        {designGroup.sizes.map((size) => {
                           const qty = colorData.quantities[size] || 0;
                           return (
                             <td key={size} className="px-3 py-3 text-center">
