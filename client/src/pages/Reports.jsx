@@ -1026,27 +1026,76 @@ function ReturnTypeReport({ filters={}, status, title, icon }) {
   );
 }
 
-function BestDesigns({ filters={} }) {
-  const { startDate=null, endDate=null } = filters;
+function BestDesigns({ filters, channel = 'wholesale' }) {
+  const { startDate = null, endDate = null } = filters;
   const { getColorCode } = useColorPalette();
   const { sizes, getSizesForDesign } = useEnabledSizes();
   const [allOrders, setAllOrders] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedDesign, setSelectedDesign] = useState('all');
 
-  // Load ALL wholesale orders (no date filter on API)
+  // Load orders based on channel
   useEffect(() => {
     setLoading(true);
-    const qs = new URLSearchParams({ limit: 99999 });
     
-    wholesaleService.getAllOrders(qs.toString())
-      .then(res => {
-        const orders = res?.data?.orders || res?.orders || res?.data || [];
-        setAllOrders(orders);
-      })
-      .catch(e => console.error('[BestDesigns] Error loading orders:', e))
-      .finally(() => setLoading(false));
-  }, []); // Only load once
+    if (channel === 'wholesale') {
+      // Load wholesale orders
+      const qs = new URLSearchParams({ limit: 99999 });
+      wholesaleService.getAllOrders(qs.toString())
+        .then(res => {
+          const orders = res?.data?.orders || res?.orders || res?.data || [];
+          setAllOrders(orders);
+        })
+        .catch(e => console.error('[BestDesigns-Wholesale] Error loading orders:', e))
+        .finally(() => setLoading(false));
+        
+    } else if (channel === 'marketplace') {
+      // Load marketplace sales
+      salesService.getAllSales('all', 'all', null, null, 1, 99999)
+        .then(res => {
+          const items = res?.data?.data || res?.data || res?.orders || [];
+          // Transform marketplace sales to order-like structure
+          const orderLikeData = items.map(sale => ({
+            orderDate: sale.saleDate || sale.createdAt,
+            createdAt: sale.createdAt,
+            items: [{
+              design: sale.design,
+              color: sale.color,
+              size: sale.size,
+              quantity: sale.quantity || 1,
+              pricePerUnit: 0, // Marketplace doesn't have price per unit
+              rate: 0
+            }]
+          }));
+          setAllOrders(orderLikeData);
+        })
+        .catch(e => console.error('[BestDesigns-Marketplace] Error loading sales:', e))
+        .finally(() => setLoading(false));
+        
+    } else if (channel === 'direct') {
+      // Load direct sales
+      directSalesService.getAllDirectSales()
+        .then(res => {
+          let sales = Array.isArray(res) ? res : (res?.data || res?.sales || []);
+          // Transform direct sales to order-like structure
+          const orderLikeData = sales.map(sale => ({
+            orderDate: sale.saleDate || sale.createdAt,
+            createdAt: sale.createdAt,
+            items: (sale.items || []).map(item => ({
+              design: item.design,
+              color: item.color,
+              size: item.size,
+              quantity: item.quantity || 1,
+              pricePerUnit: item.price || item.rate || 0,
+              rate: item.price || item.rate || 0
+            }))
+          }));
+          setAllOrders(orderLikeData);
+        })
+        .catch(e => console.error('[BestDesigns-Direct] Error loading sales:', e))
+        .finally(() => setLoading(false));
+    }
+  }, [channel]); // Only reload when channel changes
 
   // Filter orders respecting date filters
   const filteredOrders = useMemo(() => {
@@ -1144,9 +1193,12 @@ function BestDesigns({ filters={} }) {
   const totalQty = filteredMatrixItems.reduce((sum, item) => sum + item.quantity, 0);
   const totalRevenue = designStats.reduce((sum, d) => sum + d.totalRevenue, 0);
 
+  // Get channel name for display
+  const channelName = channel.charAt(0).toUpperCase() + channel.slice(1);
+
   function handleCSV() {
     const rows = [
-      ['Best Selling Designs - Wholesale'],
+      [`Best Selling Designs - ${channelName}`],
       [`Total Designs: ${designStats.length}`, `Total Units: ${totalQty}`, `Total Revenue: ${totalRevenue}`],
       [],
       ['=== SALES MATRIX ==='],
@@ -1175,7 +1227,7 @@ function BestDesigns({ filters={} }) {
       ]);
     });
     
-    downloadCSV(`best-designs-wholesale-${Date.now()}.csv`, rows);
+    downloadCSV(`best-designs-${channel}-${Date.now()}.csv`, rows);
   }
 
   if (loading) return <Spinner />;
@@ -1183,15 +1235,15 @@ function BestDesigns({ filters={} }) {
   return (
     <div className="rp-animate">
       {filteredOrders.length === 0 ? (
-        <Empty msg="No design data available for selected period" />
+        <Empty msg={`No design data available for selected period in ${channelName}`} />
       ) : (
         <>
           {/* Matrix Section */}
-          <div className="rp-section-card" style={{ marginBottom:16 }}>
+          <div className="rp-section-card" style={{ marginBottom: 16 }}>
             <div className="rp-section-header">
               <span className="rp-section-title">📊 Sales Matrix</span>
-              <div style={{ display:'flex', gap:16, alignItems:'center' }}>
-                <span style={{ fontSize:14, fontWeight:700, color:'#0f766e' }}>
+              <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: '#0f766e' }}>
                   Total Units: {fmt(totalQty)}
                 </span>
                 {designStats.length > 0 && (
@@ -1199,22 +1251,22 @@ function BestDesigns({ filters={} }) {
                 )}
               </div>
             </div>
-            <div style={{ padding:16 }}>
+            <div style={{ padding: 16 }}>
               {/* Design Selector */}
-              <div style={{ marginBottom:16 }}>
-                <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button 
                     onClick={() => setSelectedDesign('all')}
                     style={{
-                      padding:'6px 14px', 
-                      borderRadius:8,
-                      border:`2px solid ${selectedDesign==='all'?'#0f766e':'#e2e8f0'}`,
-                      background: selectedDesign==='all'?'#f0fdf4':'#fff',
-                      cursor:'pointer', 
-                      fontSize:12, 
-                      fontWeight:600,
-                      color: selectedDesign==='all'?'#0f766e':'#374151',
-                      transition:'all 0.15s'
+                      padding: '6px 14px', 
+                      borderRadius: 8,
+                      border: `2px solid ${selectedDesign === 'all' ? '#0f766e' : '#e2e8f0'}`,
+                      background: selectedDesign === 'all' ? '#f0fdf4' : '#fff',
+                      cursor: 'pointer', 
+                      fontSize: 12, 
+                      fontWeight: 600,
+                      color: selectedDesign === 'all' ? '#0f766e' : '#374151',
+                      transition: 'all 0.15s'
                     }}
                   >
                     All Designs ({allDesigns.length})
@@ -1229,21 +1281,21 @@ function BestDesigns({ filters={} }) {
                         key={design}
                         onClick={() => setSelectedDesign(design)}
                         style={{
-                          padding:'6px 14px', 
-                          borderRadius:8,
-                          border:`2px solid ${selectedDesign===design?'#0f766e':'#e2e8f0'}`,
-                          background: selectedDesign===design?'#f0fdf4':'#fff',
-                          cursor:'pointer', 
-                          fontSize:12, 
-                          fontWeight:600,
-                          color: selectedDesign===design?'#0f766e':'#374151',
-                          display:'flex', 
-                          alignItems:'center', 
-                          gap:6,
-                          transition:'all 0.15s'
+                          padding: '6px 14px', 
+                          borderRadius: 8,
+                          border: `2px solid ${selectedDesign === design ? '#0f766e' : '#e2e8f0'}`,
+                          background: selectedDesign === design ? '#f0fdf4' : '#fff',
+                          cursor: 'pointer', 
+                          fontSize: 12, 
+                          fontWeight: 600,
+                          color: selectedDesign === design ? '#0f766e' : '#374151',
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: 6,
+                          transition: 'all 0.15s'
                         }}
                       >
-                        {design} <span style={{ color:'#6b7280', fontWeight:400 }}>({fmt(designQty)})</span>
+                        {design} <span style={{ color: '#6b7280', fontWeight: 400 }}>({fmt(designQty)})</span>
                       </button>
                     );
                   })}
@@ -1269,29 +1321,29 @@ function BestDesigns({ filters={} }) {
             </div>
             
             {/* Summary Stats */}
-            <div style={{ padding:'10px 18px', background:'#f0fdf4', borderBottom:'1px solid #bbf7d0', display:'flex', gap:24, flexWrap:'wrap' }}>
-              <span style={{ fontSize:13, color:'#0f766e', fontWeight:600 }}>
-                Total Designs: <span style={{ fontSize:16, fontWeight:800 }}>{designStats.length}</span>
+            <div style={{ padding: '10px 18px', background: '#f0fdf4', borderBottom: '1px solid #bbf7d0', display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: '#0f766e', fontWeight: 600 }}>
+                Total Designs: <span style={{ fontSize: 16, fontWeight: 800 }}>{designStats.length}</span>
               </span>
-              <span style={{ fontSize:13, color:'#0f766e', fontWeight:600 }}>
-                Total Units: <span style={{ fontSize:16, fontWeight:800 }}>{fmt(totalQty)}</span>
+              <span style={{ fontSize: 13, color: '#0f766e', fontWeight: 600 }}>
+                Total Units: <span style={{ fontSize: 16, fontWeight: 800 }}>{fmt(totalQty)}</span>
               </span>
-              <span style={{ fontSize:13, color:'#0f766e', fontWeight:600 }}>
-                Total Revenue: <span style={{ fontSize:16, fontWeight:800 }}>{fmtCur(totalRevenue)}</span>
+              <span style={{ fontSize: 13, color: '#0f766e', fontWeight: 600 }}>
+                Total Revenue: <span style={{ fontSize: 16, fontWeight: 800 }}>{fmtCur(totalRevenue)}</span>
               </span>
             </div>
 
             {/* Design Stats Table */}
-            <div style={{ overflowX:'auto' }}>
-              <table className="rp-table" style={{ width:'100%' }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="rp-table" style={{ width: '100%' }}>
                 <thead>
                   <tr>
-                    <th style={{ width:60 }}>Rank</th>
-                    <th style={{ minWidth:120 }}>Design</th>
-                    <th className="rp-num" style={{ minWidth:80 }}>Total Qty</th>
-                    <th className="rp-num" style={{ minWidth:100 }}>Revenue</th>
-                    <th className="rp-num" style={{ minWidth:90 }}>Avg Price</th>
-                    <th style={{ minWidth:120 }}>% of Total</th>
+                    <th style={{ width: 60 }}>Rank</th>
+                    <th style={{ minWidth: 120 }}>Design</th>
+                    <th className="rp-num" style={{ minWidth: 80 }}>Total Qty</th>
+                    <th className="rp-num" style={{ minWidth: 100 }}>Revenue</th>
+                    <th className="rp-num" style={{ minWidth: 90 }}>Avg Price</th>
+                    <th style={{ minWidth: 120 }}>% of Total</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1301,30 +1353,30 @@ function BestDesigns({ filters={} }) {
                     
                     return (
                       <tr key={d.design}>
-                        <td style={{ textAlign:'center', fontWeight:600, color:'#6b7280' }}>
+                        <td style={{ textAlign: 'center', fontWeight: 600, color: '#6b7280' }}>
                           {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}
                         </td>
-                        <td style={{ fontWeight:600, fontSize:14 }}>{d.design}</td>
-                        <td className="rp-num" style={{ fontWeight:700, color:'#0f766e' }}>{fmt(d.totalQty)}</td>
-                        <td className="rp-num" style={{ fontWeight:600 }}>{fmtCur(d.totalRevenue)}</td>
+                        <td style={{ fontWeight: 600, fontSize: 14 }}>{d.design}</td>
+                        <td className="rp-num" style={{ fontWeight: 700, color: '#0f766e' }}>{fmt(d.totalQty)}</td>
+                        <td className="rp-num" style={{ fontWeight: 600 }}>{fmtCur(d.totalRevenue)}</td>
                         <td className="rp-num">{fmtCur(avgPrice)}</td>
                         <td>
-                          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <div style={{ 
-                              flex:1, 
-                              height:8, 
-                              background:'#e2e8f0', 
-                              borderRadius:4, 
-                              overflow:'hidden' 
+                              flex: 1, 
+                              height: 8, 
+                              background: '#e2e8f0', 
+                              borderRadius: 4, 
+                              overflow: 'hidden' 
                             }}>
                               <div style={{ 
-                                width:`${percentage}%`, 
-                                height:'100%', 
-                                background:'linear-gradient(90deg, #10b981, #059669)',
-                                transition:'width 0.3s ease'
+                                width: `${percentage}%`, 
+                                height: '100%', 
+                                background: 'linear-gradient(90deg, #10b981, #059669)',
+                                transition: 'width 0.3s ease'
                               }} />
                             </div>
-                            <span style={{ fontSize:12, fontWeight:600, color:'#6b7280', minWidth:45 }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: '#6b7280', minWidth: 45 }}>
                               {percentage.toFixed(1)}%
                             </span>
                           </div>
