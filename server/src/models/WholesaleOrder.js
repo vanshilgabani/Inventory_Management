@@ -166,7 +166,7 @@ const wholesaleOrderSchema = new mongoose.Schema({
   },
   fulfillmentType: {
     type: String,
-    enum: ['warehouse', 'factory_direct'],
+    enum: ['warehouse', 'factorydirect'],
     default: 'warehouse'
   },
   paymentHistory: [paymentHistorySchema],

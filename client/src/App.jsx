@@ -35,6 +35,7 @@ import ReceivedFromSupplier from './pages/ReceivedFromSupplier';
 import SupplierSyncLogs from './pages/SupplierSyncLogs';
 import CustomerManagement from './pages/CustomerManagement';
 import ForgotPassword from './pages/ForgotPassword';
+import Reports from './pages/Reports';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -120,7 +121,8 @@ const AppRoutes = () => {
           <Route path="/activity-audit" element={<ActivityAuditPage />} />
           <Route path="my-requests" element={<MyPendingRequests />} />  
           <Route path="/received-from-supplier" element={<ReceivedFromSupplier />} />  
-          <Route path="/sync/supplier-logs" element={<SupplierSyncLogs />} />      
+          <Route path="/sync/supplier-logs" element={<SupplierSyncLogs />} />    
+          <Route path="/reports" element={<Reports />} />  
           
           {/* Admin Routes */}
           <Route path="monthly-bills" element={

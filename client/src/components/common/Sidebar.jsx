@@ -208,17 +208,22 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
           key: 'analytics-wholesale',
           path: '/analytics/wholesale',
           label: 'Wholesale & Direct',
-          badge: 'New',
-          badgeColor: 'from-green-500 to-emerald-500',
         },
         {
           key: 'analytics-marketplace',
           path: '/analytics/marketplace',
           label: 'Marketplace & Inventory',
-          badge: 'New',
-          badgeColor: 'from-blue-500 to-cyan-500',
         },
       ],
+    },
+    {
+      key: 'reports',
+      path: '/reports',
+      icon: FiFileText,
+      label: 'Reports',
+      color: 'text-emerald-500',
+      badge: 'New',
+      badgeColor: 'from-blue-500 to-cyan-500',
     },
   ];
 

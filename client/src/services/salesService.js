@@ -141,6 +141,51 @@ export const salesService = {
     return response.data.data;
   },
 
+  async getMarketplaceSalesMatrix({ accountName = 'all', startDate = null, endDate = null, status = null, design = null }) {
+    const params = {};
+    if (accountName && accountName !== 'all') params.accountName = accountName;
+    if (startDate) params.startDate = startDate;
+    if (endDate) params.endDate = endDate;
+    if (status && status !== 'all') params.status = status;
+    if (design) params.design = design;
+
+    const response = await api.get('/reports/marketplace/sales-matrix', { params });
+    return response.data;
+  },
+
+  async getMarketplaceSalesDetail({ accountName = 'all', startDate = null, endDate = null, status = null, page = 1, limit = 200 }) {
+    const params = { page, limit };
+    if (accountName && accountName !== 'all') params.accountName = accountName;
+    if (startDate) params.startDate = startDate;
+    if (endDate) params.endDate = endDate;
+    if (status && status !== 'all') params.status = status;
+
+    const response = await api.get('/reports/marketplace/sales-detail', { params });
+    return response.data;
+  },
+
+  async exportMarketplaceSalesDetail({ accountName = 'all', startDate = null, endDate = null, status = null }) {
+    const params = {};
+    if (accountName && accountName !== 'all') params.accountName = accountName;
+    if (startDate) params.startDate = startDate;
+    if (endDate) params.endDate = endDate;
+    if (status && status !== 'all') params.status = status;
+
+    const response = await api.get('/reports/marketplace/sales-detail/export', { params });
+    return response.data;
+  },
+
+  async exportMarketplaceSalesMatrix({ accountName = 'all', startDate = null, endDate = null, status = null }) {
+    const params = {};
+    if (accountName && accountName !== 'all') params.accountName = accountName;
+    if (startDate) params.startDate = startDate;
+    if (endDate) params.endDate = endDate;
+    if (status && status !== 'all') params.status = status;
+
+    const response = await api.get('/reports/marketplace/sales-matrix-export', { params });
+    return response.data;
+  },
+
   // ✅ NEW: Get orders grouped by dates
   async getOrdersByDateGroups(accountName = 'all', status = 'all', startDate = null, endDate = null, dateGroups = 3, beforeDate = null) {
     const params = {
