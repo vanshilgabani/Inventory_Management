@@ -1,324 +1,275 @@
-import { FiX, FiCheckCircle, FiPackage, FiCalendar, FiShoppingBag, FiArrowLeft, FiUpload } from 'react-icons/fi';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useState } from 'react';
+import React, { useMemo } from 'react';
+import Modal from '../common/Modal';
+import {
+  FiCheckCircle,
+  FiTruck,
+} from 'react-icons/fi';
+import toast from 'react-hot-toast';
 
-const FinalImportPreviewModal = ({ 
-  isOpen, 
-  onClose, 
-  previewData, 
-  onConfirm, 
+const formatDate = (dateString) => {
+  if (!dateString) return '-';
+  const d = new Date(dateString);
+  if (Number.isNaN(d.getTime())) return dateString;
+  return d.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+};
+
+const FinalImportPreviewModal = ({
+  isOpen,
+  onClose,
+  previewData,
+  onConfirm,
   onBack,
-  isImporting 
+  isImporting,
 }) => {
-  
-  const [showBreakdown, setShowBreakdown] = useState(false);
+  if (!previewData) return null;
 
-  if (!isOpen || !previewData) return null;
+  const {
+    totalUnits = 0,
+    totalOrders = 0,
+    accountName = '',
+    dispatchDate = '',
+    productBreakdown = new Map(),
+    skippedOrders = 0,
+    multiProductOrders = [], // [{orderId,buyerName,city,pinCode,units}]
+  } = previewData;
 
-  const { totalOrders, accountName, dispatchDate, productBreakdown, skippedOrders } = previewData;
+  // Build sorted array for variant table
+  const breakdownArray = useMemo(() => {
+    const raw =
+      typeof productBreakdown.values === 'function'
+        ? Array.from(productBreakdown.values())
+        : Array.isArray(productBreakdown)
+        ? productBreakdown
+        : [];
+    return raw
+      .slice()
+      .sort((a, b) => (b.quantity || 0) - (a.quantity || 0));
+  }, [productBreakdown]);
 
-  // Convert Map to Array for rendering
-  const breakdownArray = productBreakdown instanceof Map 
-    ? Array.from(productBreakdown.values())
-    : [];
-
-  const totalUnits = breakdownArray.reduce((sum, item) => sum + item.quantity, 0);
-
-  // Format date nicely
-  const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-IN', { 
-      day: 'numeric', 
-      month: 'short', 
-      year: 'numeric' 
-    });
-  };
+  const variantCount = breakdownArray.length;
 
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <>
-          {/* Backdrop */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
-            onClick={onClose}
-          >
-            {/* Modal */}
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              transition={{ type: 'spring', duration: 0.5 }}
-              className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Header */}
-              <div className="bg-gradient-to-r from-green-500 to-emerald-500 text-white p-6 relative overflow-hidden">
-                <div className="absolute inset-0 bg-white opacity-10">
-                  <div className="absolute inset-0" style={{
-                    backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)',
-                    backgroundSize: '20px 20px'
-                  }}></div>
-                </div>
-                
-                <div className="relative flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <motion.div
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      transition={{ delay: 0.2, type: 'spring' }}
-                      className="bg-white bg-opacity-20 p-3 rounded-xl backdrop-blur-sm"
-                    >
-                      <FiCheckCircle className="w-7 h-7" />
-                    </motion.div>
-                    <div>
-                      <h2 className="text-2xl font-bold">Ready to Import</h2>
-                      <p className="text-green-100 text-sm mt-1">
-                        All validations passed • Ready to proceed
-                      </p>
-                    </div>
-                  </div>
-                  
-                  <button
-                    onClick={onClose}
-                    className="text-white hover:bg-white hover:bg-opacity-20 p-2 rounded-lg transition-all"
-                  >
-                    <FiX className="w-5 h-5" />
-                  </button>
-                </div>
+    <Modal isOpen={isOpen} onClose={onClose} maxWidth="2xl">
+      <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="rounded-full bg-emerald-50 p-2">
+              <FiCheckCircle className="text-emerald-600" />
+            </div>
+            <div>
+              <h2 className="text-sm sm:text-base font-semibold text-gray-900">
+                Final Import Check – Flipkart Orders
+              </h2>
+              <p className="text-xs text-gray-500">
+                All validations passed • Ready to proceed
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {/* Top stats row */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs sm:text-sm">
+            <div className="rounded-lg bg-emerald-50 px-3 py-2">
+              <div className="text-emerald-700">Units to be imported</div>
+              <div className="mt-1 text-lg font-semibold text-emerald-900">
+                {totalUnits}
               </div>
+            </div>
 
-              {/* Content */}
-              <div className="flex-1 overflow-y-auto p-6">
-                
-                {/* Summary Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                  
-                  {/* Total Orders Card */}
-                  <motion.div
-                    initial={{ scale: 0.8, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    transition={{ delay: 0.1 }}
-                    className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl p-4"
-                  >
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className="bg-blue-500 p-2 rounded-lg">
-                        <FiPackage className="w-5 h-5 text-white" />
-                      </div>
-                      <h3 className="font-semibold text-blue-800">Orders</h3>
-                    </div>
-                    <p className="text-3xl font-bold text-blue-600">{totalOrders}</p>
-                    <p className="text-xs text-blue-600 mt-1">To be imported</p>
-                  </motion.div>
+            <div className="rounded-lg bg-blue-50 px-3 py-2">
+              <div className="text-blue-700">Flipkart Orders</div>
+              <div className="mt-1 text-lg font-semibold text-blue-900">
+                {totalOrders}
+              </div>
+            </div>
 
-                  {/* Total Units Card */}
-                  <motion.div
-                    initial={{ scale: 0.8, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    transition={{ delay: 0.2 }}
-                    className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200 rounded-xl p-4"
-                  >
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className="bg-purple-500 p-2 rounded-lg">
-                        <FiShoppingBag className="w-5 h-5 text-white" />
-                      </div>
-                      <h3 className="font-semibold text-purple-800">Total Units</h3>
-                    </div>
-                    <p className="text-3xl font-bold text-purple-600">{totalUnits}</p>
-                    <p className="text-xs text-purple-600 mt-1">{breakdownArray.length} variants</p>
-                  </motion.div>
+            <div className="rounded-lg bg-gray-50 px-3 py-2">
+              <div className="text-gray-600">Variants</div>
+              <div className="mt-1 text-lg font-semibold text-gray-900">
+                {variantCount}
+              </div>
+            </div>
 
-                  {/* Skipped Card */}
-                  <motion.div
-                    initial={{ scale: 0.8, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    transition={{ delay: 0.3 }}
-                    className="bg-gradient-to-br from-gray-50 to-slate-50 border-2 border-gray-200 rounded-xl p-4"
-                  >
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className="bg-gray-500 p-2 rounded-lg">
-                        <FiPackage className="w-5 h-5 text-white" />
-                      </div>
-                      <h3 className="font-semibold text-gray-800">Skipped</h3>
-                    </div>
-                    <p className="text-3xl font-bold text-gray-600">{skippedOrders || 0}</p>
-                    <p className="text-xs text-gray-600 mt-1">Returns/Cancelled</p>
-                  </motion.div>
-                </div>
+            <div className="rounded-lg bg-amber-50 px-3 py-2">
+              <div className="text-amber-700">Returns / Cancelled</div>
+              <div className="mt-1 text-lg font-semibold text-amber-900">
+                {skippedOrders}
+              </div>
+            </div>
+          </div>
 
-                {/* Import Details */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.4 }}
-                  className="bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl p-5 mb-6"
-                >
-                  <h3 className="font-bold text-green-900 mb-4 flex items-center gap-2">
-                    <FiCheckCircle className="w-5 h-5" />
-                    Import Details
-                  </h3>
-                  
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between p-3 bg-white bg-opacity-60 rounded-lg border border-green-200">
-                      <div className="flex items-center gap-3">
-                        <div className="bg-green-500 p-2 rounded-lg">
-                          <FiShoppingBag className="w-4 h-4 text-white" />
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500 font-medium">Account</p>
-                          <p className="text-sm font-bold text-gray-800">{accountName}</p>
-                        </div>
-                      </div>
-                    </div>
+          {/* Account + dispatch date */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs sm:text-sm">
+            <div>
+              <span className="text-gray-500">Account: </span>
+              <span className="font-medium text-gray-900">
+                {accountName || '-'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1 text-gray-500">
+              <FiTruck className="text-gray-500" />
+              <span>Dispatch Date:</span>
+              <span className="font-medium text-gray-900">
+                {formatDate(dispatchDate)}
+              </span>
+            </div>
+          </div>
 
-                    <div className="flex items-center justify-between p-3 bg-white bg-opacity-60 rounded-lg border border-green-200">
-                      <div className="flex items-center gap-3">
-                        <div className="bg-green-500 p-2 rounded-lg">
-                          <FiCalendar className="w-4 h-4 text-white" />
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500 font-medium">Dispatch Date</p>
-                          <p className="text-sm font-bold text-gray-800">{formatDate(dispatchDate)}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </motion.div>
+          {/* Units by Variant */}
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <div className="px-4 py-2.5 bg-gray-50 border-b flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-gray-800 text-sm">
+                  Units by Variant
+                </span>
+                <span className="text-xs text-gray-500">
+                  {variantCount}{' '}
+                  {variantCount === 1 ? 'variant' : 'variants'}
+                </span>
+              </div>
+            </div>
 
-                {/* Product Breakdown */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.5 }}
-                  className="bg-white border-2 border-gray-200 rounded-xl overflow-hidden"
-                >
-                  <button
-                    onClick={() => setShowBreakdown(!showBreakdown)}
-                    className="w-full p-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="bg-indigo-500 p-2 rounded-lg">
-                        <FiPackage className="w-5 h-5 text-white" />
-                      </div>
-                      <div className="text-left">
-                        <h3 className="font-bold text-gray-800">Product Breakdown</h3>
-                        <p className="text-xs text-gray-500">{breakdownArray.length} variants • Click to {showBreakdown ? 'hide' : 'view'}</p>
-                      </div>
-                    </div>
-                    <motion.div
-                      animate={{ rotate: showBreakdown ? 180 : 0 }}
-                      transition={{ duration: 0.3 }}
-                    >
-                      <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                      </svg>
-                    </motion.div>
-                  </button>
-
-                  <AnimatePresence>
-                    {showBreakdown && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.3 }}
-                        className="border-t-2 border-gray-200"
+            {variantCount === 0 ? (
+              <div className="px-4 py-6 text-xs text-gray-500">
+                No variants detected. Check your CSV or go back to mapping.
+              </div>
+            ) : (
+              <div className="max-h-64 overflow-y-auto">
+                <table className="w-full text-xs sm:text-sm">
+                  <thead className="bg-gray-100 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">
+                        Color • Size
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium text-gray-600">
+                        Units
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium text-gray-600">
+                        Orders
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {breakdownArray.map((item) => (
+                      <tr
+                        key={`${item.color}-${item.size}`}
+                        className="border-t hover:bg-gray-50"
                       >
-                        <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
-                          {breakdownArray.map((item, index) => (
-                            <motion.div
-                              key={`${item.design}-${item.color}-${item.size}`}
-                              initial={{ opacity: 0, x: -20 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              transition={{ delay: index * 0.05 }}
-                              className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
-                            >
-                              <div className="flex items-center gap-3">
-                                <div className="bg-indigo-100 px-2 py-1 rounded">
-                                  <span className="text-xs font-bold text-indigo-700">{item.design}</span>
-                                </div>
-                                <div>
-                                  <p className="text-sm font-semibold text-gray-800">
-                                    {item.color} • {item.size}
-                                  </p>
-                                  <p className="text-xs text-gray-500">
-                                    {item.orderCount} {item.orderCount === 1 ? 'order' : 'orders'}
-                                  </p>
-                                </div>
-                              </div>
-                              <div className="bg-indigo-500 px-3 py-1 rounded-full">
-                                <span className="text-sm font-bold text-white">{item.quantity} units</span>
-                              </div>
-                            </motion.div>
-                          ))}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </motion.div>
-
-                {/* Success Message */}
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.6 }}
-                  className="mt-6 bg-gradient-to-r from-green-100 to-emerald-100 border-2 border-green-300 rounded-xl p-4"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="bg-green-500 p-2 rounded-full">
-                      <FiCheckCircle className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                      <p className="font-semibold text-green-900">✨ All SKUs Mapped & Validated</p>
-                      <p className="text-sm text-green-700 mt-0.5">
-                        Inventory will be updated automatically after import
-                      </p>
-                    </div>
-                  </div>
-                </motion.div>
+                        <td className="px-3 py-2">
+                          <span className="text-gray-800">
+                            {item.color || '-'}
+                          </span>
+                          <span className="text-gray-500">
+                            {' '}
+                            • {item.size || '-'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right font-medium">
+                          {item.quantity || 0}
+                        </td>
+                        <td className="px-3 py-2 text-right text-gray-700">
+                          {item.orderCount || 0}{' '}
+                          <span className="text-[11px] text-gray-500">
+                            {item.orderCount === 1 ? 'order' : 'orders'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+            )}
 
-              {/* Footer Actions */}
-              <div className="bg-gray-50 px-6 py-4 flex items-center justify-between border-t">
-                <button
-                  onClick={onBack}
-                  disabled={isImporting}
-                  className="flex items-center gap-2 px-6 py-2.5 text-gray-600 font-medium rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <FiArrowLeft className="w-4 h-4" />
-                  Back to Mappings
-                </button>
+            <div className="px-4 py-2.5 bg-gray-50 border-t text-[11px] text-gray-500 flex items-center justify-between">
+              <span>✨ All SKUs mapped & validated</span>
+              <span>Inventory will be updated after import.</span>
+            </div>
+          </div>
 
-                <button
-                  onClick={onConfirm}
-                  disabled={isImporting}
-                  className="group relative px-10 py-3 bg-gradient-to-r from-green-500 to-emerald-500 text-white font-bold rounded-xl hover:from-green-600 hover:to-emerald-600 transition-all shadow-xl hover:shadow-2xl transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center gap-3 overflow-hidden"
-                >
-                  {/* Animated background shine */}
-                  <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-0 group-hover:opacity-30 transform -skew-x-12 group-hover:translate-x-full transition-all duration-1000"></span>
-                  
-                  {isImporting ? (
-                    <>
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                      <span>Importing...</span>
-                    </>
-                  ) : (
-                    <>
-                      <FiUpload className="w-5 h-5 group-hover:translate-y-[-2px] transition-transform" />
-                      <span>Confirm & Import</span>
-                    </>
+          {/* Multi-product orders section */}
+          {multiProductOrders.length > 0 && (
+            <details className="border border-blue-100 rounded-xl overflow-hidden">
+              <summary className="px-4 py-2.5 bg-blue-50 cursor-pointer hover:bg-blue-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-blue-900">
+                    Multi-product Flipkart orders
+                  </span>
+                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                    {multiProductOrders.length} orders
+                  </span>
+                </div>
+                <span className="text-[11px] text-blue-800">
+                  Click to view order IDs, buyers, cities
+                </span>
+              </summary>
+
+              <div className="px-4 pb-3 pt-1 text-xs">
+                <div className="max-h-40 overflow-y-auto space-y-1.5">
+                  {multiProductOrders.slice(0, 20).map((o) => (
+                    <div
+                      key={o.orderId}
+                      className="flex items-center justify-between rounded-md bg-white px-2 py-1 border border-blue-100"
+                    >
+                      <div className="flex flex-col">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(o.orderId);
+                            toast.success('Order ID copied');
+                          }}
+                          className="font-mono text-[11px] text-blue-700 hover:underline text-left"
+                        >
+                          {o.orderId}
+                        </button>
+                        <span className="text-[11px] text-gray-600">
+                          Buyer: {o.buyerName || '-'}
+                          {o.city ? ` • ${o.city}` : ''}
+                          {o.pinCode ? ` • ${o.pinCode}` : ''}
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-semibold text-blue-700">
+                        {o.units} units
+                      </span>
+                    </div>
+                  ))}
+                  {multiProductOrders.length > 20 && (
+                    <div className="text-[11px] text-blue-700">
+                      + {multiProductOrders.length - 20} more…
+                    </div>
                   )}
-                </button>
+                </div>
               </div>
-            </motion.div>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>
+            </details>
+          )}
+        </div>
+
+        {/* Footer buttons */}
+        <div className="px-5 py-3 border-t bg-gray-50 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={onBack}
+            disabled={isImporting}
+            className="px-4 py-1.5 rounded-lg border border-gray-300 text-xs sm:text-sm text-gray-700 bg-white hover:bg-gray-100 disabled:opacity-50"
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isImporting}
+            className="px-4 py-1.5 rounded-lg bg-emerald-600 text-xs sm:text-sm text-white font-semibold hover:bg-emerald-700 disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            {isImporting ? 'Importing…' : 'Import Units'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 };
 

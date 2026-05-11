@@ -281,7 +281,7 @@ const createOrder = async (req, res) => {
     }
 
     // ── SOLUTION A: Stock validation + deduction ─────────────
-    if (fulfillmentType !== 'factory_direct') {
+    if (fulfillmentType !== 'factorydirect') {
 
       // A1: ONE batch query instead of N individual findOne calls
       const uniqueDesigns = [...new Set(items.map((i) => i.design))];
@@ -644,11 +644,12 @@ const sendChallanEmail = async (req, res) => {
   }
 };
 
-// ✅ PERMANENT FIX: Update order with smart stock validation
+// ✅ UPDATED: Update order with main+reserved logic for EDIT
 const updateOrder = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  // ✅ FEATURE 2: Track what changed
+
+  // Track changes for edit history
   const changesBefore = {};
   const changesAfter = {};
   const fieldsToTrack = [
@@ -683,17 +684,20 @@ const updateOrder = async (req, res) => {
 
     const newFulfillmentType = req.body.fulfillmentType || existingOrder.fulfillmentType;
 
-    // ✅ STEP 2: Validate stock ONLY for new items or quantity increases (warehouse only)
-    if (newFulfillmentType === 'warehouse') {
+    // ✅ STEP 2: Validate stock for ADDITIONAL qty, using main+reserved (warehouse only)
+    const diffItems = [];
+
+    if (newFulfillmentType === 'warehouse' && Array.isArray(req.body.items)) {
       for (const newItem of req.body.items) {
         const key = `${newItem.design}-${newItem.color}-${newItem.size}`;
         const oldQuantity = existingItemsMap.get(key) || 0;
         const quantityDifference = newItem.quantity - oldQuantity;
 
-        // Only validate if we need MORE stock than before
+        // Only care about increased quantity
         if (quantityDifference > 0) {
           const product = await Product.findOne({
-            design: newItem.design, organizationId: organizationId
+            design: newItem.design,
+            organizationId,
           }).session(session);
 
           if (!product) {
@@ -705,7 +709,6 @@ const updateOrder = async (req, res) => {
           }
 
           const colorVariant = product.colors.find((c) => c.color === newItem.color);
-
           if (!colorVariant) {
             await session.abortTransaction();
             return res.status(404).json({
@@ -715,7 +718,6 @@ const updateOrder = async (req, res) => {
           }
 
           const sizeIndex = colorVariant.sizes.findIndex((s) => s.size === newItem.size);
-
           if (sizeIndex === -1) {
             await session.abortTransaction();
             return res.status(404).json({
@@ -724,24 +726,64 @@ const updateOrder = async (req, res) => {
             });
           }
 
-          const currentStock = colorVariant.sizes[sizeIndex].currentStock;
+          const sizeVariant = colorVariant.sizes[sizeIndex];
+          const currentStock = sizeVariant.currentStock || 0;
+          const reservedStock = sizeVariant.reservedStock || 0;
 
-          // ✅ KEY FIX: Only check if we have enough for the ADDITIONAL quantity needed
-          if (currentStock < quantityDifference) {
-            await session.abortTransaction();
-            return res.status(400).json({
-              code: 'INSUFFICIENT_STOCK',
-              message: `Insufficient stock for ${newItem.design} ${newItem.color} ${newItem.size}. Available: ${currentStock}, Additional needed: ${quantityDifference}`,
-              product: {
-                design: newItem.design,
-                color: newItem.color,
-                size: newItem.size,
-                available: currentStock,
-                additionalNeeded: quantityDifference,
-              },
-            });
-          }
+          diffItems.push({
+            design: newItem.design,
+            color: newItem.color,
+            size: newItem.size,
+            requestedDiff: quantityDifference,
+            availableMain: Math.min(quantityDifference, Math.max(0, currentStock)),
+            availableReserved: reservedStock,
+          });
         }
+      }
+    }
+
+    if (newFulfillmentType === 'warehouse' && diffItems.length > 0) {
+      const totalRequestedDiff = diffItems.reduce((s, i) => s + i.requestedDiff, 0);
+      const totalAvailableMain = diffItems.reduce((s, i) => s + i.availableMain, 0);
+      const totalShortfall = totalRequestedDiff - totalAvailableMain;
+
+      if (totalShortfall > 0) {
+        const totalAvailableReserved = diffItems.reduce((s, i) => s + i.availableReserved, 0);
+
+        // ❌ Not enough even with reserved → hard fail
+        if (totalAvailableReserved < totalShortfall) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            code: 'INSUFFICIENT_STOCK',
+            message: 'Insufficient stock even after considering reserved.',
+          });
+        }
+
+        // ✅ Enough if we borrow reserved → signal same flow as createOrder
+        const insufficientItems = diffItems
+          .filter((i) => i.requestedDiff > i.availableMain)
+          .map((i) => ({
+            design: i.design,
+            color: i.color,
+            size: i.size,
+            requestedQty: i.requestedDiff,
+            mainStock: i.availableMain,
+            reservedStock: i.availableReserved,
+            neededFromReserved: i.requestedDiff - i.availableMain,
+          }));
+
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          code: 'MAIN_INSUFFICIENT_BORROW_RESERVED',
+          message: 'Main inventory insufficient. Reserved stock borrowing required for edit.',
+          canBorrowFromReserved: true,
+          totalRequested: totalRequestedDiff,
+          totalAvailableMain,
+          totalShortfall,
+          totalAvailableReserved,
+          insufficientItems,
+        });
       }
     }
 
@@ -749,7 +791,8 @@ const updateOrder = async (req, res) => {
     if (existingOrder.fulfillmentType === 'warehouse') {
       for (const oldItem of existingOrder.items) {
         const product = await Product.findOne({
-          design: oldItem.design, organizationId: organizationId
+          design: oldItem.design,
+          organizationId,
         }).session(session);
 
         if (product) {
@@ -771,11 +814,12 @@ const updateOrder = async (req, res) => {
       }
     }
 
-    // ✅ STEP 4: Deduct new stock (if it's warehouse order)
-    if (newFulfillmentType === 'warehouse') {
+    // ✅ STEP 4: Deduct new stock (only for warehouse orders; main-only here)
+    if (newFulfillmentType === 'warehouse' && Array.isArray(req.body.items)) {
       for (const newItem of req.body.items) {
         const product = await Product.findOne({
-          design: newItem.design, organizationId: organizationId,
+          design: newItem.design,
+          organizationId,
         }).session(session);
 
         if (product) {
@@ -800,90 +844,87 @@ const updateOrder = async (req, res) => {
     // ✅ STEP 5: Update buyer's total due
     const buyer = await WholesaleBuyer.findById(existingOrder.buyerId).session(session);
     if (buyer) {
-      buyer.totalDue = (buyer.totalDue || 0) - existingOrder.amountDue + (req.body.amountDue || 0);
+      buyer.totalDue =
+        (buyer.totalDue || 0) -
+        (existingOrder.amountDue || 0) +
+        (req.body.amountDue || 0);
       await buyer.save({ session });
     }
 
-    // ✅ STEP 6: Update order
+    // ✅ STEP 6: Update order + edit history
     Object.assign(existingOrder, req.body);
-    // ✅ FEATURE 2: Track edit history
+
     if (Object.keys(req.body).length > 0) {
-      const changesBefore = {};
-      const changesAfter = {};
-      
       // Track changes to specific fields
-      const fieldsToTrack = [
-        'buyerName', 'buyerContact', 'buyerEmail', 'buyerAddress',
-        'businessName', 'gstNumber', 'deliveryDate', 'notes',
-        'discountType', 'discountValue', 'amountPaid', 'paymentMethod'
-      ];
-      
-      fieldsToTrack.forEach(field => {
+      fieldsToTrack.forEach((field) => {
         if (req.body[field] !== undefined && req.body[field] !== existingOrder[field]) {
           changesBefore[field] = existingOrder[field];
           changesAfter[field] = req.body[field];
         }
       });
-      
+
       // Track item changes
       if (req.body.items) {
         changesBefore.items = existingOrder.items;
         changesAfter.items = req.body.items;
       }
-      
+
       // Add edit history entry if there are changes
       if (Object.keys(changesBefore).length > 0) {
         existingOrder.editHistory.push({
           editedBy: {
             userId: req.user._id,
             userName: req.user.name || req.user.email,
-            userRole: req.user.role
+            userRole: req.user.role,
           },
           editedAt: new Date(),
           changes: {
             before: changesBefore,
-            after: changesAfter
-          }
+            after: changesAfter,
+          },
         });
       }
     }
+
     await existingOrder.save({ session });
 
     await session.commitTransaction();
 
-// ✅ NEW: Sync edit to customer if order was previously synced (within 24hrs)
-try {
-  const syncResult = await supplierSyncController.syncOrderEdit(
-    id,
-    req.user.organizationId,
-    req.body // Changes made
-  );
-  
-  if (syncResult.synced) {
-    logger.info('✅ Order edit synced to customer', {
-      orderId: id,
-      itemsCount: syncResult.itemsCount
-    });
-  } else {
-    logger.info('ℹ️ Edit not synced:', syncResult.reason);
-  }
-} catch (syncError) {
-  logger.warn('⚠️ Edit sync failed (non-critical):', {
-    orderId: id,
-    error: syncError.message
-  });
-}
+    // ✅ Sync edit to customer (non-critical)
+    try {
+      const syncResult = await supplierSyncController.syncOrderEdit(
+        id,
+        req.user.organizationId,
+        req.body
+      );
+      if (syncResult.synced) {
+        logger.info('✅ Order edit synced to customer', {
+          orderId: id,
+          itemsCount: syncResult.itemsCount,
+        });
+      } else {
+        logger.info('ℹ️ Edit not synced:', syncResult.reason);
+      }
+    } catch (syncError) {
+      logger.warn('⚠️ Edit sync failed (non-critical):', {
+        orderId: id,
+        error: syncError.message,
+      });
+    }
 
     logger.info('Order updated successfully', {
       orderId: id,
       fulfillmentType: newFulfillmentType,
-      itemsCount: req.body.items.length,
+      itemsCount: req.body.items?.length || existingOrder.items.length,
     });
 
     res.json(existingOrder);
   } catch (error) {
     await session.abortTransaction();
-    logger.error('Order update failed', { error: error.message, orderId: req.params.id });
+    logger.error('Order update failed', {
+      error: error.message,
+      orderId: req.params.id,
+    });
     res.status(500).json({
       code: 'UPDATE_FAILED',
       message: 'Failed to update order',
@@ -954,7 +995,7 @@ const deleteOrder = async (req, res) => {
     }
 
     // STEP 1: Restore stock to MAIN inventory
-    if (order.fulfillmentType !== 'factory-direct') {
+    if (order.fulfillmentType !== 'factorydirect') {
       for (const item of order.items) {
         const product = await Product.findOne({
           design: item.design,
@@ -1024,14 +1065,14 @@ const deleteOrder = async (req, res) => {
     logger.info('Order soft deleted successfully', {
       orderId: id,
       deletedBy: name || email,
-      stockRestored: order.fulfillmentType !== 'factory-direct',
+      stockRestored: order.fulfillmentType !== 'factorydirect',
       syncedToCustomer: order.syncedToCustomer || false
     });
 
     res.json({
       success: true,
       message: 'Order deleted successfully',
-      stockRestored: order.fulfillmentType !== 'factory-direct',
+      stockRestored: order.fulfillmentType !== 'factorydirect',
       syncedToCustomer: order.syncedToCustomer || false
     });
 

@@ -187,27 +187,31 @@ const getVariantStats = (color, size) => {
     return <FiCheckCircle className="text-green-500" />;
   };
 
-  // Validate all allocations
-  const validateAllocations = () => {
-    const newErrors = {};
-    let hasError = false;
+  // Validate all allocations - FIXED
+const validateAllocations = () => {
+  const newErrors = {};
+  let hasError = false;
 
-    product.colors?.forEach(colorData => {
+  product.colors?.forEach(colorData => {
     colorData.sizes
       ?.filter(sizeData => getSizesForDesign(product?.design).includes(sizeData.size))
       .forEach(sizeData => {
         const key = `${colorData.color}-${sizeData.size}`;
+        const stats = getVariantStats(colorData.color, sizeData.size);
 
+        // stats.totalAfterAdd = currentAllocated + adding
+        // stats.reservedTotal = sizeData.reservedStock
         if (!stats.isValid) {
-          newErrors[key] = `Over-allocated by ${stats.allocated - stats.reservedTotal} units`;
+          const overBy = stats.totalAfterAdd - stats.reservedTotal;
+          newErrors[key] = `Over-allocated by ${overBy} units`;
           hasError = true;
         }
       });
-    });
+  });
 
-    setErrors(newErrors);
-    return !hasError;
-  };
+  setErrors(newErrors);
+  return !hasError;
+};
 
 // Handle submit - UPDATED FOR ADD MODE
 const handleSubmit = async () => {

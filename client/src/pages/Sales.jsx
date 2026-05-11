@@ -255,6 +255,48 @@ const formatDateLabel = (dateString) => {
   }).filter(Boolean);
 }, [dateSummaries, loadedOrders, filteredOrders, searchType, activeTab, statusFilter]);
 
+// 🔢 Derive Flipkart order stats from parsed preview rows
+const importOrderStats = useMemo(() => {
+  if (!importPreview || !importPreview.success) {
+    return { totalUnits: 0, totalOrders: 0, multiItemOrders: [] };
+  }
+
+  const rows = importPreview.success;
+
+  // Total units = sum of quantity
+  const totalUnits = rows.reduce(
+    (sum, row) => sum + Number(row.quantity || 0),
+    0
+  );
+
+  // Group by Order ID
+  const orderMap = new Map();
+
+  for (const row of rows) {
+    const orderId = row.orderId;
+    if (!orderId) continue;
+
+    if (!orderMap.has(orderId)) {
+      orderMap.set(orderId, {
+        orderId,
+        units: 0,
+        buyerName: row.buyerName || '',
+        city: row.city || '',
+        pinCode: row.pinCode || '',
+      });
+    }
+    const order = orderMap.get(orderId);
+    order.units += Number(row.quantity || 0);
+  }
+
+  const totalOrders = orderMap.size;
+  const multiItemOrders = Array.from(orderMap.values()).filter(
+    (o) => o.units > 1
+  );
+
+  return { totalUnits, totalOrders, multiItemOrders };
+}, [importPreview]);
+
   const formatDateCustom = (dateString) => {
     if (!dateString) return '-';
     const date = new Date(dateString);
@@ -1139,6 +1181,9 @@ results.data.forEach((row, idx) => {
     orderItemId: row['ORDER ITEM ID']?.replace(/\r/g, '').trim().replace(/^'/, ''),
     trackingId:  row['Tracking ID']?.trim() || null,
     sku,
+    buyerName: row['Buyer name'] || row['Ship to name'] || '',
+    city: row['City'] || '',
+    pinCode: row['PIN Code'] || '',
   });
 
   if (design && color && size) {
@@ -1214,9 +1259,7 @@ const handleSmartCSVDetect = (e) => {
 };
 
 const handleImportSubmit = async () => {
-  console.log('═══════════════════════════════════════════');
-  console.log('🚀 handleImportSubmit CALLED');
-  console.log('═══════════════════════════════════════════');
+  console.log('handleImportSubmit CALLED');
 
   if (!importAccount) {
     toast.error('Please select an account');
@@ -1235,112 +1278,191 @@ const handleImportSubmit = async () => {
 
   try {
     setIsImporting(true);
-    await ensureProductsLoaded();
-    console.log('✅ Products loaded count:', products.length);
 
-    // ✅ NEW STEP 0: Check existing SKU mappings FIRST
-    console.log('🗺️ STEP 0: Checking existing SKU mappings...');
-    const uniqueSKUs = [...new Set(parsedCsvData.map(row => row.sku).filter(Boolean))];
-    
+    // Make sure products are loaded
+    await ensureProductsLoaded();
+    console.log('Products loaded count:', products.length);
+
+    // 🔹 STEP 0: Check existing SKU mappings
+    console.log('STEP 0 Checking existing SKU mappings...');
+    const uniqueSKUs = [
+      ...new Set(
+        parsedCsvData
+          .map((row) => row.sku)
+          .filter(Boolean)
+      ),
+    ];
+
     let existingMappings = {};
     try {
-      const mappingResponse = await skuMappingService.getBulkMappings(importAccount, uniqueSKUs);
+      const mappingResponse = await skuMappingService.getBulkMappings(
+        importAccount,
+        uniqueSKUs
+      );
       existingMappings = mappingResponse.mappings || {};
-      console.log(`✅ Found ${Object.keys(existingMappings).length} existing mappings`);
+      console.log(
+        'Found',
+        Object.keys(existingMappings).length,
+        'existing mappings'
+      );
     } catch (error) {
-      console.warn('Failed to fetch existing mappings:', error);
+      console.warn('Failed to fetch existing mappings', error);
     }
 
-    // ✅ STEP 1: Check for unmapped SKUs (accounting for existing mappings)
-    console.log('🔍 STEP 1: Checking SKUs against inventory + mappings...');
+    // 🔹 STEP 1: Find unmapped SKUs (that are not in inventory and not in mappings)
+    console.log('STEP 1 Checking SKUs against inventory mappings...');
+
     const skuCounts = {};
 
     parsedCsvData.forEach((row, index) => {
       const sku = row.sku;
-      let design, color, size;
+      let design = row.design;
+      let color = row.color;
+      let size = row.size;
 
-      // Check if mapping exists for this SKU
+      // If mapping exists, override design/color/size
       if (sku && existingMappings[sku]) {
         design = existingMappings[sku].design;
         color = existingMappings[sku].color;
         size = existingMappings[sku].size;
-        console.log(`  ✅ Row ${index + 1}: ${sku} → Found in mappings: ${design}-${color}-${size}`);
-      } else {
-        // Use parsed data
-        design = row.design;
-        color = row.color;
-        size = row.size;
+
+        console.log(
+          `Row ${index + 1} | SKU ${sku} found in mappings ->`,
+          `${design}-${color}-${size}`
+        );
       }
 
-      // Check if this product variant exists in inventory
-      const product = products.find(p => p.design === design);
+      // Check if this variant exists in inventory
       let exists = false;
-
-      if (product) {
-        const colorVariant = product.colors.find(c => c.color === color);
-        if (colorVariant) {
-          const sizeVariant = colorVariant.sizes.find(s => s.size === size);
-          if (sizeVariant) {
-            exists = true;
+      if (design && color && size) {
+        const product = products.find((p) => p.design === design);
+        if (product) {
+          const colorVariant = product.colors.find((c) => c.color === color);
+          if (colorVariant) {
+            const sizeVariant = colorVariant.sizes.find(
+              (s) => s.size === size
+            );
+            if (sizeVariant) {
+              exists = true;
+            }
           }
         }
       }
 
-      console.log(`  Row ${index + 1}: ${design}-${color}-${size} | Exists=${exists}`);
+      console.log(
+        `Row ${index + 1} | ${design}-${color}-${size} | Exists: ${exists}`
+      );
 
-      // If product doesnt exist in inventory AND no mapping exists, mark as unmapped
-      if (!exists && !(sku && existingMappings[sku])) {
+      // If product does not exist and no mapping exists, mark as unmapped
+      if (!exists && (!sku || !existingMappings[sku])) {
         if (!skuCounts[sku]) {
           skuCounts[sku] = {
             sku,
             count: 0,
-            // Pass already-parsed values so BulkSKUMappingModal can auto-fill dropdowns
-            parsed: {
-              design: design || '',
-              color: color || '',
-              size: size || '',
-            }
+            // pass parsed values so BulkSKUMappingModal can auto-fill
+            parsed: { design, color, size },
           };
         }
-        skuCounts[sku].count++;
+        skuCounts[sku].count += Number(row.quantity || 1);
       }
     });
 
     const unmappedList = Object.values(skuCounts);
-    console.log('');
-    console.log('📋 Unmapped SKUs Summary:');
-    console.log('  - Total unmapped SKUs:', unmappedList.length);
-    console.log('  - Unmapped list:', unmappedList);
+    console.log('Unmapped SKUs Summary');
+    console.log('- Total unmapped SKUs:', unmappedList.length);
+    console.log('- Unmapped list:', unmappedList);
 
-    // If there are unmapped SKUs, show preview modal
+    // 🔹 STEP 2: If there are unmapped SKUs -> show preview/modal, not backend import yet
     if (unmappedList.length > 0) {
-      console.log('🗺️ UNMAPPED SKUs FOUND - SHOWING MODAL');
+      console.log('UNMAPPED SKUs FOUND - SHOWING PREVIEW MODALS');
+
+      // ✅ Compute total units and orders from parsedCsvData here
+
+      // Total units = sum of quantity
+      const totalUnits = parsedCsvData.reduce(
+        (sum, row) => sum + Number(row.quantity || 0),
+        0
+      );
+
+      // Group by Flipkart Order Id
+      const orderMap = new Map();
+
+      for (const row of parsedCsvData) {
+        const orderId = row.orderId;
+        if (!orderId) continue;
+
+        if (!orderMap.has(orderId)) {
+          orderMap.set(orderId, {
+            orderId,
+            units: 0,
+            buyerName:
+              row.buyerName ||
+              row.shipToName ||
+              row['buyerName'] ||
+              row['shipToName'] ||
+              '',
+            pinCode: row.pinCode || row['pinCode'] || '',
+          });
+        }
+        const order = orderMap.get(orderId);
+        order.units += Number(row.quantity || 0);
+      }
+
+      const uniqueOrderCount = orderMap.size;
+      const multiItemOrders = Array.from(orderMap.values()).filter(
+        (o) => o.units > 1
+      );
+
+      const unmappedUnits = unmappedList.reduce(
+        (sum, u) => sum + u.count,
+        0
+      );
 
       const previewData = {
-        totalOrders: parsedCsvData.length,
-        validOrders: parsedCsvData.length - unmappedList.reduce((sum, u) => sum + u.count, 0),
+        // units
+        totalUnits,
+        willImportUnits: totalUnits - unmappedUnits,
+
+        // Flipkart orders (grouped by Order Id)
+        totalOrders: uniqueOrderCount,
+        multiItemOrders, // [{ orderId, units, buyerName, pinCode }]
+
+        // SKU mapping info
         unmappedSKUs: unmappedList,
+        totalUnmappedOrders: unmappedList.length, // you can refine if needed
+
+        // returns / skipped (from earlier preview if you want)
         skippedOrders: importPreview?.skipped?.length || 0,
-        accountName: importAccount
+
+        accountName: importAccount,
       };
 
-      console.log('📦 Preview Data:', previewData);
+      console.log('Preview Data:', previewData);
 
       setImportPreviewData(previewData);
       setCurrentUnmappedSKUs(unmappedList);
-      setPendingImportData({ parsedCsvData, importAccount, importFilterDate });
+      setPendingImportData({
+        parsedCsvData,
+        importAccount,
+        importFilterDate,
+      });
+
       setShowImportModal(false);
       setShowImportPreviewModal(true);
       setIsImporting(false);
 
-      toast.success(`Found ${unmappedList.length} SKU formats that need mapping`);
+      toast.success(
+        `Found ${unmappedList.length} SKU formats that need mapping`
+      );
       console.log('Modal should now be visible!');
-      return;
+      return; // ⛔ stop here, user will map SKUs then confirm final import
     }
 
-    // No unmapped SKUs - proceed with backend import
-    console.log('✅ All SKUs mapped or exist in inventory, calling backend...');
-    
+    // 🔹 No unmapped SKUs – go straight to backend import
+    console.log(
+      'All SKUs mapped or exist in inventory, calling backend import...'
+    );
+
     const result = await salesService.importFromCSV(
       parsedCsvData,
       importAccount,
@@ -1349,7 +1471,7 @@ const handleImportSubmit = async () => {
 
     handleImportSuccess(result);
   } catch (error) {
-    console.error('❌ Import error:', error);
+    console.error('Import error', error);
     toast.error(error.response?.data?.message || 'Import failed');
     setIsImporting(false);
   }
@@ -3830,11 +3952,14 @@ const handleDelete = async (id) => {
                 setShowFinalImportPreviewModal(false);
               }}
               previewData={{
-                totalOrders: parsedCsvData?.length || 0,
+                // use computed stats, not raw row count
+                totalUnits: importOrderStats.totalUnits,
+                totalOrders: importOrderStats.totalOrders,
                 accountName: importAccount,
                 dispatchDate: importFilterDate,
                 productBreakdown: importPreview?.productBreakdown || new Map(),
-                skippedOrders: importPreview?.skipped?.length || 0
+                skippedOrders: importPreview?.skipped?.length || 0,
+                multiProductOrders: importOrderStats.multiItemOrders,
               }}
               onConfirm={handleFinalImportConfirm}
               onBack={() => {
@@ -4473,143 +4598,265 @@ const handleDelete = async (id) => {
 
                     {/* ✅ PREVIEW - Show After Upload */}
                     {importPreview && (
-                    <div className="space-y-4">
-                      {/* Detection Summary */}
-                      <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
-                        <div className="flex items-center gap-2 mb-3">
-                          <FiInfo className="text-blue-600 text-xl" />
-                          <h3 className="font-semibold text-blue-900">
-                            🔍 Detected: {importPreview.detectedType === 'pending'
-                              ? 'PENDING HANDOVER'
-                              : importPreview.detectedType === 'return'
-                              ? 'RETURN ORDERS'
-                              : 'DISPATCHED ORDERS'}
-                          </h3>
-                        </div>
-                        
-                        <div className="space-y-2 text-sm">
-                          <div className="flex justify-between">
-                            <span className="text-gray-600">Total Orders in CSV:</span>
-                            <span className="font-semibold">{parsedCsvData.length}</span>
-                          </div>
-                          
-                          <div className="flex justify-between text-green-700">
-                            <span>✅ Will Import:</span>
-                            <span className="font-semibold">{importPreview.success.length} orders</span>
-                          </div>
-                          
-                          {importPreview.skipped.length > 0 && (
-                            <div className="flex justify-between text-yellow-700">
-                              <span>⚠️ Will Skip (Returns):</span>
-                              <span className="font-semibold">{importPreview.skipped.length} orders</span>
-                            </div>
-                          )}
-                          
-                          {importPreview.failed.length > 0 && (
-                            <div className="flex justify-between text-red-700">
-                              <span>❌ Validation Errors:</span>
-                              <span className="font-semibold">{importPreview.failed.length} orders</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Product Breakdown */}
-                      {importPreview.success.length > 0 && (
-                        <div className="border rounded-lg overflow-hidden">
-                          <div className="bg-gray-50 px-4 py-2 border-b">
-                            <h4 className="font-semibold text-gray-700">📦 Products Breakdown ({importPreview.success.length} orders)</h4>
-                          </div>
-                          
-                          <div className="max-h-64 overflow-y-auto">
-                            <table className="w-full text-sm">
-                              <thead className="bg-gray-100 sticky top-0">
-                                <tr>
-                                  <th className="px-3 py-2 text-left">Design</th>
-                                  <th className="px-3 py-2 text-left">Color</th>
-                                  <th className="px-3 py-2 text-left">Size</th>
-                                  <th className="px-3 py-2 text-right">Quantity</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {Array.from(importPreview.productBreakdown.values()).map((variant, idx) => (
-                                  <tr key={`${variant.design}-${variant.color}-${variant.size}`}>
-                                    <td className="border px-3 py-2">{variant.design}</td>
-                                    <td className="border px-3 py-2">{variant.color}</td>
-                                    <td className="border px-3 py-2">{variant.size}</td>
-                                    <td className="border px-3 py-2 text-center">{variant.quantity}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                          
-                          <div className="bg-gray-50 px-4 py-2 border-t text-sm text-gray-600">
-                            Total: {importPreview.productBreakdown.size} unique variants
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Skipped Orders (Collapsible) */}
-                      {importPreview.skipped.length > 0 && (
-                        <details className="border rounded-lg overflow-hidden">
-                          <summary className="bg-yellow-50 px-4 py-3 cursor-pointer hover:bg-yellow-100 flex items-center gap-2">
-                            <FiAlertTriangle className="text-yellow-600" />
-                            <span className="font-medium text-yellow-800">
-                              ⚠️ Skipped Orders ({importPreview.skipped.length} returns - not imported)
-                            </span>
-                          </summary>
-                          
-                          <div className="max-h-48 overflow-y-auto">
-                            <table className="w-full text-sm">
-                              <thead className="bg-gray-100">
-                                <tr>
-                                  <th className="px-3 py-2 text-left">Order ID</th>
-                                  <th className="px-3 py-2 text-left">SKU</th>
-                                  <th className="px-3 py-2 text-left">Status</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {importPreview.skipped.map((item, idx) => (
-                                  <tr key={idx} className="border-b">
-                                    <td className="px-3 py-2 text-xs">{item.orderId}</td>
-                                    <td className="px-3 py-2">{item.sku}</td>
-                                    <td className="px-3 py-2">
-                                      <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
-                                        {item.status}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </details>
-                      )}
-
-                      {/* Failed Validation */}
-                      {importPreview.failed.length > 0 && (
-                        <details className="border border-red-200 rounded-lg overflow-hidden">
-                          <summary className="bg-red-50 px-4 py-3 cursor-pointer hover:bg-red-100 flex items-center gap-2">
-                            <FiAlertCircle className="text-red-600" />
-                            <span className="font-medium text-red-800">
-                              ❌ Validation Issues ({importPreview.failed.length})
-                            </span>
-                          </summary>
-                          
-                          <div className="max-h-48 overflow-y-auto p-3 space-y-2">
-                            {importPreview.failed.map((item, idx) => (
-                              <div key={idx} className="text-sm bg-red-50 p-2 rounded border border-red-200">
-                                <div className="font-medium text-red-900">Row {item.row}</div>
-                                <div className="text-red-700">{item.reason}</div>
-                                {item.sku && <div className="text-xs text-red-600">SKU: {item.sku}</div>}
+                      <div className="space-y-5">
+                        {/* Detection Summary Card */}
+                        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                              <div className="rounded-full bg-blue-50 p-2">
+                                <FiInfo className="text-blue-600 text-lg" />
                               </div>
-                            ))}
+                              <div>
+                                <h3 className="font-semibold text-gray-900">
+                                  {importPreview.detectedType === 'pending'
+                                    ? 'Pending Handover – Flipkart CSV Detected'
+                                    : importPreview.detectedType === 'return'
+                                    ? 'Return Orders – Flipkart CSV Detected'
+                                    : 'Dispatched Orders – Flipkart CSV Detected'}
+                                </h3>
+                                <p className="text-xs text-gray-500">
+                                  Quick overview of units, validation status and special cases.
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Badge: summary */}
+                            <div className="text-right text-xs">
+                              <div className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1">
+                                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                                <span className="font-medium text-gray-700">
+                                  Ready for review
+                                </span>
+                              </div>
+                            </div>
                           </div>
-                        </details>
-                      )}
-                    </div>
-                  )}
+
+                          {/* Metrics Grid */}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs sm:text-sm">
+                            {/* Total Orders in CSV (Flipkart orders) */}
+                            <div className="rounded-lg bg-blue-50 px-3 py-2">
+                              <div className="text-blue-700">Total Flipkart Orders</div>
+                              <div className="mt-1 text-base font-semibold text-blue-900">
+                                {importOrderStats.totalOrders}
+                              </div>
+                              <div className="text-[11px] text-blue-700">
+                                {importOrderStats.multiItemOrders.length} multi‑product
+                              </div>
+                            </div>
+
+                            {/* Total Units */}
+                            <div className="rounded-lg bg-gray-50 px-3 py-2">
+                              <div className="text-gray-500">Total Units in CSV</div>
+                              <div className="mt-1 text-base font-semibold text-gray-900">
+                                {importOrderStats.totalUnits}
+                              </div>
+                            </div>
+
+                            {/* Skipped / Failed as you had before */}
+                            {importPreview.skipped.length > 0 && (
+                              <div className="rounded-lg bg-amber-50 px-3 py-2">
+                                <div className="text-amber-700">Skipped (Returns)</div>
+                                <div className="mt-1 text-base font-semibold text-amber-800">
+                                  {importPreview.skipped.length} units
+                                </div>
+                              </div>
+                            )}
+
+                            {importPreview.failed.length > 0 && (
+                              <div className="rounded-lg bg-rose-50 px-3 py-2">
+                                <div className="text-rose-700">Validation Issues</div>
+                                <div className="mt-1 text-base font-semibold text-rose-800">
+                                  {importPreview.failed.length} rows
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Multi-product orders section (collapsible) */}
+{importOrderStats.multiItemOrders.length > 0 && (
+  <details className="mt-4 rounded-lg border border-dashed border-blue-200 bg-blue-50/60">
+    <summary className="px-3 py-2 cursor-pointer flex items-center justify-between hover:bg-blue-100/70">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-semibold text-blue-900">
+          ⚠️ Multi-product Flipkart orders
+        </span>
+        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+          {importOrderStats.multiItemOrders.length} orders
+        </span>
+      </div>
+      <span className="text-[11px] text-blue-800">
+        Click to view details
+      </span>
+    </summary>
+
+    <div className="px-3 pb-3 pt-1 text-xs">
+      <p className="text-blue-800 mb-2">
+        These orders have multiple product lines in the CSV. Click an order ID to copy it.
+      </p>
+
+      <div className="space-y-1.5 max-h-32 overflow-y-auto">
+        {importOrderStats.multiItemOrders.slice(0, 10).map((o) => (
+          <div
+            key={o.orderId}
+            className="flex items-center justify-between rounded-md bg-white/80 px-2 py-1 border border-blue-100"
+          >
+            <div className="flex flex-col">
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(o.orderId);
+                  toast.success('Order ID copied');
+                }}
+                className="font-mono text-[11px] text-blue-700 hover:underline text-left"
+              >
+                {o.orderId}
+              </button>
+              <span className="text-[11px] text-gray-600">
+                Buyer: {o.buyerName}
+                {o.city ? ` • ${o.city}` : ''}
+                {o.pinCode ? ` • ${o.pinCode}` : ''}
+              </span>
+            </div>
+            <span className="text-[11px] font-semibold text-blue-700">
+              {o.units} units
+            </span>
+          </div>
+        ))}
+        {importOrderStats.multiItemOrders.length > 10 && (
+          <div className="text-[11px] text-blue-700">
+            + {importOrderStats.multiItemOrders.length - 10} more…
+          </div>
+        )}
+      </div>
+    </div>
+  </details>
+)}
+                        </div>
+
+                        {/* Product Breakdown */}
+                        {importPreview.success.length > 0 && (
+                          <div className="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-sm">
+                            <div className="bg-gray-50 px-4 py-2.5 border-b flex items-center justify-between">
+                              <h4 className="font-semibold text-gray-800 text-sm">
+                                📦 Products Breakdown ({importPreview.success.length} units)
+                              </h4>
+                              <span className="text-xs text-gray-500">
+                                {importPreview.productBreakdown.size} unique variants
+                              </span>
+                            </div>
+
+                            <div className="max-h-64 overflow-y-auto">
+                              <table className="w-full text-xs sm:text-sm">
+                                <thead className="bg-gray-100 sticky top-0 z-10">
+                                  <tr>
+                                    <th className="px-3 py-2 text-left font-medium text-gray-600">
+                                      Design
+                                    </th>
+                                    <th className="px-3 py-2 text-left font-medium text-gray-600">
+                                      Color
+                                    </th>
+                                    <th className="px-3 py-2 text-left font-medium text-gray-600">
+                                      Size
+                                    </th>
+                                    <th className="px-3 py-2 text-right font-medium text-gray-600">
+                                      Quantity
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {Array.from(importPreview.productBreakdown.values())
+                                    .sort((a, b) => (b.quantity || 0) - (a.quantity || 0))
+                                    .map((variant) => (
+                                      <tr
+                                        key={`${variant.design}-${variant.color}-${variant.size}`}
+                                        className="border-t hover:bg-gray-50"
+                                      >
+                                        <td className="px-3 py-2">{variant.design}</td>
+                                        <td className="px-3 py-2">{variant.color}</td>
+                                        <td className="px-3 py-2">{variant.size}</td>
+                                        <td className="px-3 py-2 text-right font-medium">
+                                          {variant.quantity}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Skipped Orders (Collapsible) */}
+                        {importPreview.skipped.length > 0 && (
+                          <details className="border border-amber-200 rounded-xl overflow-hidden bg-white">
+                            <summary className="bg-amber-50 px-4 py-3 cursor-pointer hover:bg-amber-100 flex items-center gap-2">
+                              <FiAlertTriangle className="text-amber-600" />
+                              <span className="font-medium text-amber-900 text-sm">
+                                Skipped Orders ({importPreview.skipped.length} returns – not
+                                imported)
+                              </span>
+                            </summary>
+
+                            <div className="max-h-48 overflow-y-auto">
+                              <table className="w-full text-xs sm:text-sm">
+                                <thead className="bg-gray-100">
+                                  <tr>
+                                    <th className="px-3 py-2 text-left">Order ID</th>
+                                    <th className="px-3 py-2 text-left">SKU</th>
+                                    <th className="px-3 py-2 text-left">Status</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {importPreview.skipped.map((item, idx) => (
+                                    <tr key={idx} className="border-b">
+                                      <td className="px-3 py-2 text-[11px] font-mono">
+                                        {item.orderId}
+                                      </td>
+                                      <td className="px-3 py-2">{item.sku}</td>
+                                      <td className="px-3 py-2">
+                                        <span className="text-[11px] bg-amber-100 text-amber-800 px-2 py-1 rounded-full">
+                                          {item.status}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </details>
+                        )}
+
+                        {/* Failed Validation */}
+                        {importPreview.failed.length > 0 && (
+                          <details className="border border-rose-200 rounded-xl overflow-hidden bg-white">
+                            <summary className="bg-rose-50 px-4 py-3 cursor-pointer hover:bg-rose-100 flex items-center gap-2">
+                              <FiAlertCircle className="text-rose-600" />
+                              <span className="font-medium text-rose-900 text-sm">
+                                Validation Issues ({importPreview.failed.length})
+                              </span>
+                            </summary>
+
+                            <div className="max-h-48 overflow-y-auto p-3 space-y-2">
+                              {importPreview.failed.map((item, idx) => (
+                                <div
+                                  key={idx}
+                                  className="text-xs bg-rose-50 p-2 rounded border border-rose-200"
+                                >
+                                  <div className="font-medium text-rose-900">
+                                    Row {item.row}
+                                  </div>
+                                  <div className="text-rose-700">{item.reason}</div>
+                                  {item.sku && (
+                                    <div className="text-[11px] text-rose-600">
+                                      SKU: {item.sku}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                      </div>
+                    )}
             {/* Modal Footer - Action Buttons */}
             <div className="flex justify-end gap-3 pt-4 border-t">
               <button
@@ -4629,8 +4876,8 @@ const handleDelete = async (id) => {
               <button
                 type="button"
                 onClick={handleImportSubmit}
-                disabled={!importPreview || importPreview.success.length === 0 || isImporting}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                disabled={!parsedCsvData.length || isImporting}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg flex items-center gap-2"
               >
                 {isImporting ? (
                   <>
@@ -4640,7 +4887,18 @@ const handleDelete = async (id) => {
                 ) : (
                   <>
                     <FiUpload />
-                    Import {importPreview?.success.length || 0} Orders
+                    Import{' '}
+                    {importPreviewData?.totalUnits ??
+                      parsedCsvData.reduce(
+                        (sum, r) => sum + Number(r.quantity || 0),
+                        0
+                      )}{' '}
+                    Units
+                    {importPreviewData?.totalOrders != null && (
+                      <span className="text-xs text-blue-100 ml-1">
+                        ({importPreviewData.totalOrders} orders)
+                      </span>
+                    )}
                   </>
                 )}
               </button>
