@@ -269,23 +269,24 @@ const importOrderStats = useMemo(() => {
     0
   );
 
-  // Group by Order ID
+  // Group by Tracking ID (physical parcel)
   const orderMap = new Map();
 
   for (const row of rows) {
-    const orderId = row.orderId;
-    if (!orderId) continue;
+    const trackingId = row.trackingId;
+    // If tracking ID is missing (rare), you can either skip or fall back to orderId
+    if (!trackingId) continue;
 
-    if (!orderMap.has(orderId)) {
-      orderMap.set(orderId, {
-        orderId,
+    if (!orderMap.has(trackingId)) {
+      orderMap.set(trackingId, {
+        trackingId,
         units: 0,
         buyerName: row.buyerName || '',
         city: row.city || '',
         pinCode: row.pinCode || '',
       });
     }
-    const order = orderMap.get(orderId);
+    const order = orderMap.get(trackingId);
     order.units += Number(row.quantity || 0);
   }
 
@@ -4673,64 +4674,64 @@ const handleDelete = async (id) => {
                           </div>
 
                           {/* Multi-product orders section (collapsible) */}
-{importOrderStats.multiItemOrders.length > 0 && (
-  <details className="mt-4 rounded-lg border border-dashed border-blue-200 bg-blue-50/60">
-    <summary className="px-3 py-2 cursor-pointer flex items-center justify-between hover:bg-blue-100/70">
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold text-blue-900">
-          ⚠️ Multi-product Flipkart orders
-        </span>
-        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
-          {importOrderStats.multiItemOrders.length} orders
-        </span>
-      </div>
-      <span className="text-[11px] text-blue-800">
-        Click to view details
-      </span>
-    </summary>
+                          {importOrderStats.multiItemOrders.length > 0 && (
+                            <details className="mt-4 rounded-lg border border-dashed border-blue-200 bg-blue-50/60">
+                              <summary className="px-3 py-2 cursor-pointer flex items-center justify-between hover:bg-blue-100/70">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-semibold text-blue-900">
+                                    ⚠️ Multi-product Flipkart orders
+                                  </span>
+                                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                                    {importOrderStats.multiItemOrders.length} orders
+                                  </span>
+                                </div>
+                                <span className="text-[11px] text-blue-800">
+                                  Click to view details
+                                </span>
+                              </summary>
 
-    <div className="px-3 pb-3 pt-1 text-xs">
-      <p className="text-blue-800 mb-2">
-        These orders have multiple product lines in the CSV. Click an order ID to copy it.
-      </p>
+                              <div className="px-3 pb-3 pt-1 text-xs">
+                                <p className="text-blue-800 mb-2">
+                                  These orders have multiple product lines in the CSV. Click an order ID to copy it.
+                                </p>
 
-      <div className="space-y-1.5 max-h-32 overflow-y-auto">
-        {importOrderStats.multiItemOrders.slice(0, 10).map((o) => (
-          <div
-            key={o.orderId}
-            className="flex items-center justify-between rounded-md bg-white/80 px-2 py-1 border border-blue-100"
-          >
-            <div className="flex flex-col">
-              <button
-                type="button"
-                onClick={() => {
-                  navigator.clipboard.writeText(o.orderId);
-                  toast.success('Order ID copied');
-                }}
-                className="font-mono text-[11px] text-blue-700 hover:underline text-left"
-              >
-                {o.orderId}
-              </button>
-              <span className="text-[11px] text-gray-600">
-                Buyer: {o.buyerName}
-                {o.city ? ` • ${o.city}` : ''}
-                {o.pinCode ? ` • ${o.pinCode}` : ''}
-              </span>
-            </div>
-            <span className="text-[11px] font-semibold text-blue-700">
-              {o.units} units
-            </span>
-          </div>
-        ))}
-        {importOrderStats.multiItemOrders.length > 10 && (
-          <div className="text-[11px] text-blue-700">
-            + {importOrderStats.multiItemOrders.length - 10} more…
-          </div>
-        )}
-      </div>
-    </div>
-  </details>
-)}
+                                <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                                  {importOrderStats.multiItemOrders.slice(0, 10).map((o) => (
+                                    <div
+                                      key={o.trackingId}
+                                      className="flex items-center justify-between rounded-md bg-white/80 px-2 py-1 border border-blue-100"
+                                    >
+                                      <div className="flex flex-col">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            navigator.clipboard.writeText(o.trackingId);
+                                            toast.success('Tracking ID copied');
+                                          }}
+                                          className="font-mono text-[11px] text-blue-700 hover:underline text-left"
+                                        >
+                                          {o.trackingId}
+                                        </button>
+                                        <span className="text-[11px] text-gray-600">
+                                          Buyer: {o.buyerName}
+                                          {o.city ? ` • ${o.city}` : ''}
+                                          {o.pinCode ? ` • ${o.pinCode}` : ''}
+                                        </span>
+                                      </div>
+                                      <span className="text-[11px] font-semibold text-blue-700">
+                                        {o.units} units
+                                      </span>
+                                    </div>
+                                  ))}
+                                  {importOrderStats.multiItemOrders.length > 10 && (
+                                    <div className="text-[11px] text-blue-700">
+                                      + {importOrderStats.multiItemOrders.length - 10} more…
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </details>
+                          )}
                         </div>
 
                         {/* Product Breakdown */}
