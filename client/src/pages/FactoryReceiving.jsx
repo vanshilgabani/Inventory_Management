@@ -11,6 +11,7 @@ import ScrollToTop from '../components/common/ScrollToTop';
 // Import Tabs
 import FactoryTab from '../components/factory/tabs/FactoryTab';
 import BorrowedTab from '../components/factory/tabs/BorrowedTab';
+import PaymentsTab from '../components/factory/tabs/PaymentsTab';
 
 // Import Modals
 import AddReceivingModal from '../components/factory/modals/AddReceivingModal';
@@ -309,6 +310,36 @@ const handleAddReceiving = async (receivingData) => {
     }
   };
 
+  const handleAddPayment = async (data) => {
+  try {
+    await factoryService.createPayment(data);
+    toast.success('Payment recorded successfully!');
+    fetchData();
+  } catch (error) {
+    toast.error(error.response?.data?.message || 'Failed to record payment');
+  }
+};
+
+const handleEditPayment = async (id, data) => {
+  try {
+    await factoryService.updatePayment(id, data);
+    toast.success('Payment updated successfully!');
+    fetchData();
+  } catch (error) {
+    toast.error(error.response?.data?.message || 'Failed to update payment');
+  }
+};
+
+const handleDeletePayment = async (id) => {
+  try {
+    await factoryService.deleteReceiving(id); // reuses existing delete ✅
+    toast.success('Payment deleted!');
+    fetchData();
+  } catch (error) {
+    toast.error('Failed to delete payment');
+  }
+};
+
   // ===== LOADING STATE =====
   if (loading || sizesLoading) {
     return <Loader message='Loading Factory Receivings..'/>;
@@ -364,6 +395,14 @@ const handleAddReceiving = async (receivingData) => {
           >
             📦 Borrowed Stock
           </button>
+          <button onClick={() => setActiveTab('payments')}
+            className={`px-6 py-3 rounded-md font-medium transition-all duration-200 ${
+              activeTab === 'payments'
+                ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-md'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}>
+            Payments
+          </button>
         </div>
       </div>
 
@@ -394,6 +433,16 @@ const handleAddReceiving = async (receivingData) => {
             filters={borrowedFilters}
             onFilterChange={setBorrowedFilters}
             getSizesForDesign={getSizesForDesign}
+          />
+        )}
+
+        {activeTab === 'payments' && (
+          <PaymentsTab
+            receivings={receivings}
+            onAdd={handleAddPayment}
+            onEdit={handleEditPayment}
+            onDelete={handleDeletePayment}
+            canEditDelete={canEditDelete()}
           />
         )}
       </div>

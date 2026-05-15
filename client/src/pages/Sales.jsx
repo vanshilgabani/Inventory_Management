@@ -225,31 +225,34 @@ const formatDateLabel = (dateString) => {
   }
 };
 
-    const displayDateGroups = useMemo(() => {
-  // If date search is active, use filteredOrders
+const displayDateGroups = useMemo(() => {
   const source = (searchType === 'date' && filteredOrders) ? filteredOrders : dateSummaries;
 
   return source.map(summary => {
-    const orders = loadedOrders[summary.date] || [];
+    // For expanded view we still use loadedOrders + client filters:
+    const loadedForDate = loadedOrders[summary.date] || [];
+    const orderCount = loadedForDate.length > 0
+      ? new Set(loadedForDate.map(o => o.trackingId).filter(Boolean)).size
+      : (summary.orderCount ?? summary.count ?? 0);
 
-    // Apply tab + statusFilter on already-loaded orders (client-side, free)
-    let filteredGroupOrders = orders;
+    let filteredGroupOrders = loadedForDate;
     if (activeTab === 'dispatched') {
-      filteredGroupOrders = orders.filter(o => o.status === 'dispatched');
+      filteredGroupOrders = loadedForDate.filter(o => o.status === 'dispatched');
     } else if (activeTab === 'delivered') {
-      filteredGroupOrders = orders.filter(o => o.status === 'delivered');
+      filteredGroupOrders = loadedForDate.filter(o => o.status === 'delivered');
     } else if (activeTab === 'returned') {
-      filteredGroupOrders = orders.filter(o => ['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(o.status));
+      filteredGroupOrders = loadedForDate.filter(o =>
+        ['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(o.status)
+      );
       if (statusFilter !== 'all') {
         filteredGroupOrders = filteredGroupOrders.filter(o => o.status === statusFilter);
       }
     }
 
-    // ✅ FIX — shows filtered count when loaded, raw total before loading:
     return {
       ...summary,
-      orders: filteredGroupOrders,
-      orderCount: summary.count,
+      orders: filteredGroupOrders,          // used in expanded view
+      orderCount,      // use tracking-based orders in header
       dateLabel: formatDateLabel(summary.date),
     };
   }).filter(Boolean);
@@ -263,23 +266,23 @@ const importOrderStats = useMemo(() => {
 
   const rows = importPreview.success;
 
-  // Total units = sum of quantity
   const totalUnits = rows.reduce(
     (sum, row) => sum + Number(row.quantity || 0),
     0
   );
 
-  // Group by Tracking ID (physical parcel)
+  // Group by Tracking ID (parcel), but also keep one sample Order ID
   const orderMap = new Map();
 
   for (const row of rows) {
-    const trackingId = row.trackingId;
-    // If tracking ID is missing (rare), you can either skip or fall back to orderId
+    const trackingId = row.trackingId || row.orderId; // fallback if tracking missing
     if (!trackingId) continue;
 
     if (!orderMap.has(trackingId)) {
       orderMap.set(trackingId, {
         trackingId,
+        // keep the first orderId we see for this tracking
+        orderId: row.orderId || '',
         units: 0,
         buyerName: row.buyerName || '',
         city: row.city || '',
@@ -2563,11 +2566,11 @@ const handleDelete = async (id) => {
         /* ORDERS STATS */
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           {[
-            { id: 'all', label: 'Total Orders', icon: FiShoppingBag, color: 'text-purple-600', bg: 'bg-purple-50', count: stats.dispatched + stats.returned + stats.RTO + stats.wrongreturn, disabled: true },
+            { id: 'all', label: 'Total Units', icon: FiShoppingBag, color: 'text-purple-600', bg: 'bg-purple-50', count: stats.dispatched + stats.returned + stats.RTO + stats.wrongreturn, disabled: true },
             { id: 'dispatched', label: 'Dispatched', icon: FiTruck, color: 'text-yellow-600', bg: 'bg-yellow-50', count: stats.dispatched },
-            { id: 'returned', label: 'Returns', icon: FiRotateCcw, color: 'text-red-600', bg: 'bg-red-50', count: stats.returned },
-            { id: 'RTO', label: 'RTO', icon: FiXCircle, color: 'text-gray-600', bg: 'bg-gray-100', count: stats.RTO },
-            { id: 'wrongreturn', label: 'Wrong Return', icon: FiAlertTriangle, color: 'text-orange-600', bg: 'bg-orange-50', count: stats.wrongreturn }
+            { id: 'returned', label: 'Customer returns', icon: FiRotateCcw, color: 'text-red-600', bg: 'bg-red-50', count: stats.returned },
+            { id: 'RTO', label: 'RTO returns', icon: FiXCircle, color: 'text-gray-600', bg: 'bg-gray-100', count: stats.RTO },
+            { id: 'wrongreturn', label: 'Wrong Returns', icon: FiAlertTriangle, color: 'text-orange-600', bg: 'bg-orange-50', count: stats.wrongreturn }
           ].map(card => (
             <div
               key={card.id}
@@ -2697,9 +2700,23 @@ const handleDelete = async (id) => {
                     new Date(b.saleDate) - new Date(a.saleDate)
                   );
 
+                  const hasLoadedOrders = !!dateGroup.orders && dateGroup.orders.length > 0;
+
+                  const unitsForDate = hasLoadedOrders
+                    ? dateGroup.orders.reduce((sum, o) => sum + (o.quantity || 1), 0)
+                    : 0;
+
+                  const ordersCountForDate = hasLoadedOrders
+                    ? new Set(
+                        dateGroup.orders.map((o) => o.trackingId).filter(Boolean)
+                      ).size
+                    : 0;
+                    
                   const allOrdersSelected = sortedOrders.every(order => selectedSales.includes(order._id));
                   const someOrdersSelected = sortedOrders.some(order => selectedSales.includes(order._id)) && !allOrdersSelected;
 
+                  const ordersForDate = dateGroup.orders || [];
+                
                   return (
                     <div key={dateGroup.date} className="space-y-0">
                       {/* DATE HEADER CARD */}
@@ -2736,22 +2753,18 @@ const handleDelete = async (id) => {
                                 </h3>
                                 <p className={`text-sm font-medium flex items-center gap-2 ${isExpanded ? 'text-indigo-600' : 'text-gray-500'}`}>
                                   {summariesLoading ? (
-                                    <span className="inline-block w-16 h-4 bg-gray-200 animate-pulse rounded-md" />
+                                    <>
+                                      {dateGroup.totalQuantity ?? dateGroup.orderCount}{' '}
+                                      {(dateGroup.totalQuantity ?? dateGroup.orderCount) === 1 ? 'Unit' : 'Units'}
+                                    </>
                                   ) : (
                                     <>
                                       {dateGroup.totalQuantity ?? dateGroup.orderCount}{' '}
                                       {(dateGroup.totalQuantity ?? dateGroup.orderCount) === 1 ? 'Unit' : 'Units'}
-                                      {/*<span className="text-xs text-gray-400 font-normal ml-1">
-                                        ({dateGroup.orderCount} {dateGroup.orderCount === 1 ? 'order' : 'orders'})
-                                      </span>*/}
-                                      {someOrdersSelected && (
-                                        <span className="ml-2 text-blue-600">
-                                          ({sortedOrders
-                                            .filter(o => selectedSales.includes(o._id))
-                                            .reduce((sum, o) => sum + (o.quantity || 1), 0)}{' '}
-                                          units selected)
-                                        </span>
-                                      )}
+                                      <span className="text-[11px] text-gray-500 ml-[-3px]">
+                                        · {dateGroup.orderCount}{' '}
+                                        {dateGroup.orderCount === 1 ? 'Order' : 'Orders'}
+                                      </span>
                                     </>
                                   )}
                                 </p>
@@ -2791,211 +2804,267 @@ const handleDelete = async (id) => {
 
                       {/* EXPANDED ORDERS */}
                       {isExpanded && (
-                        <div className="animate-slideDown origin-top">
-                          <div className="rounded-b-xl shadow-lg border-t-0 rounded-t-none border-2 border-indigo-200 bg-gradient-to-b from-indigo-50/30 to-white">
+  <div className="animate-slideDown origin-top">
+    <div className="rounded-b-xl shadow-lg border-t-0 rounded-t-none border-2 border-indigo-200 bg-gradient-to-b from-indigo-50/30 to-white">
+      {loadingDates.has(dateGroup.date) ? (
+        <div style={{ position: 'relative', height: '300px', borderRadius: '12px' }}>
+          <Loader fullScreen={false} message="Loading Orders.." />
+        </div>
+      ) : loadedOrders[dateGroup.date] === undefined ? (
+        <div className="text-center py-10 text-gray-400 text-sm">
+          <FiPackage className="mx-auto text-3xl mb-2 opacity-40" />
+          <p>Click the card to load orders</p>
+        </div>
+      ) : sortedOrders.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-14 gap-2 text-gray-400">
+          <FiPackage className="text-4xl opacity-40" />
+          <p className="text-sm font-medium">No orders found for this date</p>
+          {activeTab === 'returned' && statusFilter !== 'all' && (
+            <p className="text-xs text-gray-400">Try clearing the status filter</p>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Sticky Header */}
+          <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm border-b-2 border-indigo-200 px-6 py-3 flex items-center justify-between rounded-t-xl">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const orderIds = sortedOrders.map((o) => o._id);
+                  if (allOrdersSelected) {
+                    setSelectedSales((prev) => prev.filter((id) => !orderIds.includes(id)));
+                  } else {
+                    setSelectedSales((prev) => [...new Set([...prev, ...orderIds])]);
+                  }
+                }}
+                className={`px-4 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+                  allOrdersSelected
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : someOrdersSelected
+                    ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={allOrdersSelected}
+                  readOnly
+                  className="pointer-events-none"
+                />
+                {allOrdersSelected ? 'Deselect All' : 'Select All'}
+              </button>
+              {(someOrdersSelected || allOrdersSelected) && (
+                <span className="text-sm font-medium text-gray-600">
+                  {sortedOrders
+                    .filter((o) => selectedSales.includes(o._id))
+                    .reduce((sum, o) => sum + (o.quantity || 1), 0)}
+                  /
+                  {sortedOrders.reduce((sum, o) => sum + (o.quantity || 1), 0)}{' '}
+                  units selected
+                </span>
+              )}
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpandedDate(null);
+              }}
+              className="px-4 py-2 bg-red-100 text-red-700 rounded-lg font-medium text-sm hover:bg-red-200 transition-all flex items-center gap-2"
+            >
+              <FiXCircle />
+              Close
+            </button>
+          </div>
 
-                            {loadingDates.has(dateGroup.date) ? (
-                              <div style={{ position: "relative", height: "300px", borderRadius: "12px" }}>
-                                <Loader fullScreen={false} message='Loading Orders..'/>
-                              </div>
+          {/* Orders List – compact tiles, 2 per row */}
+          <div className="p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {sortedOrders.map((sale, saleIdx) => {
+                const isHighlighted = highlightedAccount === sale.accountName;
+                const isSelected = selectedSales.includes(sale._id);
 
-                            ) : loadedOrders[dateGroup.date] === undefined ? (
-                              <div className="text-center py-10 text-gray-400 text-sm">
-                                <FiPackage className="mx-auto text-3xl mb-2 opacity-40" />
-                                <p>Click the card to load orders</p>
-                              </div>
-
-                            ) : sortedOrders.length === 0 ? (
-                              <div className="flex flex-col items-center justify-center py-14 gap-2 text-gray-400">
-                                <FiPackage className="text-4xl opacity-40" />
-                                <p className="text-sm font-medium">No orders found for this date</p>
-                                {activeTab === 'returned' && statusFilter !== 'all' && (
-                                  <p className="text-xs text-gray-400">Try clearing the status filter</p>
-                                )}
-                              </div>
-
+                return (
+                  <div
+                    key={sale._id}
+                    className={`border-2 rounded-xl transition-all duration-300 cursor-pointer ${
+                      isHighlighted
+                        ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-300 scale-1.01'
+                        : isSelected
+                        ? 'bg-blue-50 border-blue-400 shadow-md'
+                        : 'bg-white border-gray-200 hover:border-indigo-300 hover:shadow-md'
+                    }`}
+                  >
+                    <div className="py-4 px-5 flex flex-col gap-2">
+                      {/* Top row: checkbox + account + CSV/Manual centered */}
+                      <div className="flex items-center justify-between gap-2">
+                        {/* left: checkbox + account (+ any existing text like Order #) */}
+                        <div className="flex items-center gap-2">
+                          <div
+                            onClick={(e) => {
+                              e.stopPropagation();
+                            }}
+                          >
+                            {/*<input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => handleSelectSale(sale._id)}
+                              className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                            />*/}
+                            {/* middle: CSV / Manual pill (repositioned) */}
+                            {sale.notes?.trim().startsWith('[') ||
+                            /imported from csv/i.test(sale.notes || '') ? (
+                              <span
+                                title="Imported via CSV"
+                                className="inline-flex items-center gap-1 text-[11px] text-blue-500 bg-blue-50 border border-blue-100 px-1.5 py-0.5 rounded-full font-medium"
+                              >
+                                <FiUpload className="w-3 h-3" /> CSV
+                              </span>
                             ) : (
-                              <>
-                                {/* Sticky Header */}
-                                <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm border-b-2 border-indigo-200 px-6 py-3 flex items-center justify-between rounded-t-xl">
-                                  <div className="flex items-center gap-4">
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        const orderIds = sortedOrders.map(o => o._id);
-                                        if (allOrdersSelected) {
-                                          setSelectedSales(prev => prev.filter(id => !orderIds.includes(id)));
-                                        } else {
-                                          setSelectedSales(prev => [...new Set([...prev, ...orderIds])]);
-                                        }
-                                      }}
-                                      className={`px-4 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
-                                        allOrdersSelected
-                                          ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                                          : someOrdersSelected
-                                          ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                      }`}
-                                    >
-                                      <input type="checkbox" checked={allOrdersSelected} readOnly className="pointer-events-none" />
-                                      {allOrdersSelected ? 'Deselect All' : 'Select All'}
-                                    </button>
-                                    {(someOrdersSelected || allOrdersSelected) && (
-                                    <span className="text-sm font-medium text-gray-600">
-                                      {sortedOrders
-                                        .filter(o => selectedSales.includes(o._id))
-                                        .reduce((sum, o) => sum + (o.quantity || 1), 0)}
-                                      /
-                                      {sortedOrders.reduce((sum, o) => sum + (o.quantity || 1), 0)} units selected
-                                      {/*<span className="text-gray-400 font-normal ml-1">
-                                        ({sortedOrders.filter(o => selectedSales.includes(o._id)).length}/{sortedOrders.length} orders)
-                                      </span>*/}
-                                    </span>
-                                  )}
-                                  </div>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setExpandedDate(null); }}
-                                    className="px-4 py-2 bg-red-100 text-red-700 rounded-lg font-medium text-sm hover:bg-red-200 transition-all flex items-center gap-2"
-                                  >
-                                    <FiXCircle />
-                                    Close
-                                  </button>
-                                </div>
-
-                                {/* Orders List */}
-                                <div className="p-6 space-y-3">
-                                  {sortedOrders.map((sale, saleIdx) => {
-                                    const isHighlighted = highlightedAccount === sale.accountName;
-                                    const isSelected = selectedSales.includes(sale._id);
-                                    return (
-                                      <div
-                                        key={sale._id}
-                                        onClick={(e) => { if (e.target.closest('button')) return; handleSelectSale(sale._id); }}
-                                        className={`border-2 rounded-xl p-4 transition-all duration-300 cursor-pointer ${
-                                          isHighlighted
-                                            ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-300 scale-1.01'
-                                            : isSelected
-                                            ? 'bg-blue-50 border-blue-400 shadow-md'
-                                            : 'bg-white border-gray-200 hover:border-indigo-300 hover:shadow-md'
-                                        }`}
-                                      >
-                                        <div className="flex items-start justify-between gap-4">
-                                          <div className="flex items-start gap-4 flex-1">
-                                            <div className="mt-1" onClick={(e) => e.stopPropagation()}>
-                                              <input
-                                                type="checkbox"
-                                                checked={isSelected}
-                                                onChange={() => handleSelectSale(sale._id)}
-                                                className="w-5 h-5 rounded border-gray-300 cursor-pointer"
-                                              />
-                                            </div>
-                                            <div className="flex-1">
-                                              <div className="flex items-center gap-3 mb-2">
-                                                <span className="text-3xl">
-                                                  {sale.accountName.includes('Flipkart') ? '🛒'
-                                                    : sale.accountName.includes('Amazon') ? '📦'
-                                                    : sale.accountName.includes('Meesho') ? '🛍️'
-                                                    : '🏪'}
-                                                </span>
-                                                <div>
-                                                  <h4 className="font-bold text-gray-900 text-lg">{sale.accountName}</h4>
-                                                  {sale.marketplaceOrderId && (
-                                                    <div className="flex items-center gap-2 mt-1">
-                                                      <span
-                                                        onClick={(e) => { e.stopPropagation(); handleCopyOrderId(sale.marketplaceOrderId); }}
-                                                        className="text-xs text-purple-700 font-mono bg-purple-100 px-2 py-1 rounded cursor-pointer hover:bg-purple-200 transition-colors"
-                                                        title="Click to copy"
-                                                      >
-                                                        🔖 {sale.marketplaceOrderId}
-                                                      </span>
-                                                    </div>
-                                                  )}
-                                                  {sale.orderItemId && (
-                                                    <div className="flex items-center gap-2 mt-1">
-                                                      <span
-                                                        onClick={(e) => { e.stopPropagation(); handleCopyOrderId(sale.orderItemId); }}
-                                                        className="text-xs text-blue-700 font-mono bg-blue-100 px-2 py-1 rounded cursor-pointer hover:bg-blue-200 transition-colors"
-                                                        title="Click to copy Order Item ID"
-                                                      >
-                                                        {sale.orderItemId}
-                                                      </span>
-                                                    </div>
-                                                  )}
-                                                  <p className="text-xs text-gray-500">
-                                                    Order #{saleIdx + 1} • {format(new Date(sale.createdAt), 'hh:mm a')}
-                                                  </p>
-                                                </div>
-                                              </div>
-                                              <div className="bg-gray-50 rounded-lg p-3 mb-2">
-                                                <div className="grid grid-cols-3 gap-4 text-sm">
-                                                  <div>
-                                                    <p className="text-xs text-gray-500 mb-1">Product</p>
-                                                    <p className="font-semibold text-gray-900">{sale.design}</p>
-                                                  </div>
-                                                  <div>
-                                                    <p className="text-xs text-gray-500 mb-1">Variant</p>
-                                                    <p className="font-medium text-gray-700">{sale.color} {sale.size}</p>
-                                                  </div>
-                                                  <div>
-                                                    <p className="text-xs text-gray-500 mb-1">Quantity</p>
-                                                    <p className="font-bold text-gray-900">{sale.quantity}</p>
-                                                  </div>
-                                                </div>
-                                                {['returned', 'cancelled', 'wrongreturn', 'RTO'].includes(sale.status) && (
-                                                  <div className="mt-3 pt-3 border-t border-gray-200">
-                                                    <div className="flex items-center justify-between text-xs">
-                                                      <div className="flex items-center gap-2 text-gray-600">
-                                                        <FiPackage className="text-blue-600" />
-                                                        <span>Dispatched:</span>
-                                                        <span className="font-semibold text-gray-800">{formatDateCustom(sale.saleDate)}</span>
-                                                      </div>
-                                                      <div className="flex items-center gap-2 text-red-600">
-                                                        <FiRotateCcw />
-                                                        <span>
-                                                          {sale.status === 'returned' ? 'Returned'
-                                                            : sale.status === 'RTO' ? 'RTO'
-                                                            : sale.status === 'wrongreturn' ? 'Wrong Return'
-                                                            : 'Cancelled'}:
-                                                        </span>
-                                                        <span className="font-semibold">{formatDateCustom(sale.displayDate || sale.saleDate)}</span>
-                                                      </div>
-                                                    </div>
-                                                  </div>
-                                                )}
-                                              </div>
-                                              {sale.notes && (
-                                                <div className="bg-yellow-50 border-l-4 border-yellow-400 p-2 text-sm text-gray-700 italic rounded">
-                                                  {sale.notes}
-                                                </div>
-                                              )}
-                                            </div>
-                                          </div>
-                                          <div className="flex flex-col items-end gap-3">
-                                            {getStatusBadge(sale.status)}
-                                            <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                              <button onClick={() => setViewingHistory(sale)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors" title="View History">
-                                                <FiClock className="text-gray-600" />
-                                              </button>
-                                              <button onClick={() => handleEdit(sale)} className="p-2 hover:bg-indigo-100 rounded-lg transition-colors" title="Edit Status">
-                                                <FiEdit2 className="text-indigo-600" />
-                                              </button>
-                                              {isAdmin && (
-                                                <button onClick={() => handleDelete(sale._id)} className="p-2 hover:bg-red-100 rounded-lg transition-colors" title="Delete">
-                                                  <FiTrash2 className="text-red-600" />
-                                                </button>
-                                              )}
-                                            </div>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </>
+                              <span
+                                title="Manually created"
+                                className="inline-flex items-center gap-1 text-[11px] text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-full font-medium"
+                              >
+                                <FiEdit2 className="w-3 h-3" /> Manual
+                              </span>
                             )}
                           </div>
+                          <div className="flex flex-col">
+                            <span className="text-xs font-semibold text-gray-800">
+                              {sale.accountName || '-'}
+                            </span>
+                          </div>
                         </div>
-                      )}
+
+                        {/* right: status + 3 actions (unchanged) */}
+                        <div
+                          className="flex flex-row items-end gap-1"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span>{getStatusBadge(sale.status)}</span>
+                          <span className="flex items-center gap-2">
+                            <button
+                              onClick={() => setViewingHistory(sale)}
+                              className="p-1.5 hover:bg-gray-100 rounded-md transition-colors"
+                              title="View History"
+                            >
+                              <FiClock className="w-3.5 h-3.5 text-gray-600" />
+                            </button>
+                            <button
+                              onClick={() => handleEdit(sale)}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                              title="Edit Order"
+                            >
+                              <FiEdit2 className="w-3.5 h-3.5" />
+                            </button>
+                            {isAdmin && (
+                              <button
+                                onClick={() => handleDelete(sale._id)}
+                                className="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                                title="Delete"
+                              >
+                                <FiTrash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Order / Item / Tracking row */}
+                      <div className="mt-2 flex items-start justify-between gap-3 text-[11px] text-gray-700">
+                        <div className="flex-1 space-y-0.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (sale.marketplaceOrderId) {
+                                navigator.clipboard.writeText(sale.marketplaceOrderId);
+                                toast.success('Order ID copied!');
+                              }
+                            }}
+                            className="font-mono hover:underline text-left w-full truncate"
+                          >
+                            <span className="font-semibold text-gray-600">Order ID:</span>{' '}
+                            {sale.marketplaceOrderId || '-'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (sale.orderItemId) {
+                                const cleanId = sale.orderItemId.replace(/^'/, '');
+                                navigator.clipboard.writeText(cleanId);
+                                toast.success('Item ID copied!');
+                              }
+                            }}
+                            className="font-mono hover:underline text-left w-full truncate"
+                          >
+                            <span className="font-semibold text-gray-600">Order Item ID:</span>{' '}
+                            {sale.orderItemId || '-'}
+                          </button>
+                        </div>
+
+                        <div className="flex flex-col items-end gap-0.5 text-right">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (sale.trackingId) {
+                                navigator.clipboard.writeText(sale.trackingId);
+                                toast.success('Tracking ID copied!');
+                              }
+                            }}
+                            className="font-mono hover:underline text-left"
+                          >
+                            <span className="font-semibold text-gray-600">Tracking ID:</span>{' '}
+                            {sale.trackingId || '-'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (sale.returnTrackingId) {
+                                navigator.clipboard.writeText(sale.returnTrackingId);
+                                toast.success('Return tracking ID copied!');
+                              }
+                            }}
+                            className="font-mono text-red-500 hover:underline text-left"
+                          >
+                            {sale.returnTrackingId || (sale.trackingId ? '-' : '')}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Design-color-size + qty */}
+                      <div className="mt-2 flex items-center justify-between text-xs">
+                        <div className="text-gray-800 text-sm font-semibold truncate">
+                          {sale.design || '-'} - {sale.color || '-'} - {sale.size || '-'}
+                        </div>
+                        <div className="text-gray-900 font-semibold text-sm">
+                          Qty: {sale.quantity || 1}
+                        </div>
+                      </div>
+
+                      {/* Notes – hide 'Imported from CSV' */}
+                      {sale.notes &&
+                        !/imported from csv/i.test(sale.notes.trim()) && (
+                          <div className="mt-2 pt-2 border-t border-gray-100">
+                            <p className="text-[11px] text-gray-400 mb-0.5">Notes</p>
+                            <p className="text-[12px] text-gray-700">{sale.notes}</p>
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  </div>
+)}
                     </div>
                   );
                 })}
@@ -4679,50 +4748,75 @@ const handleDelete = async (id) => {
                               <summary className="px-3 py-2 cursor-pointer flex items-center justify-between hover:bg-blue-100/70">
                                 <div className="flex items-center gap-2">
                                   <span className="text-sm font-semibold text-blue-900">
-                                    ⚠️ Multi-product Flipkart orders
+                                    ⚠️ Multi-product Flipkart parcels
                                   </span>
                                   <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
-                                    {importOrderStats.multiItemOrders.length} orders
+                                    {importOrderStats.multiItemOrders.length} parcels
                                   </span>
                                 </div>
                                 <span className="text-[11px] text-blue-800">
-                                  Click to view details
+                                  Click to view Tracking + Order IDs
                                 </span>
                               </summary>
 
                               <div className="px-3 pb-3 pt-1 text-xs">
-                                <p className="text-blue-800 mb-2">
-                                  These orders have multiple product lines in the CSV. Click an order ID to copy it.
-                                </p>
-
-                                <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                                <div className="space-y-2 max-h-40 overflow-y-auto">
                                   {importOrderStats.multiItemOrders.slice(0, 10).map((o) => (
                                     <div
                                       key={o.trackingId}
-                                      className="flex items-center justify-between rounded-md bg-white/80 px-2 py-1 border border-blue-100"
+                                      className="flex items-center justify-between rounded-lg bg-white px-3 py-2 border border-blue-100 shadow-sm"
                                     >
-                                      <div className="flex flex-col">
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            navigator.clipboard.writeText(o.trackingId);
-                                            toast.success('Tracking ID copied');
-                                          }}
-                                          className="font-mono text-[11px] text-blue-700 hover:underline text-left"
-                                        >
-                                          {o.trackingId}
-                                        </button>
-                                        <span className="text-[11px] text-gray-600">
-                                          Buyer: {o.buyerName}
+                                      <div className="flex flex-col gap-1">
+                                        {/* IDs row */}
+                                        <div className="flex flex-wrap gap-x-4 gap-y-1">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              navigator.clipboard.writeText(o.trackingId);
+                                              toast.success('Tracking ID copied');
+                                            }}
+                                            className="text-[11px] font-mono text-blue-700 hover:underline"
+                                          >
+                                            <span className="font-semibold text-gray-600">
+                                              Tracking ID:
+                                            </span>{' '}
+                                            {o.trackingId || 'N/A'}
+                                          </button>
+
+                                          {o.orderId && (
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(o.orderId);
+                                                toast.success('Order ID copied');
+                                              }}
+                                              className="text-[11px] font-mono text-gray-700 hover:underline"
+                                            >
+                                              <span className="font-semibold text-gray-600">
+                                                Order ID:
+                                              </span>{' '}
+                                              {o.orderId}
+                                            </button>
+                                          )}
+                                        </div>
+
+                                        {/* Buyer row */}
+                                        <div className="text-[11px] text-gray-600">
+                                          <span className="font-semibold text-gray-700">Buyer:</span>{' '}
+                                          {o.buyerName || '-'}
                                           {o.city ? ` • ${o.city}` : ''}
                                           {o.pinCode ? ` • ${o.pinCode}` : ''}
+                                        </div>
+                                      </div>
+
+                                      <div className="ml-3">
+                                        <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700 border border-blue-200">
+                                          {o.units} units
                                         </span>
                                       </div>
-                                      <span className="text-[11px] font-semibold text-blue-700">
-                                        {o.units} units
-                                      </span>
                                     </div>
                                   ))}
+
                                   {importOrderStats.multiItemOrders.length > 10 && (
                                     <div className="text-[11px] text-blue-700">
                                       + {importOrderStats.multiItemOrders.length - 10} more…

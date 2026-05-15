@@ -58,4 +58,15 @@ export const factoryService = {
     const response = await api.delete(`/factory/${id}/permanent`);
     return response.data;
   },
+
+  createPayment: async (data) => {
+    const response = await api.post('/factory/payments', data);
+    return response.data;
+  },
+
+  // ✅ NEW: Update payment record
+  updatePayment: async (id, data) => {
+    const response = await api.put(`/factory/payments/${id}`, data);
+    return response.data;
+  },
 };

@@ -48,10 +48,17 @@ const factoryReceivingSchema = new mongoose.Schema(
       acceptedAt: Date,        // ✅ ADD THIS
       isEdit: Boolean   
     },
-
+    items: [
+      {
+        design: { type: String },
+        color: { type: String },
+        quantities: { type: Map, of: Number },
+        totalQuantity: { type: Number },
+      }
+    ],
     sourceType: {
       type: String,
-      enum: ['factory', 'borrowed_buyer', 'borrowed_vendor', 'return', 'transfer', 'supplier-sync', 'other'],
+      enum: ['factory', 'borrowed_buyer', 'borrowed_vendor', 'return', 'transfer', 'supplier-sync', 'other', 'payment'],
       default: 'factory',
     },
     sourceName: { type: String },

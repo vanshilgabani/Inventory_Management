@@ -582,6 +582,17 @@ const deleteReceiving = async (req, res) => {
       return res.status(404).json({ message: 'Receiving record not found or already deleted' });
     }
 
+    if (receiving.sourceType === 'payment') {
+      receiving.deletedAt = new Date();
+      receiving.deletedBy = req.user?.id;
+      receiving.deletionReason = 'User deleted';
+      await receiving.save({ session });
+      await session.commitTransaction();
+      session.endSession();
+      console.log('Payment record deleted:', receiving._id);
+      return res.json({ message: 'Payment record deleted successfully' });
+    }
+
     // Check borrowed stock status
     if (['borrowedbuyer', 'borrowedvendor'].includes(receiving.sourceType)) {
       if (receiving.borrowStatus === 'active' || receiving.borrowStatus === 'partial') {
@@ -1313,6 +1324,69 @@ const getBorrowHistoryBySource = async (req, res) => {
   }
 };
 
+// CREATE PAYMENT RECORD
+const createPayment = async (req, res) => {
+  try {
+    const { paymentAmount, paymentNotes, paymentDate, sourceName, notes } = req.body;
+
+    if (!paymentAmount || paymentAmount <= 0) {
+      return res.status(400).json({ message: 'Payment amount is required and must be greater than 0' });
+    }
+
+    const record = await FactoryReceiving.create({
+      design: 'PAYMENT',
+      color: '-',
+      quantities: {},
+      totalQuantity: 0,
+      batchId: '',
+      notes: notes || paymentNotes || '',
+      paymentAmount: Number(paymentAmount),
+      paymentNotes: paymentNotes || '',
+      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+      paymentStatus: 'completed',
+      sourceName: sourceName || '',
+      receivedBy: req.user?.name || 'Admin',
+      organizationId: req.organizationId,
+      sourceType: 'payment',
+    });
+
+    console.log('Payment record created:', record._id);
+    res.status(201).json(record);
+  } catch (error) {
+    console.error('Create Payment Error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// EDIT PAYMENT RECORD
+const updatePayment = async (req, res) => {
+  try {
+    const { paymentAmount, paymentNotes, paymentDate, sourceName, notes } = req.body;
+
+    const record = await FactoryReceiving.findOne({
+      _id: req.params.id,
+      organizationId: req.organizationId,
+      sourceType: 'payment',
+      deletedAt: null,
+    });
+
+    if (!record) return res.status(404).json({ message: 'Payment record not found' });
+
+    if (paymentAmount !== undefined) record.paymentAmount = Number(paymentAmount);
+    if (paymentNotes !== undefined) record.paymentNotes = paymentNotes;
+    if (paymentDate !== undefined) record.paymentDate = new Date(paymentDate);
+    if (sourceName !== undefined) record.sourceName = sourceName;
+    if (notes !== undefined) record.notes = notes;
+
+    await record.save();
+    console.log('Payment record updated:', record._id);
+    res.json(record);
+  } catch (error) {
+    console.error('Update Payment Error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   getAllReceivings,
   createReceiving,
@@ -1325,4 +1399,6 @@ module.exports = {
   restoreReceiving,
   getDeletedReceivings,
   permanentlyDeleteReceiving,
+  createPayment,
+  updatePayment,
 };

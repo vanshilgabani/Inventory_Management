@@ -121,6 +121,91 @@ const FinalImportPreviewModal = ({
             </div>
           </div>
 
+          {/* Only collapsible: Multi-product Flipkart orders */}
+          {multiProductOrders.length > 0 && (
+            <details className="border border-blue-100 rounded-xl overflow-hidden">
+              <summary className="px-4 py-2.5 bg-blue-50 cursor-pointer hover:bg-blue-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-blue-900">
+                    Multi-product Flipkart orders
+                  </span>
+                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                    {multiProductOrders.length} orders
+                  </span>
+                </div>
+                <span className="text-[11px] text-blue-800">
+                  Click to view Tracking + Order IDs
+                </span>
+              </summary>
+
+              <div className="px-4 pb-3 pt-1 text-xs">
+                <div className="max-h-40 overflow-y-auto space-y-2">
+                  {multiProductOrders.slice(0, 20).map((o) => (
+                    <div
+                      key={o.trackingId}
+                      className="flex items-center justify-between rounded-lg bg-white px-3 py-2 border border-blue-100 shadow-sm"
+                    >
+                      <div className="flex flex-col gap-1">
+                        <div className="flex flex-wrap gap-x-4 gap-y-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(o.trackingId);
+                              toast.success('Tracking ID copied');
+                            }}
+                            className="text-[11px] font-mono text-blue-700 hover:underline"
+                          >
+                            <span className="font-semibold text-gray-600">
+                              Tracking ID:
+                            </span>{' '}
+                            {o.trackingId || 'N/A'}
+                          </button>
+
+                          {o.orderId && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(o.orderId);
+                                toast.success('Order ID copied');
+                              }}
+                              className="text-[11px] font-mono text-gray-700 hover:underline"
+                            >
+                              <span className="font-semibold text-gray-600">
+                                Order ID:
+                              </span>{' '}
+                              {o.orderId}
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="text-[11px] text-gray-600">
+                          <span className="font-semibold text-gray-700">
+                            Buyer:
+                          </span>{' '}
+                          {o.buyerName || '-'}
+                          {o.city ? ` • ${o.city}` : ''}
+                          {o.pinCode ? ` • ${o.pinCode}` : ''}
+                        </div>
+                      </div>
+
+                      <div className="ml-3">
+                        <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700 border border-blue-200">
+                          {o.units} units
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+
+                  {multiProductOrders.length > 20 && (
+                    <div className="text-[11px] text-blue-700">
+                      + {multiProductOrders.length - 20} more…
+                    </div>
+                  )}
+                </div>
+              </div>
+            </details>
+          )}
+
           {/* Units by Variant */}
           <div className="border border-gray-200 rounded-xl overflow-hidden">
             <div className="px-4 py-2.5 bg-gray-50 border-b flex items-center justify-between">
@@ -145,7 +230,7 @@ const FinalImportPreviewModal = ({
                   <thead className="bg-gray-100 sticky top-0 z-10">
                     <tr>
                       <th className="px-3 py-2 text-left font-medium text-gray-600">
-                        Color • Size
+                        Design • Color • Size
                       </th>
                       <th className="px-3 py-2 text-right font-medium text-gray-600">
                         Units
@@ -158,12 +243,16 @@ const FinalImportPreviewModal = ({
                   <tbody>
                     {breakdownArray.map((item) => (
                       <tr
-                        key={`${item.color}-${item.size}`}
+                        key={`${item.design}-${item.color}-${item.size}`}
                         className="border-t hover:bg-gray-50"
                       >
                         <td className="px-3 py-2">
                           <span className="text-gray-800">
-                            {item.color || '-'}
+                            {item.design || '-'}
+                          </span>
+                          <span className="text-gray-800">
+                            {' '} 
+                            • {item.color || '-'}
                           </span>
                           <span className="text-gray-500">
                             {' '}
@@ -173,12 +262,12 @@ const FinalImportPreviewModal = ({
                         <td className="px-3 py-2 text-right font-medium">
                           {item.quantity || 0}
                         </td>
-                        <td className="px-3 py-2 text-right text-gray-700">
+                        {/*<td className="px-3 py-2 text-right text-gray-700">
                           {item.orderCount || 0}{' '}
                           <span className="text-[11px] text-gray-500">
                             {item.orderCount === 1 ? 'order' : 'orders'}
                           </span>
-                        </td>
+                        </td>*/}
                       </tr>
                     ))}
                   </tbody>
@@ -191,62 +280,6 @@ const FinalImportPreviewModal = ({
               <span>Inventory will be updated after import.</span>
             </div>
           </div>
-
-          {/* Multi-product orders section */}
-          {multiProductOrders.length > 0 && (
-            <details className="border border-blue-100 rounded-xl overflow-hidden">
-              <summary className="px-4 py-2.5 bg-blue-50 cursor-pointer hover:bg-blue-100 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-blue-900">
-                    Multi-product Flipkart orders
-                  </span>
-                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
-                    {multiProductOrders.length} orders
-                  </span>
-                </div>
-                <span className="text-[11px] text-blue-800">
-                  Click to view order IDs, buyers, cities
-                </span>
-              </summary>
-
-              <div className="px-4 pb-3 pt-1 text-xs">
-                <div className="max-h-40 overflow-y-auto space-y-1.5">
-                  {multiProductOrders.slice(0, 20).map((o) => (
-                    <div
-                      key={o.orderId}
-                      className="flex items-center justify-between rounded-md bg-white px-2 py-1 border border-blue-100"
-                    >
-                      <div className="flex flex-col">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(o.orderId);
-                            toast.success('Order ID copied');
-                          }}
-                          className="font-mono text-[11px] text-blue-700 hover:underline text-left"
-                        >
-                          {o.orderId}
-                        </button>
-                        <span className="text-[11px] text-gray-600">
-                          Buyer: {o.buyerName || '-'}
-                          {o.city ? ` • ${o.city}` : ''}
-                          {o.pinCode ? ` • ${o.pinCode}` : ''}
-                        </span>
-                      </div>
-                      <span className="text-[11px] font-semibold text-blue-700">
-                        {o.units} units
-                      </span>
-                    </div>
-                  ))}
-                  {multiProductOrders.length > 20 && (
-                    <div className="text-[11px] text-blue-700">
-                      + {multiProductOrders.length - 20} more…
-                    </div>
-                  )}
-                </div>
-              </div>
-            </details>
-          )}
         </div>
 
         {/* Footer buttons */}

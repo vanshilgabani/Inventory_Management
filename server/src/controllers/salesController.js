@@ -773,40 +773,18 @@ exports.getStatsForCards = async (req, res) => {
     // Get counts grouped by status
     const stats = await MarketplaceSale.aggregate([
       { $match: filter },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 }
-        }
-      }
+      { $group: { _id: '$status', count: { $sum: '$quantity' }, orders: { $sum: 1 } } }
     ]);
 
     // Get total count
     const total = await MarketplaceSale.countDocuments(filter);
 
     // Format response
-    const statusCounts = {
-      dispatched: 0,
-      delivered: 0,
-      returned: 0,
-      cancelled: 0,
-      wrongreturn: 0,
-      RTO: 0
-    };
-
+    const statusCounts = { dispatched: 0, delivered: 0, returned: 0, cancelled: 0, wrongreturn: 0, RTO: 0 };
     stats.forEach(stat => {
-      if (statusCounts.hasOwnProperty(stat._id)) {
-        statusCounts[stat._id] = stat.count;
-      }
+      if (statusCounts.hasOwnProperty(stat._id)) statusCounts[stat._id] = stat.count; // count = units now
     });
-
-    res.json({
-      success: true,
-      data: {
-        total,
-        ...statusCounts
-      }
-    });
+    res.json({ success: true, data: { total, ...statusCounts } });
 
   } catch (error) {
     console.error('Get stats error:', error);
@@ -3159,12 +3137,30 @@ exports.getDateSummaries = async (req, res) => {
           }
         }
       }] : []),
+      // ✅ $group is its own stage — closed properly
       {
         $group: {
           _id: '$displayDate',
           count: { $sum: 1 },
           totalQuantity: { $sum: '$quantity' },
-          accountDetails: { $push: { accountName: '$accountName', quantity: '$quantity' } 
+          accountDetails: { $push: { accountName: '$accountName', quantity: '$quantity' } }, // ← fixed closing brace + comma
+          uniqueTrackingIds: { $addToSet: '$trackingId' }  // ← now correctly inside $group
+        }
+      },
+      // ✅ $project is a SEPARATE stage — not nested inside $group
+      {
+        $project: {
+          _id: 1,
+          count: 1,
+          totalQuantity: 1,
+          accountDetails: 1,
+          orderCount: {
+            $size: {
+              $filter: {
+                input: '$uniqueTrackingIds',
+                cond: { $ne: ['$$this', null] }
+              }
+            }
           }
         }
       },
@@ -3179,7 +3175,8 @@ exports.getDateSummaries = async (req, res) => {
       s.accountDetails.forEach(({ accountName, quantity }) => {
         accountBreakdown[accountName] = (accountBreakdown[accountName] || 0) + (quantity || 1);
       });
-      return { date: s._id, count: s.count, totalQuantity: s.totalQuantity, accountBreakdown };
+      // ✅ now passes orderCount to frontend
+      return { date: s._id, count: s.count, totalQuantity: s.totalQuantity, accountBreakdown, orderCount: s.orderCount };
     });
 
     res.json({ success: true, data: result });
