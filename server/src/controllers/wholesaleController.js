@@ -67,6 +67,24 @@ const deductFromAllocationsProportionally = (sizeVariant, amountToDeduct) => {
   console.log(`✅ Allocation deduction done. Remaining deduction: ${remaining} (should be 0)`);
 };
 
+// Always recomputes buyer stats from live (non-deleted) orders
+const recomputeBuyerStats = async (buyerId, organizationId, session = null) => {
+  const query = WholesaleOrder.find(
+    { buyerId, organizationId, deletedAt: null },
+    { amountPaid: 1, amountDue: 1, totalAmount: 1 }
+  ).lean();
+  if (session) query.session(session);
+
+  const orders = await query;
+
+  const totalOrders = orders.length;
+  const totalSpent  = orders.reduce((s, o) => s + (o.totalAmount || 0), 0);
+  const totalPaid   = Math.round(orders.reduce((s, o) => s + (o.amountPaid  || 0), 0) * 100) / 100;
+  const totalDue    = Math.max(0, Math.round(orders.reduce((s, o) => s + (o.amountDue || 0), 0) * 100) / 100);
+
+  return { totalOrders, totalSpent, totalPaid, totalDue };
+};
+
 // ✅ ADD THIS - Global flag to disable locked stock
 const STOCK_LOCK_DISABLED = true;
 
@@ -1187,35 +1205,22 @@ const getAllBuyers = async (req, res) => {
         const totalOrders = orders.length;
         const totalSpent  = orders.reduce((sum, o) => sum + o.totalAmount, 0);
 
-        // When bills exist, trust bill balanceDue (covers PREV-ADJ too)
-        // When no bills, fall back to order-based calculation
-        let totalDue, totalPaid;
+        // AFTER — always use live order data, bills are for invoicing only
+        const totalPaid = Math.round(
+          orders.reduce((sum, o) => sum + (o.amountPaid || 0), 0) * 100
+        ) / 100;
 
-        if (buyer.monthlyBills && buyer.monthlyBills.length > 0) {
-          // Fetch fresh bill values — don't trust cached monthlyBills array
-          const activeBills = await MonthlyBill.find({
-            organizationId,
-            'buyer.id': buyer._id.toString()
-          }).lean();
-
-          totalDue  = Math.max(0, Math.round(
-            activeBills.reduce((s, b) => s + (b.financials?.balanceDue || 0), 0) * 100
-          ) / 100);
-          totalPaid = Math.round(
-            activeBills.reduce((s, b) => s + (b.financials?.amountPaid || 0), 0) * 100
-          ) / 100;
-        } else {
-          totalPaid = orders.reduce((sum, o) => sum + o.amountPaid, 0);
-          totalDue  = orders.reduce((sum, o) => sum + o.amountDue, 0);
-        }
+        const totalDue = Math.max(
+          0,
+          Math.round(orders.reduce((sum, o) => sum + (o.amountDue || 0), 0) * 100) / 100
+        );
 
         const finalStats = {
           totalOrders,
-          totalDue:   parseFloat(totalDue.toFixed(2)),
-          totalPaid:  parseFloat(totalPaid.toFixed(2)),
+          totalDue,
+          totalPaid,
           totalSpent: parseFloat(totalSpent.toFixed(2)),
-          // hasBills derived from tracking array on buyer — no extra DB query needed
-          hasBills: (buyer.monthlyBills?.length || 0) > 0,
+          hasBills: buyer.monthlyBills?.length > 0 || false,
         };
 
         // Silently heal stale cached values in DB (fire and forget)

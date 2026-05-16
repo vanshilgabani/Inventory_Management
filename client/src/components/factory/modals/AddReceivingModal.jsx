@@ -185,7 +185,7 @@ const AddReceivingModal = ({ onClose, onSubmit, products, enabledSizes }) => {
   if (colorsLoading) {
     return (
       <Modal isOpen={true} onClose={onClose} title="📥 Receive Stock" size="xl">
-        <Loader fullScreen={false} message="Loading colors..." />
+        <Loader fullScreen={false} message="Loading modal..." />
       </Modal>
     );
   }

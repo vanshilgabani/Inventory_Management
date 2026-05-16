@@ -379,7 +379,7 @@ const handleDeletePayment = async (id) => {
             onClick={() => setActiveTab('factory')}
             className={`px-6 py-3 rounded-md font-medium transition-all duration-200 ${
               activeTab === 'factory'
-                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
+                ? 'bg-gradient-to-r from-blue-400 to-blue-600 text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
             }`}
           >
@@ -389,7 +389,7 @@ const handleDeletePayment = async (id) => {
             onClick={() => setActiveTab('borrowed')}
             className={`px-6 py-3 rounded-md font-medium transition-all duration-200 ${
               activeTab === 'borrowed'
-                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
+                ? 'bg-gradient-to-r from-orange-400 to-orange-600 text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
             }`}
           >
@@ -398,7 +398,7 @@ const handleDeletePayment = async (id) => {
           <button onClick={() => setActiveTab('payments')}
             className={`px-6 py-3 rounded-md font-medium transition-all duration-200 ${
               activeTab === 'payments'
-                ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-md'
+                ? 'bg-gradient-to-r from-green-400 to-emerald-600 text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
             }`}>
             Payments

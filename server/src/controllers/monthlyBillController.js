@@ -54,6 +54,8 @@ const getArticleDescription = (design, price, designPriceSorted) => {
   }
 };
 
+const round2 = (num) => Math.round((Number(num) || 0) * 100) / 100;
+
 const updateChallansAfterPayment = async (bill, session) => {
   try {
     logger.info('Starting challan payment update', {
@@ -63,7 +65,6 @@ const updateChallansAfterPayment = async (bill, session) => {
       period: `${bill.billingPeriod.month} ${bill.billingPeriod.year}`
     });
 
-    // STEP 1: Find ALL bills for this buyer + period (includes split bills)
     const allBills = await MonthlyBill.find({
       organizationId: bill.organizationId,
       'buyer.id': bill.buyer.id,
@@ -76,54 +77,52 @@ const updateChallansAfterPayment = async (bill, session) => {
       billNumbers: allBills.map(b => b.billNumber)
     });
 
-    // STEP 2: Build cumulative payment map for each challan
     const challanPaymentMap = new Map();
-    
+
     for (const b of allBills) {
-      // Calculate how much of this bill has been paid
-      const realChallansTotal = b.challans
-        .filter(c => c.challanId)  // exclude PREV-ADJ (challanId: null)
-        .reduce((sum, c) => sum + (c.totalAmount || 0), 0);
+      const challans = Array.isArray(b.challans) ? b.challans : [];
+      const realChallans = challans.filter(c => c && c.challanId);
 
-      const paymentForRealChallans = Math.min(b.financials.amountPaid, realChallansTotal);
+      const realChallansTotal = round2(
+        realChallans.reduce((sum, c) => sum + Number(c.totalAmount || 0), 0)
+      );
 
-      const billPaidRatio = realChallansTotal > 0
-        ? paymentForRealChallans / realChallansTotal
-        : 0;
+      const amountPaid = round2(b?.financials?.amountPaid || 0);
+      const paymentForRealChallans = Math.min(amountPaid, realChallansTotal);
+
+      const billPaidRatio =
+        realChallansTotal > 0 ? paymentForRealChallans / realChallansTotal : 0;
 
       logger.debug('Processing bill', {
         billNumber: b.billNumber,
-        grandTotal: b.financials.grandTotal,
-        amountPaid: b.financials.amountPaid,
+        grandTotal: round2(b?.financials?.grandTotal || 0),
+        amountPaid,
         paidRatio: billPaidRatio,
-        challansCount: b.challans.length
+        challansCount: challans.length
       });
-      
-      // For each challan in this bill
-      for (const challan of b.challans) {
-        if (!challan.challanId) continue;
-        
+
+      for (const challan of realChallans) {
         const challanId = challan.challanId.toString();
-        
-        // Initialize tracking for this challan if first time seeing it
+
         if (!challanPaymentMap.has(challanId)) {
           challanPaymentMap.set(challanId, {
             challanNumber: challan.challanNumber,
-            totalInBills: 0,      // Total amount across all bills
-            totalPaid: 0,         // Total paid amount across all bills
-            appearances: []       // Track which bills it appears in
+            totalInBills: 0,
+            totalPaid: 0,
+            appearances: []
           });
         }
-        
+
         const info = challanPaymentMap.get(challanId);
-        
-        // Add this bill's allocation
-        info.totalInBills += challan.totalAmount;
-        info.totalPaid += (challan.totalAmount * billPaidRatio);
+        const challanAmount = Number(challan.totalAmount || 0);
+        const allocatedPaid = challanAmount * billPaidRatio;
+
+        info.totalInBills = round2(info.totalInBills + challanAmount);
+        info.totalPaid = round2(info.totalPaid + allocatedPaid);
         info.appearances.push({
           billNumber: b.billNumber,
-          amount: challan.totalAmount,
-          paidAmount: (challan.totalAmount * billPaidRatio),
+          amount: round2(challanAmount),
+          paidAmount: round2(allocatedPaid),
           billStatus: b.status
         });
       }
@@ -133,26 +132,44 @@ const updateChallansAfterPayment = async (bill, session) => {
       uniqueChallans: challanPaymentMap.size
     });
 
-    // STEP 3: Update each WholesaleOrder based on cumulative payments
+    const periodBalanceDue = round2(
+      allBills.reduce((sum, b) => sum + Number(b?.financials?.balanceDue || 0), 0)
+    );
+    const isEntirePeriodFullyPaid = periodBalanceDue === 0;
+
     let updatedCount = 0;
     let fullyPaidCount = 0;
     let partiallyPaidCount = 0;
+    let pendingCount = 0;
 
     for (const [challanId, paymentInfo] of challanPaymentMap) {
-      const order = await WholesaleOrder.findById(challanId).session(session);
+      const order = await WholesaleOrder.findOne({
+        _id: challanId,
+        deletedAt: null,
+      }).session(session);
+
       if (!order) {
-        logger.warn('Challan not found, skipping', { challanId });
+        logger.warn('Challan not found or soft deleted, skipping payment sync', {
+          challanId,
+          challanNumber: paymentInfo.challanNumber,
+          billNumber: bill.billNumber,
+        });
         continue;
       }
 
-      // Calculate final payment amounts
-      const totalPaid = Math.min(
-        Math.round(paymentInfo.totalPaid * 100) / 100, // Round to 2 decimals
-        order.totalAmount
+      if (!Array.isArray(order.paymentHistory)) {
+        order.paymentHistory = [];
+      }
+      let totalPaid = Math.min(
+        round2(paymentInfo.totalPaid),
+        round2(order.totalAmount || 0)
       );
-      const totalDue = Math.max(0, order.totalAmount - totalPaid);
 
-      // Determine payment status
+      let totalDue = Math.max(
+        0,
+        round2(Number(order.totalAmount || 0) - totalPaid)
+      );
+
       let newStatus;
       if (totalDue <= 0) {
         newStatus = 'Paid';
@@ -162,29 +179,67 @@ const updateChallansAfterPayment = async (bill, session) => {
         partiallyPaidCount++;
       } else {
         newStatus = 'Pending';
+        pendingCount++;
       }
 
-      // Only update if status actually changed
-      const statusChanged = order.paymentStatus !== newStatus;
-      const amountChanged = Math.abs(order.amountPaid - totalPaid) > 0.01;
+      if (isEntirePeriodFullyPaid && totalDue > 0 && totalDue < 1) {
+        const residual = totalDue;
+        totalPaid = round2(order.totalAmount || 0);
+        totalDue = 0;
+        newStatus = 'Paid';
 
-      if (statusChanged || amountChanged) {
-        const oldStatus = order.paymentStatus;
-        const oldPaid = order.amountPaid;
+        const alreadyHasResidualEntry = (order.paymentHistory || []).some(
+          p =>
+            p.paymentMethod === 'Rounding Adjustment' &&
+            typeof p.notes === 'string' &&
+            p.notes.includes(`bill ${bill.billNumber} fully paid`) &&
+            Math.abs(Number(p.amount || 0) - residual) <= 0.01
+        );
+
+        if (!alreadyHasResidualEntry) {
+          order.paymentHistory.push({
+            amount: residual,
+            paymentDate: new Date(),
+            paymentMethod: 'Rounding Adjustment',
+            notes: `Auto rounding adjustment ₹${residual.toFixed(2)} — bill ${bill.billNumber} fully paid`,
+            recordedBy: 'System-Reconcile'
+          });
+        }
+      }
+
+      const oldPaid = round2(order.amountPaid || 0);
+      const oldDue = round2(order.amountDue || 0);
+      const oldStatus = order.paymentStatus || 'Pending';
+
+      const statusChanged = oldStatus !== newStatus;
+      const amountPaidChanged = Math.abs(oldPaid - totalPaid) > 0.01;
+      const amountDueChanged = Math.abs(oldDue - totalDue) > 0.01;
+
+      if (statusChanged || amountPaidChanged || amountDueChanged) {
+        const deltaPaid = round2(totalPaid - oldPaid);
 
         order.amountPaid = totalPaid;
         order.amountDue = totalDue;
         order.paymentStatus = newStatus;
 
-        // Add payment history entry if this is a meaningful change
-        if (amountChanged) {
-          order.paymentHistory.push({
-            amount: totalPaid - oldPaid,
-            paymentDate: new Date(),
-            paymentMethod: 'Bill Payment',
-            notes: `Cumulative payment via bills. Total paid: ₹${totalPaid.toFixed(2)} of ₹${order.totalAmount.toFixed(2)}`,
-            recordedBy: 'System'
-          });
+        if (deltaPaid !== 0) {
+          const alreadyHasSameSystemEntry = (order.paymentHistory || []).some(
+            p =>
+              p.paymentMethod === 'Bill Payment' &&
+              typeof p.notes === 'string' &&
+              p.notes.includes(`Total paid: ₹${totalPaid.toFixed(2)} of ₹${round2(order.totalAmount || 0).toFixed(2)}`) &&
+              Math.abs(Number(p.amount || 0) - deltaPaid) <= 0.01
+          );
+
+          if (!alreadyHasSameSystemEntry) {
+            order.paymentHistory.push({
+              amount: deltaPaid,
+              paymentDate: new Date(),
+              paymentMethod: 'Bill Payment',
+              notes: `Cumulative payment via bills. Total paid: ₹${totalPaid.toFixed(2)} of ₹${round2(order.totalAmount || 0).toFixed(2)}`,
+              recordedBy: 'System'
+            });
+          }
         }
 
         await order.save({ session });
@@ -197,8 +252,9 @@ const updateChallansAfterPayment = async (bill, session) => {
           newStatus,
           oldPaid: oldPaid.toFixed(2),
           newPaid: totalPaid.toFixed(2),
-          totalDue: totalDue.toFixed(2),
-          totalAmount: order.totalAmount.toFixed(2),
+          oldDue: oldDue.toFixed(2),
+          newDue: totalDue.toFixed(2),
+          totalAmount: round2(order.totalAmount || 0).toFixed(2),
           appearances: paymentInfo.appearances
         });
       }
@@ -209,52 +265,19 @@ const updateChallansAfterPayment = async (bill, session) => {
       challansProcessed: challanPaymentMap.size,
       challansUpdated: updatedCount,
       fullyPaid: fullyPaidCount,
-      partiallyPaid: partiallyPaidCount
+      partiallyPaid: partiallyPaidCount,
+      pending: pendingCount,
+      periodBalanceDue
     });
-
-    // When bill is fully paid, force-clear any rounding residuals on all orders
-    if (bill.financials.balanceDue === 0) {
-      logger.info('Bill fully paid — reconciling any rounding residuals', {
-        billNumber: bill.billNumber
-      });
-
-      for (const [challanId] of challanPaymentMap) {
-        const order = await WholesaleOrder.findById(challanId).session(session);
-        if (!order) continue;
-
-        if (order.amountDue > 0 && order.amountDue < 1) {
-          // Small rounding residual — write it off
-          const residual = order.amountDue;
-
-          order.amountPaid      = order.totalAmount;
-          order.amountDue       = 0;
-          order.paymentStatus   = 'Paid';
-
-          order.paymentHistory.push({
-            amount       : residual,
-            paymentDate  : new Date(),
-            paymentMethod: 'Rounding Adjustment',
-            notes        : `Auto rounding adjustment ₹${residual.toFixed(2)} — bill ${bill.billNumber} fully paid`,
-            recordedBy   : 'System-Reconcile'
-          });
-
-          await order.save({ session });
-
-          logger.info('Rounding residual cleared', {
-            challanId,
-            challanNumber: order.challanNumber,
-            residualCleared: residual
-          });
-        }
-      }
-    }
 
     return {
       success: true,
       challansProcessed: challanPaymentMap.size,
       challansUpdated: updatedCount,
       fullyPaid: fullyPaidCount,
-      partiallyPaid: partiallyPaidCount
+      partiallyPaid: partiallyPaidCount,
+      pending: pendingCount,
+      periodBalanceDue
     };
 
   } catch (error) {
