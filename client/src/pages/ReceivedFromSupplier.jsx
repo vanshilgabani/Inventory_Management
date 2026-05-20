@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { useColorPalette } from '../../src/hooks/useColorPalette';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 const API_URL = import.meta.env.VITE_API_URL;
 const PAGE_SIZE = 20;
@@ -576,6 +577,7 @@ const ReceivedFromSupplier = () => {
           )}
         </>
       )}
+      <ScrollToTop />
     </div>
   );
 };

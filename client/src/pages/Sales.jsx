@@ -368,9 +368,9 @@ const importOrderStats = useMemo(() => {
     const styles = {
       dispatched: 'bg-yellow-100 text-yellow-800',
       delivered: 'bg-green-100 text-green-800',
-      returned: 'bg-red-100 text-red-800',
-      RTO: 'bg-gray-100 text-gray-800',
-      wrong_return: 'bg-orange-100 text-orange-800'
+      returned: 'bg-orange-100 text-orange-800',
+      RTO: 'bg-black text-white',
+      wrongreturn: 'bg-red-100 text-red-700'
     };
 
     return (

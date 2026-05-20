@@ -5,6 +5,7 @@ import { directSalesService } from '../services/directSalesService';
 import { settlementService } from '../services/settlementService';
 import { useColorPalette } from '../hooks/useColorPalette';
 import { useEnabledSizes } from '../hooks/useEnabledSizes';
+import ScrollToTop from '../components/common/ScrollToTop';
 
 // ─── Styles ────────────────────────────────────────────────────────────────────
 const STYLES = `
@@ -2527,6 +2528,7 @@ export default function Reports() {
           </div>
         </div>
       </div>
+      <ScrollToTop />
     </div>
   );
 }

@@ -8,9 +8,9 @@ require('dotenv').config();
 const MarketplaceSale = require('../server/src/models/MarketplaceSale');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
-const SOURCE_START = new Date('2026-05-15T18:30:00.000Z');  // Apr 25 00:00 IST
-const SOURCE_END   = new Date('2026-05-16T18:29:59.999Z');  // Apr 25 23:59 IST
-const TARGET_DATE  = new Date('2026-05-15T18:30:00.000Z');  // Apr 24 00:00 IST
+const SOURCE_START = new Date('2026-05-19T18:30:00.000Z');  // Apr 25 00:00 IST
+const SOURCE_END   = new Date('2026-05-20T18:29:59.999Z');  // Apr 25 23:59 IST
+const TARGET_DATE  = new Date('2026-05-19T18:30:00.000Z');  // Apr 24 00:00 IST
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Status Options ───────────────────────────────────────────────────────────
