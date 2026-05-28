@@ -802,35 +802,24 @@ const handleUpdateBillNumber = async () => {
   // NEW: Handle customize bill
   const handleCustomizeBill = async () => {
     if (!customizingBill) return;
-
     setIsSubmitting(true);
-
     try {
       const payload = {};
+      if (customizeForm.paymentTermDays !== 30) payload.paymentTermDays = customizeForm.paymentTermDays;
+      if (customizeForm.hsnCode !== '6203') payload.hsnCode = customizeForm.hsnCode;
+      if (customizeForm.notes.trim()) payload.notes = customizeForm.notes.trim();
+      if (customizeForm.billDate) payload.billDate = customizeForm.billDate;
 
-      // Only send changed values
-      if (customizeForm.paymentTermDays !== 30) {
-        payload.paymentTermDays = customizeForm.paymentTermDays;
+      // Fix from previous issue — send removeChallans
+      if (customizeForm.removeChallans.length > 0) {
+        payload.removeChallans = customizeForm.removeChallans;
       }
 
-      if (customizeForm.hsnCode !== '6203') {
-        payload.hsnCode = customizeForm.hsnCode;
-      }
-
-      if (customizeForm.notes.trim()) {
-        payload.notes = customizeForm.notes.trim();
-      }
-
-      if (customizeForm.billDate) {
-        payload.billDate = customizeForm.billDate;
-      }
-
+      // ✅ Use _id instead of .id
       await monthlyBillService.customizeBill(customizingBill._id, payload);
-
       toast.success('Bill customized successfully!');
       setShowCustomizeModal(false);
       await fetchInitialData();
-
     } catch (error) {
       toast.error(error.response?.data?.message || 'Failed to customize bill');
     } finally {
