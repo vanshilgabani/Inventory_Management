@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import Loader from '../components/common/Loader';
 import buyerGSTService from '../services/buyerGSTService';
 import {monthlyBillService} from '../services/monthlyBillService';
@@ -1598,7 +1598,7 @@ const handleUpdateBillNumber = async () => {
                       );
                     })
                     .map((page, index, array) => (
-                      <React.Fragment key={page}>
+                      <Fragment key={page}>
                         {index > 0 && array[index - 1] !== page - 1 && (
                           <span className="px-2 text-slate-400">...</span>
                         )}
@@ -1613,7 +1613,7 @@ const handleUpdateBillNumber = async () => {
                         >
                           {page}
                         </button>
-                      </React.Fragment>
+                      </Fragment>
                     ))}
                 </div>
 
