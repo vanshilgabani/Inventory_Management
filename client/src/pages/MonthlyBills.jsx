@@ -1025,7 +1025,7 @@ const handleUpdateBillNumber = async () => {
     }
 
     try {
-      await monthlyBillService.deleteBill(billId);
+      await monthlyBillService.deleteBill(bill._id);
       toast.success('Bill deleted successfully');
       await fetchInitialData();
     } catch (error) {
