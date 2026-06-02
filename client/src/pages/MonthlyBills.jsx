@@ -2519,7 +2519,7 @@ const handleUpdateBillNumber = async () => {
                 <span>{isSubmitting ? 'Saving...' : 'Save Changes'}</span>
               </button>
             
-              {/* Save & Finalize — only if user explicitly wants to finalize */}
+              {/* Save & Finalize — only if user explicitly wants to finalize 
               <button
                 onClick={async () => {
                   if (!window.confirm('Save changes and finalize this bill? You will NOT be able to split after finalizing.')) return;
@@ -2554,7 +2554,7 @@ const handleUpdateBillNumber = async () => {
                   <FiZap className="w-5 h-5" />
                 )}
                 <span>{isSubmitting ? 'Finalizing...' : 'Save & Finalize'}</span>
-              </button>
+              </button> */}
             
             </div>
           </div>
