@@ -815,7 +815,7 @@ const handleUpdateBillNumber = async () => {
         payload.removeChallans = customizeForm.removeChallans;
       }
   
-      await monthlyBillService.customizeBill(customizingBill.id, payload);
+      await monthlyBillService.customizeBill(customizingBill._id, payload);
       toast.success('Bill customized successfully!');
       setShowCustomizeModal(false);
       setCustomizingBill(null);
@@ -2533,8 +2533,8 @@ const handleUpdateBillNumber = async () => {
                     if (customizeForm.billDate) payload.billDate = customizeForm.billDate;
                     if (customizeForm.removeChallans.length > 0) payload.removeChallans = customizeForm.removeChallans;
             
-                    await monthlyBillService.customizeBill(customizingBill.id, payload);
-                    await monthlyBillService.finalizeBill(customizingBill.id);
+                    await monthlyBillService.customizeBill(customizingBill._id, payload);
+                    await monthlyBillService.finalizeBill(customizingBill._id);
                     toast.success('Bill customized and finalized successfully!');
                     setShowCustomizeModal(false);
                     setCustomizingBill(null);
