@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import Loader from '../components/common/Loader';
 import buyerGSTService from '../services/buyerGSTService';
 import {monthlyBillService} from '../services/monthlyBillService';
@@ -809,16 +809,16 @@ const handleUpdateBillNumber = async () => {
       if (customizeForm.hsnCode !== '6203') payload.hsnCode = customizeForm.hsnCode;
       if (customizeForm.notes.trim()) payload.notes = customizeForm.notes.trim();
       if (customizeForm.billDate) payload.billDate = customizeForm.billDate;
-
-      // Fix from previous issue — send removeChallans
+  
+      // ✅ ADD THIS — send removed challans to backend
       if (customizeForm.removeChallans.length > 0) {
         payload.removeChallans = customizeForm.removeChallans;
       }
-
-      // ✅ Use _id instead of .id
+  
       await monthlyBillService.customizeBill(customizingBill._id, payload);
       toast.success('Bill customized successfully!');
       setShowCustomizeModal(false);
+      setCustomizingBill(null);
       await fetchInitialData();
     } catch (error) {
       toast.error(error.response?.data?.message || 'Failed to customize bill');
@@ -1025,7 +1025,7 @@ const handleUpdateBillNumber = async () => {
     }
 
     try {
-      await monthlyBillService.deleteBill(billId);
+      await monthlyBillService.deleteBill(bill._id);
       toast.success('Bill deleted successfully');
       await fetchInitialData();
     } catch (error) {
@@ -1598,7 +1598,7 @@ const handleUpdateBillNumber = async () => {
                       );
                     })
                     .map((page, index, array) => (
-                      <React.Fragment key={page}>
+                      <Fragment key={page}>
                         {index > 0 && array[index - 1] !== page - 1 && (
                           <span className="px-2 text-slate-400">...</span>
                         )}
@@ -1613,7 +1613,7 @@ const handleUpdateBillNumber = async () => {
                         >
                           {page}
                         </button>
-                      </React.Fragment>
+                      </Fragment>
                     ))}
                 </div>
 
@@ -2496,67 +2496,66 @@ const handleUpdateBillNumber = async () => {
 
             {/* Action Buttons */}
             <div className="flex items-center gap-3 pt-4 border-t border-slate-200">
+              
+              {/* Cancel */}
               <button
-                onClick={() => {
-                  setShowCustomizeModal(false);
-                  setCustomizingBill(null);
-                }}
+                onClick={() => { setShowCustomizeModal(false); setCustomizingBill(null); }}
                 className="flex-1 px-4 py-3 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-all duration-200 font-medium"
               >
                 Cancel
               </button>
-
-              {/* Save Customizations (Stay as Draft) */}
+            
+              {/* Save Changes — stays as DRAFT, modal closes, user can then Split */}
               <button
                 onClick={handleCustomizeBill}
                 disabled={isSubmitting}
                 className="flex-1 px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all duration-200 font-semibold flex items-center justify-center gap-2 shadow-lg shadow-blue-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSubmitting ? (
-                  <>
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                    <span>Saving...</span>
-                  </>
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 ) : (
-                  <>
-                    <FiCheck className="w-5 h-5" />
-                    <span>Save Changes</span>
-                  </>
+                  <FiCheck className="w-5 h-5" />
                 )}
+                <span>{isSubmitting ? 'Saving...' : 'Save Changes'}</span>
               </button>
-
-              {/* Save & Finalize */}
+            
+              {/* Save & Finalize — only if user explicitly wants to finalize 
               <button
                 onClick={async () => {
-                  await handleCustomizeBill();
-                  // After saving customizations, finalize the bill
-                  setTimeout(async () => {
-                    try {
-                      await monthlyBillService.finalizeBill(customizingBill._id);
-                      toast.success('Bill customized and finalized successfully!');
-                      setShowCustomizeModal(false);
-                      setCustomizingBill(null);
-                      await fetchInitialData();
-                    } catch (error) {
-                      toast.error('Failed to finalize bill');
-                    }
-                  }, 500);
+                  if (!window.confirm('Save changes and finalize this bill? You will NOT be able to split after finalizing.')) return;
+                  setIsSubmitting(true);
+                  try {
+                    // Build payload same as handleCustomizeBill
+                    const payload = {};
+                    if (customizeForm.paymentTermDays !== 30) payload.paymentTermDays = customizeForm.paymentTermDays;
+                    if (customizeForm.hsnCode !== '6203') payload.hsnCode = customizeForm.hsnCode;
+                    if (customizeForm.notes.trim()) payload.notes = customizeForm.notes.trim();
+                    if (customizeForm.billDate) payload.billDate = customizeForm.billDate;
+                    if (customizeForm.removeChallans.length > 0) payload.removeChallans = customizeForm.removeChallans;
+            
+                    await monthlyBillService.customizeBill(customizingBill._id, payload);
+                    await monthlyBillService.finalizeBill(customizingBill._id);
+                    toast.success('Bill customized and finalized successfully!');
+                    setShowCustomizeModal(false);
+                    setCustomizingBill(null);
+                    await fetchInitialData();
+                  } catch (error) {
+                    toast.error(error.response?.data?.message || 'Failed to finalize bill');
+                  } finally {
+                    setIsSubmitting(false);
+                  }
                 }}
                 disabled={isSubmitting}
                 className="flex-1 px-4 py-3 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white rounded-lg hover:from-emerald-700 hover:to-emerald-800 transition-all duration-200 font-semibold flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSubmitting ? (
-                  <>
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                    <span>Finalizing...</span>
-                  </>
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 ) : (
-                  <>
-                    <FiZap className="w-5 h-5" />
-                    <span>Save & Finalize</span>
-                  </>
+                  <FiZap className="w-5 h-5" />
                 )}
-              </button>
+                <span>{isSubmitting ? 'Finalizing...' : 'Save & Finalize'}</span>
+              </button> */}
+            
             </div>
           </div>
         </Modal>

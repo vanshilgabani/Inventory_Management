@@ -890,30 +890,8 @@ const generateBill = async (req, res) => {
     const sgst = isSameState  ? totalGstAmount / 2 : 0;
     const igst = !isSameState ? totalGstAmount     : 0;
 
-    // Get previous outstanding (unpaid bills)
-    let previousOutstanding = 0;
-
-    if (!previousUnbilledAmount || previousUnbilledAmount === 0) {
-      const previousBills = await MonthlyBill.find({
-        organizationId,
-        'buyer.id': buyerId,
-        status    : { $in: ['generated', 'sent', 'partial', 'overdue'] },
-        'billingPeriod.endDate': { $lt: startDate }
-      }).session(session);
-
-      previousOutstanding = previousBills.reduce((sum, bill) => sum + bill.financials.balanceDue, 0);
-
-      logger.info('Previous outstanding calculated from unpaid bills', {
-        buyerId,
-        previousBills: previousBills.length,
-        previousOutstanding
-      });
-    } else {
-      logger.info('Skipping previous outstanding (adjustment mode)', {
-        buyerId,
-        adjustmentAmount: previousUnbilledAmount
-      });
-    }
+    // Outstanding from previous bills is NOT carried forward into new bills
+    const previousOutstanding = 0;
 
     // Check challan payments already made
     const challanIds = challans.map(c => c.challanId).filter(Boolean);
@@ -2144,25 +2122,11 @@ const customizeBill = async (req, res) => {
     const { paymentTermDays, hsnCode, notes, removeChallans, billDate } = req.body;
     const organizationId = req.user.organizationId;
 
-    // Find the bill
     const bill = await MonthlyBill.findOne({ _id: id, organizationId });
+    if (!bill) return res.status(404).json({ success: false, message: 'Bill not found' });
+    if (bill.status !== 'draft') return res.status(400).json({ success: false, message: 'Only draft bills can be customized' });
 
-    if (!bill) {
-      return res.status(404).json({
-        success: false,
-        message: 'Bill not found'
-      });
-    }
-
-    // Only allow customization of draft bills
-    if (bill.status !== 'draft') {
-      return res.status(400).json({
-        success: false,
-        message: 'Only draft bills can be customized'
-      });
-    }
-
-    // Update payment terms if provided
+    // Update payment terms
     if (paymentTermDays !== undefined) {
       const endDate = new Date(bill.billingPeriod.endDate);
       const dueDate = new Date(endDate);
@@ -2170,99 +2134,83 @@ const customizeBill = async (req, res) => {
       bill.paymentDueDate = dueDate;
     }
 
-    // Update HSN code if provided
-    if (hsnCode) {
-      bill.hsnCode = hsnCode;
-    }
+    // Update HSN code
+    if (hsnCode) bill.hsnCode = hsnCode;
 
-    // Update notes if provided
-    if (notes !== undefined) {
-      bill.notes = notes;
-    }
+    // Update notes
+    if (notes !== undefined) bill.notes = notes;
 
     // Bill date override
     if (billDate) {
       const parsed = new Date(billDate);
       if (!isNaN(parsed.getTime())) {
         bill.generatedAt = parsed;
-        logger.info('Bill date updated', {
-          billId    : bill._id,
-          billNumber: bill.billNumber,
-          newDate   : parsed
-        });
       }
     }
 
     // Remove challans if specified
     if (removeChallans && removeChallans.length > 0) {
-      // Filter out the challans to be removed
+      // Filter out removed challans
       bill.challans = bill.challans.filter(c => {
         const cid = c.challanId ? c.challanId.toString() : null;
         return !cid || !removeChallans.includes(cid);
       });
 
-      // Recalculate financials
+      // Recalculate financials with null safety
       let invoiceTotal = 0;
       let totalTaxableAmount = 0;
       let totalGST = 0;
 
       bill.challans.forEach(challan => {
-        invoiceTotal += challan.totalAmount;
-        totalTaxableAmount += challan.taxableAmount;
-        totalGST += challan.gstAmount;
+        invoiceTotal      += Number(challan.totalAmount)    || 0;
+        totalTaxableAmount += Number(challan.taxableAmount) || 0;
+        totalGST           += Number(challan.gstAmount)     || 0;
       });
 
-      // Update financial totals
-      bill.financials.invoiceTotal = invoiceTotal;
-      bill.financials.totalTaxableAmount = totalTaxableAmount;
-      bill.financials.totalGST = totalGST;
+      invoiceTotal       = parseFloat(invoiceTotal.toFixed(2));
+      totalTaxableAmount = parseFloat(totalTaxableAmount.toFixed(2));
+      totalGST           = parseFloat(totalGST.toFixed(2));
 
-      // Recalculate CGST/SGST or IGST
-      if (bill.financials.cgst > 0) {
-        bill.financials.cgst = totalGST / 2;
-        bill.financials.sgst = totalGST / 2;
-        bill.financials.igst = 0;
-      } else {
+      // Update financial totals
+      bill.financials.invoiceTotal       = invoiceTotal;
+      bill.financials.totalTaxableAmount = totalTaxableAmount;
+
+      // ✅ Use original bill's GST type (same-state vs inter-state)
+      const wasIGST = bill.financials.igst > 0;
+      if (wasIGST) {
         bill.financials.igst = totalGST;
         bill.financials.cgst = 0;
         bill.financials.sgst = 0;
+      } else {
+        bill.financials.cgst = parseFloat((totalGST / 2).toFixed(2));
+        bill.financials.sgst = parseFloat((totalGST / 2).toFixed(2));
+        bill.financials.igst = 0;
       }
 
       // Recalculate grand total
-      const previousOutstanding = bill.financials.previousOutstanding || 0;
-      bill.financials.grandTotal = invoiceTotal + previousOutstanding;
+      const previousOutstanding = Number(bill.financials.previousOutstanding) || 0;
+      bill.financials.grandTotal = parseFloat((invoiceTotal + previousOutstanding).toFixed(2));
 
       // Recalculate balance due
-      const amountPaid = bill.financials.amountPaid || 0;
-      bill.financials.balanceDue = bill.financials.grandTotal - amountPaid;
+      const amountPaid = Number(bill.financials.amountPaid) || 0;
+      bill.financials.balanceDue = parseFloat(Math.max(0, bill.financials.grandTotal - amountPaid).toFixed(2));
     }
 
-    // Save the updated bill
     await bill.save();
 
-    // Populate for response
-    const updatedBill = await MonthlyBill.findById(bill._id).lean();
-
-    console.log('✅ Bill customized successfully', {
-      billId: bill._id,
+    const updatedBill = await MonthlyBill.findById(bill.id).lean();
+    logger.info('Bill customized successfully', {
+      billId: bill.id,
       billNumber: bill.billNumber,
       challansRemoved: removeChallans?.length || 0,
       newTotal: bill.financials.grandTotal
     });
 
-    res.json({
-      success: true,
-      message: 'Bill customized successfully',
-      data: updatedBill
-    });
+    res.json({ success: true, message: 'Bill customized successfully', data: updatedBill });
 
   } catch (error) {
-    console.error('❌ Error customizing bill:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to customize bill',
-      error: error.message
-    });
+    logger.error('Error customizing bill', error);
+    res.status(500).json({ success: false, message: 'Failed to customize bill', error: error.message });
   }
 };
 
