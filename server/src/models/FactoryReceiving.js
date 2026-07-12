@@ -72,7 +72,7 @@ const factoryReceivingSchema = new mongoose.Schema(
     returnedQuantities: { type: Map, of: Number },
     returnReceiptId: { type: mongoose.Schema.Types.ObjectId, ref: 'FactoryReceiving' },
     originalBorrowId: { type: mongoose.Schema.Types.ObjectId, ref: 'FactoryReceiving' },
-    returnType: { type: String, enum: ['same', 'exchange'] },
+    returnType: { type: String, enum: ['same', 'exchange', 'settlement'] },
     exchangeInfo: { type: mongoose.Schema.Types.Mixed },
     totalBorrowedValue: { type: Number },
     returnedValue: { type: Number, default: 0 },

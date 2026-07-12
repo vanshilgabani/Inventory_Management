@@ -172,6 +172,90 @@ const BorrowHistoryModal = ({ data, onClose, enabledSizes }) => {
                             </tr>
                           </tbody>
                         </table>
+                        {/* Original borrow notes */}
+                        {borrow.notes?.trim() && (
+                          <div className="mt-3 flex items-start space-x-2 bg-gray-50 border border-gray-200 rounded-md px-3 py-2">
+                            <span className="text-gray-400 text-sm mt-0.5">📝</span>
+                            <p className="text-sm text-gray-600">{borrow.notes}</p>
+                          </div>
+                        )}
+
+                        {/* ADD THIS — Return/Settlement notes linked to this borrow */}
+                        {data.returns
+                          .filter((r) => r.originalBorrowId?.toString() === borrow._id?.toString())
+                          .map((ret) => {
+                            const retQuantities = ret.quantities instanceof Map
+                              ? Object.fromEntries(ret.quantities)
+                              : ret.quantities || {};
+                            const retSizes = Object.entries(retQuantities).filter(([, qty]) => qty > 0);
+
+                            return (
+                              <div key={ret._id} className="mt-2 bg-green-50 border border-green-200 rounded-md px-3 py-2">
+                                <div className="flex items-center space-x-2 mb-1">
+                                  <span className="text-sm">
+                                    {ret.returnType === 'settlement' ? '🤝' : ret.returnType === 'exchange' ? '🔀' : '↩️'}
+                                  </span>
+                                  <span className="text-xs font-semibold text-green-700 uppercase tracking-wide">
+                                    {ret.returnType === 'settlement'
+                                      ? 'Settlement'
+                                      : ret.returnType === 'exchange'
+                                      ? 'Exchange Return'
+                                      : 'Return'}{' '}
+                                    Note
+                                  </span>
+                                </div>
+
+                                {/* Exchange details */}
+                                {ret.returnType === 'exchange' && retSizes.length > 0 && (
+                                  <div className="text-sm text-gray-700 mb-1">
+                                    
+                                    {/* Original borrowed item with sizes */}
+                                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                                      <span className="text-orange-600 font-medium">
+                                        {ret.exchangeInfo?.originalDesign} - {ret.exchangeInfo?.originalColor}
+                                      </span>
+                                      <div className="flex flex-wrap gap-1">
+                                        {(() => {
+                                          const origQty = borrow.quantities instanceof Map
+                                            ? Object.fromEntries(borrow.quantities)
+                                            : borrow.quantities || {};
+                                          return Object.entries(origQty)
+                                            .filter(([, qty]) => qty > 0)
+                                            .map(([size, qty]) => (
+                                              <span key={size} className="inline-flex items-center px-2 py-0.5 bg-orange-100 text-orange-700 rounded text-xs font-medium">
+                                                {size}: {qty}
+                                              </span>
+                                            ));
+                                        })()}
+                                      </div>
+                                    </div>
+
+                                    <span className="text-gray-400 text-xs mx-1">↓ exchanged with ↓</span>
+
+                                    {/* What was returned in exchange with sizes */}
+                                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                                      <span className="text-blue-600 font-medium">
+                                        {ret.design} - {ret.color}
+                                      </span>
+                                      <div className="flex flex-wrap gap-1">
+                                        {retSizes.map(([size, qty]) => (
+                                          <span key={size} className="inline-flex items-center px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+                                            {size}: {qty}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Notes text */}
+                                {ret.notes?.trim() && (
+                                  <p className="text-sm text-gray-600 mt-1">{ret.notes}</p>
+                                )}
+                              </div>
+                            );
+                          })
+                        }
                       </div>
                     )}
                   </div>

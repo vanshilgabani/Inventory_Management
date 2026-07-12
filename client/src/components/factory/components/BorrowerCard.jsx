@@ -85,6 +85,30 @@ const BorrowerCard = ({ borrower, enabledSizes, canEditDelete, onReturn, onViewH
               <span>📦</span>
               <span>Borrowed Items</span>
             </h4>
+            {/* Action Buttons */}
+          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-gray-200">
+            <button
+              onClick={() => onViewHistory(borrower.sourceName)}
+              className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors font-medium"
+            >
+              📊 View Full History
+            </button>
+            {borrower.status !== 'completed' && canEditDelete && (
+              <button
+                onClick={() => {
+                  const activeItem = borrower.borrowedItems.find(
+                    (item) => item.totalQuantity - item.returnedQuantity > 0
+                  );
+                  if (activeItem) {
+                    onReturn(activeItem.receipt);
+                  }
+                }}
+                className="px-4 py-2 bg-gradient-to-r from-orange-600 to-red-600 text-white rounded-md hover:from-orange-700 hover:to-red-700 transition-colors font-medium"
+              >
+                📤 Mark as Returned
+              </button>
+            )}
+          </div>
             {borrower.borrowedItems.length === 0 ? (
               <p className="text-gray-500 text-sm">No active borrowed items</p>
             ) : (
@@ -285,31 +309,6 @@ const BorrowerCard = ({ borrower, enabledSizes, canEditDelete, onReturn, onViewH
               </div>
             </div>
           )}
-
-          {/* Action Buttons */}
-          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-gray-200">
-            <button
-              onClick={() => onViewHistory(borrower.sourceName)}
-              className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors font-medium"
-            >
-              📊 View Full History
-            </button>
-            {borrower.status !== 'completed' && canEditDelete && (
-              <button
-                onClick={() => {
-                  const activeItem = borrower.borrowedItems.find(
-                    (item) => item.totalQuantity - item.returnedQuantity > 0
-                  );
-                  if (activeItem) {
-                    onReturn(activeItem.receipt);
-                  }
-                }}
-                className="px-4 py-2 bg-gradient-to-r from-orange-600 to-red-600 text-white rounded-md hover:from-orange-700 hover:to-red-700 transition-colors font-medium"
-              >
-                📤 Mark as Returned
-              </button>
-            )}
-          </div>
         </div>
       )}
     </div>

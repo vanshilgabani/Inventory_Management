@@ -113,6 +113,11 @@ const ReturnStockModal = ({ receipt, onClose, onSubmit, products, enabledSizes }
       }
     }
 
+    if (!returnNotes.trim()) {
+      toast.error('Notes are required');
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -212,6 +217,19 @@ const ReturnStockModal = ({ receipt, onClose, onSubmit, products, enabledSizes }
               <div className="font-semibold text-gray-800">Exchange</div>
               <div className="text-xs text-gray-500">Return different items</div>
             </button>
+            <button
+              type="button"
+              onClick={() => setReturnType('settlement')}
+              className={`p-4 rounded-lg border-2 transition-all ${
+                returnType === 'settlement'
+                  ? 'border-green-500 bg-green-50'
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <div className="text-2xl mb-2">🤝</div>
+              <div className="font-semibold text-gray-800">Settlement</div>
+              <div className="text-xs text-gray-500">Settled without physical return</div>
+            </button>
           </div>
         </div>
 
@@ -276,7 +294,7 @@ const ReturnStockModal = ({ receipt, onClose, onSubmit, products, enabledSizes }
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4 mb-3">
+                    <div className="grid grid-cols-3 gap-4 mb-3">
                       <div>
                         <label className="block text-sm text-gray-600 mb-1">Design</label>
                         <select
@@ -349,15 +367,20 @@ const ReturnStockModal = ({ receipt, onClose, onSubmit, products, enabledSizes }
         {/* Notes */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            Return Notes {returnType === 'exchange' && <span className="text-red-500">*</span>}
+            Return Notes <span className="text-red-500">*</span>
+            {returnType === 'settlement' && (
+              <span className="text-xs text-green-600 ml-2 font-normal">(Describe the settlement details)</span>
+            )}
           </label>
           <textarea
             value={returnNotes}
             onChange={(e) => setReturnNotes(e.target.value)}
-            placeholder="Enter return notes..."
-            rows="3"
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            required={returnType === 'exchange'}
+            placeholder={
+              returnType === 'settlement'
+                ? 'Describe how the borrowing was settled (e.g. paid ₹5000 cash on 09-Jun-2026)...'
+                : 'Enter return notes...'
+            }
+            required
           />
         </div>
 

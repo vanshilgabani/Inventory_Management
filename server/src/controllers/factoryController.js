@@ -883,10 +883,13 @@ const returnBorrowedStock = async (req, res) => {
     });
 
     // Validate return type
-    if (!['same', 'exchange'].includes(returnType)) {
-      return res
-        .status(400)
-        .json({ message: 'Invalid return type. Must be "same" or "exchange"' });
+    if (!['same', 'exchange', 'settlement'].includes(returnType)) {
+      return res.status(400).json({ message: "Invalid return type. Must be 'same', 'exchange', or 'settlement'" });
+    }
+
+    // Notes required for settlement
+    if (returnType === 'settlement' && !returnNotes?.trim()) {
+      return res.status(400).json({ message: 'Notes are required for settlement type returns' });
     }
 
     // Get borrow receipt
@@ -1232,6 +1235,38 @@ const returnBorrowedStock = async (req, res) => {
           returnedPercentage: returnedPercentage.toFixed(2),
           equivalentQtyReturned: equivalentQty,
         },
+      });
+    }
+    // HANDLE SETTLEMENT — no physical stock movement
+    if (returnType === 'settlement') {
+      // Create a settlement record (zero quantity, no stock change)
+      const settlementReceipt = await FactoryReceiving.create({
+        design: borrowReceipt.design,
+        color: borrowReceipt.color,
+        quantities: {},
+        totalQuantity: 0,
+        batchId: borrowReceipt.batchId,
+        notes: `SETTLEMENT with ${borrowReceipt.sourceName}${returnNotes ? ` - ${returnNotes}` : ''}`,
+        sourceType: 'return',
+        sourceName: borrowReceipt.sourceName,
+        receivedBy: req.user?.name || 'Admin',
+        organizationId: req.organizationId,
+        originalBorrowId: borrowReceipt._id,
+        returnType: 'settlement',
+      });
+
+      // Mark borrow receipt as fully returned/settled
+      borrowReceipt.borrowStatus = 'returned';
+      borrowReceipt.returnedDate = new Date();
+      borrowReceipt.returnedQuantity = borrowReceipt.totalQuantity; // mark all as settled
+      borrowReceipt.returnReceiptId = settlementReceipt._id;
+      await borrowReceipt.save();
+
+      console.log(`Settlement recorded for ${borrowReceipt.sourceName}`);
+      return res.status(201).json({
+        message: `Settlement recorded successfully for ${borrowReceipt.sourceName}`,
+        settlementReceipt,
+        borrowReceipt,
       });
     }
   } catch (error) {
