@@ -1063,6 +1063,39 @@ const parseFlipkartSKU = (sku) => {
   };
 };
 
+// ✅ NEW: Convert Amazon order-report row into the same shape as Flipkart's preview.success rows
+const mapAmazonRowToGenericRow = (row, rowNumber) => {
+  const sku = row['sku'];
+  const { design, color, size } = parseFlipkartSKU(sku);
+
+  if (!sku || !sku.trim()) {
+    return {
+      failed: true,
+      row: rowNumber,
+      reason: 'Missing SKU — no product identifier found',
+      sku: 'NA',
+      orderId: row['order-id'],
+    };
+  }
+
+  const quantity = parseInt(row['quantity-purchased']) || 1;
+
+  return {
+    failed: false,
+    design: design || '',
+    color: color || '',
+    size: size || '',
+    quantity,
+    orderId: row['order-id'],
+    orderItemId: row['order-item-id']?.replace(/\r/g, '').trim(),
+    trackingId: row['tracking-id']?.trim() || null,
+    sku,
+    buyerName: '', // Amazon order report doesn't include buyer name
+    city: row['ship-city'] || '',
+    pinCode: row['ship-postal-code'] || '',
+  };
+};
+
 const handleCSVUpload = (e, overrideFile = null) => {
   const file = overrideFile || e?.target?.files?.[0];
   if (!file) return;
@@ -1086,6 +1119,7 @@ const handleCSVUpload = (e, overrideFile = null) => {
   Papa.parse(file, {
     header: true,
     skipEmptyLines: true,
+    // ✅ NEW: no explicit delimiter — PapaParse auto-detects comma vs tab
     complete: (results) => {
       console.log('CSV Parsed - Total rows:', results.data.length);
       console.log('📋 CSV Column Headers:', results.data.length > 0 ? Object.keys(results.data[0]) : 'No rows');
@@ -1096,9 +1130,11 @@ const handleCSVUpload = (e, overrideFile = null) => {
 
       const isReturnCSV   = headers.includes('Return Status');   // Flipkart return report
       const isPendingOrDispatchCSV = headers.includes('Order State'); // Flipkart seller panel CSV
+      // ✅ NEW: Amazon order report signature
+      const isAmazonCSV = headers.includes('order-item-id') && headers.includes('asin');
 
-      if (!isReturnCSV && !isPendingOrDispatchCSV) {
-        toast.error(`Unrecognised CSV format. Please upload a Flipkart order or return CSV.`);
+      if (!isReturnCSV && !isPendingOrDispatchCSV && !isAmazonCSV) {
+        toast.error(`Unrecognised file format. Please upload a Flipkart order/return CSV or Amazon order report.`);
         return;
       }
 
@@ -1111,111 +1147,159 @@ const handleCSVUpload = (e, overrideFile = null) => {
         return;
       }
 
-// ── PENDING / DISPATCHED CSV PATH (existing logic) ───────────────────────────
-const allStatuses = new Set();
-results.data.forEach(row => {
-  const status = row['Order State']?.trim();
-  if (status) allStatuses.add(status);
-});
+      // ✅ NEW: AMAZON ORDER REPORT PATH
+      if (isAmazonCSV) {
+        const preview = {
+          success: [],
+          failed: [],
+          skipped: [],
+          detectedType: 'dispatched', // Amazon reports are always dispatch-ready orders
+          productBreakdown: new Map()
+        };
 
-console.log('📋 All unique statuses found in CSV:', [...allStatuses]);
+        results.data.forEach((row, idx) => {
+          const rowNumber = idx + 2;
+          const mapped = mapAmazonRowToGenericRow(row, rowNumber);
 
-const hasPending         = allStatuses.has('Ready to dispatch');
-const hasShipped         = allStatuses.has('Shipped');
-const hasReturnRequested = allStatuses.has('Return Requested');
-const hasReturned        = allStatuses.has('Returned');
+          if (mapped.failed) {
+            preview.failed.push({ row: mapped.row, reason: mapped.reason, sku: mapped.sku, orderId: mapped.orderId });
+            return;
+          }
 
-let detectedType = null;
-let validStatuses = [];
-let skipStatuses = [];
+          preview.success.push(mapped);
 
-if (hasPending && !hasShipped && !hasReturnRequested && !hasReturned) {
-  detectedType  = 'pending';
-  validStatuses = ['Ready to dispatch'];
-  skipStatuses  = [];
-} else if (!hasPending && (hasShipped || hasReturnRequested || hasReturned)) {
-  detectedType  = 'dispatched';
-  validStatuses = ['Shipped'];
-  skipStatuses  = ['Return Requested', 'Returned'];
-} else {
-  toast.error('Mixed CSV detected! Please download separate CSVs for pending and dispatched orders.');
-  return;
-}
+          if (mapped.design && mapped.color && mapped.size) {
+            const variantKey = `${mapped.design}-${mapped.color}-${mapped.size}`;
+            if (preview.productBreakdown.has(variantKey)) {
+              const existing = preview.productBreakdown.get(variantKey);
+              existing.quantity += mapped.quantity;
+              existing.orderCount += 1;
+            } else {
+              preview.productBreakdown.set(variantKey, {
+                design: mapped.design, color: mapped.color, size: mapped.size,
+                quantity: mapped.quantity, orderCount: 1
+              });
+            }
+          }
+        });
 
-console.log(`🔍 Detected CSV Type: ${detectedType}`);
+        setImportPreview(preview);
+        setParsedCsvData(preview.success);
 
-const preview = {
-  success: [],
-  failed: [],
-  skipped: [],
-  detectedType,
-  productBreakdown: new Map()
-};
+        toast.success(
+          `🔍 Detected: AMAZON ORDERS\n` +
+          `✅ ${preview.success.length} orders to import\n` +
+          `⚠️ ${preview.failed.length} rows failed`,
+          { duration: 5000 }
+        );
+        return; // ⛔ stop here — don't fall through to Flipkart logic below
+      }
 
-results.data.forEach((row, idx) => {
-  const rowNumber = idx + 2;
-  const status = row['Order State']?.trim();
+      // ── PENDING / DISPATCHED CSV PATH (existing Flipkart logic, unchanged) ───────
+      const allStatuses = new Set();
+      results.data.forEach(row => {
+        const status = row['Order State']?.trim();
+        if (status) allStatuses.add(status);
+      });
 
-  if (skipStatuses.includes(status)) {
-    preview.skipped.push({ orderId: row['Order Id'], sku: row['SKU'], status });
-    return;
-  }
+      console.log('📋 All unique statuses found in CSV:', [...allStatuses]);
 
-  if (!validStatuses.includes(status)) {
-    preview.failed.push({ row: rowNumber, reason: `Invalid status "${status}"`, sku: row['SKU'], orderId: row['Order Id'] });
-    return;
-  }
+      const hasPending         = allStatuses.has('Ready to dispatch');
+      const hasShipped         = allStatuses.has('Shipped');
+      const hasReturnRequested = allStatuses.has('Return Requested');
+      const hasReturned        = allStatuses.has('Returned');
 
-  const sku = row['SKU'];
-  const { design, color, size } = parseFlipkartSKU(sku);
+      let detectedType = null;
+      let validStatuses = [];
+      let skipStatuses = [];
 
-  if (!sku || !sku.trim()) {
-    preview.failed.push({ row: rowNumber, reason: 'Missing SKU — no product identifier found', sku: 'NA', orderId: row['Order Id'] });
-    return;
-  }
+      if (hasPending && !hasShipped && !hasReturnRequested && !hasReturned) {
+        detectedType  = 'pending';
+        validStatuses = ['Ready to dispatch'];
+        skipStatuses  = [];
+      } else if (!hasPending && (hasShipped || hasReturnRequested || hasReturned)) {
+        detectedType  = 'dispatched';
+        validStatuses = ['Shipped'];
+        skipStatuses  = ['Return Requested', 'Returned'];
+      } else {
+        toast.error('Mixed CSV detected! Please download separate CSVs for pending and dispatched orders.');
+        return;
+      }
 
-  const quantity = parseInt(row['Quantity']) || 1;
+      console.log(`🔍 Detected CSV Type: ${detectedType}`);
 
-  preview.success.push({
-    design:      design || '',
-    color:       color  || '',
-    size:        size   || '',
-    quantity,
-    orderId:     row['Order Id'],
-    orderItemId: row['ORDER ITEM ID']?.replace(/\r/g, '').trim().replace(/^'/, ''),
-    trackingId:  row['Tracking ID']?.trim() || null,
-    sku,
-    buyerName: row['Buyer name'] || row['Ship to name'] || '',
-    city: row['City'] || '',
-    pinCode: row['PIN Code'] || '',
-  });
+      const preview = {
+        success: [],
+        failed: [],
+        skipped: [],
+        detectedType,
+        productBreakdown: new Map()
+      };
 
-  if (design && color && size) {
-    const variantKey = `${design}-${color}-${size}`;
-    if (preview.productBreakdown.has(variantKey)) {
-      const existing = preview.productBreakdown.get(variantKey);
-      existing.quantity += quantity;
-      existing.orderCount += 1;
-    } else {
-      preview.productBreakdown.set(variantKey, { design, color, size, quantity, orderCount: 1 });
-    }
-  }
-});
+      results.data.forEach((row, idx) => {
+        const rowNumber = idx + 2;
+        const status = row['Order State']?.trim();
 
-setImportPreview(preview);
-setParsedCsvData(preview.success);
+        if (skipStatuses.includes(status)) {
+          preview.skipped.push({ orderId: row['Order Id'], sku: row['SKU'], status });
+          return;
+        }
 
-const typeLabel = detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS';
-toast.success(
-  `🔍 Detected: ${typeLabel}\n` +
-  `✅ ${preview.success.length} orders to import\n` +
-  `⚠️ ${preview.skipped.length} orders skipped (returns)`,
-  { duration: 5000 }
-);
+        if (!validStatuses.includes(status)) {
+          preview.failed.push({ row: rowNumber, reason: `Invalid status "${status}"`, sku: row['SKU'], orderId: row['Order Id'] });
+          return;
+        }
+
+        const sku = row['SKU'];
+        const { design, color, size } = parseFlipkartSKU(sku);
+
+        if (!sku || !sku.trim()) {
+          preview.failed.push({ row: rowNumber, reason: 'Missing SKU — no product identifier found', sku: 'NA', orderId: row['Order Id'] });
+          return;
+        }
+
+        const quantity = parseInt(row['Quantity']) || 1;
+
+        preview.success.push({
+          design:      design || '',
+          color:       color  || '',
+          size:        size   || '',
+          quantity,
+          orderId:     row['Order Id'],
+          orderItemId: row['ORDER ITEM ID']?.replace(/\r/g, '').trim().replace(/^'/, ''),
+          trackingId:  row['Tracking ID']?.trim() || null,
+          sku,
+          buyerName: row['Buyer name'] || row['Ship to name'] || '',
+          city: row['City'] || '',
+          pinCode: row['PIN Code'] || '',
+        });
+
+        if (design && color && size) {
+          const variantKey = `${design}-${color}-${size}`;
+          if (preview.productBreakdown.has(variantKey)) {
+            const existing = preview.productBreakdown.get(variantKey);
+            existing.quantity += quantity;
+            existing.orderCount += 1;
+          } else {
+            preview.productBreakdown.set(variantKey, { design, color, size, quantity, orderCount: 1 });
+          }
+        }
+      });
+
+      setImportPreview(preview);
+      setParsedCsvData(preview.success);
+
+      const typeLabel = detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS';
+      toast.success(
+        `🔍 Detected: ${typeLabel}\n` +
+        `✅ ${preview.success.length} orders to import\n` +
+        `⚠️ ${preview.skipped.length} orders skipped (returns)`,
+        { duration: 5000 }
+      );
     },
     error: (error) => {
       console.error('CSV Parse Error:', error);
-      toast.error('Failed to parse CSV file');
+      toast.error('Failed to parse file');
     }
   });
 };
@@ -1234,9 +1318,11 @@ const handleSmartCSVDetect = (e) => {
       const headers = results.meta?.fields || (results.data.length > 0 ? Object.keys(results.data[0]) : []);
       const isReturnCSV   = headers.includes('Return Status');
       const isOrderCSV    = headers.includes('Order State');
+      // ✅ NEW: Amazon signature check
+      const isAmazonCSV   = headers.includes('order-item-id') && headers.includes('asin');
 
-      if (!isReturnCSV && !isOrderCSV) {
-        toast.error('Unrecognised CSV format. Please upload a Flipkart order or return CSV.');
+      if (!isReturnCSV && !isOrderCSV && !isAmazonCSV) {
+        toast.error('Unrecognised file format. Please upload a Flipkart order/return CSV or Amazon order report.');
         return;
       }
 
@@ -1245,14 +1331,15 @@ const handleSmartCSVDetect = (e) => {
         setPendingReturnCSVFile(file);
         setShowImportReturnModal(true);
       } else {
-        toast.success('📦 Order CSV detected — select account & dispatch date.', { duration: 2500 });
+        // ✅ Both Flipkart order CSV and Amazon TXT go through the same order-import modal
+        const label = isAmazonCSV ? '📦 Amazon order report detected' : '📦 Order CSV detected';
+        toast.success(`${label} — select account & dispatch date.`, { duration: 2500 });
         setPendingOrderCSVFile(file);
         const today = new Date();
         const y = today.getFullYear();
         const m = String(today.getMonth() + 1).padStart(2, '0');
         const d = String(today.getDate()).padStart(2, '0');
         setImportFilterDate(`${y}-${m}-${d}`);
-        // ✅ Auto-select if only 1 account exists
         if (marketplaceAccounts.length === 1) {
           setImportAccount(marketplaceAccounts[0].accountName);
         }

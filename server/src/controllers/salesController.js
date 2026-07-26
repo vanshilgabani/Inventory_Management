@@ -39,6 +39,26 @@ const detectFlipkartCSVType = (headers) => {
   return 'unknown';
 };
 
+const detectAmazonTXT = (headers) => {
+  const normalized = headers.map(h => (h || '').trim().toLowerCase());
+
+  // Amazon signature columns — unique to Amazon's order report format
+  const amazonSignature = [
+    'order-item-id',
+    'asin',
+    'ship-service-level',
+    'quantity-purchased',
+    'order-id'
+  ];
+
+  const matchCount = amazonSignature.filter(col => normalized.includes(col)).length;
+
+  // Require at least 4 of 5 signature columns to confidently identify Amazon file
+  if (matchCount >= 4) return 'amazon';
+
+  return 'unknown';
+};
+
 // ✅ ADD THIS HELPER AT THE TOP OF EACH CONTROLLER FILE
 const decrementEditSession = async (req, action, module, itemId) => {
   // Only decrement for salespeople with active sessions, not admins
@@ -2494,12 +2514,16 @@ exports.detectCSVType = async (req, res) => {
       });
     }
 
-    const csvType = detectFlipkartCSVType(headers);
+    let csvType = detectAmazonTXT(headers);
+    if (csvType === 'unknown') {
+      csvType = detectFlipkartCSVType(headers);
+    }
 
     const messages = {
+      amazon:   'Amazon Order Report detected',
       return:   'Flipkart Return CSV detected',
       dispatch: 'Flipkart Dispatch/Order CSV detected',
-      unknown:  'Unrecognized CSV format — please verify the file',
+      unknown:  'Unrecognized file format — please verify the file',
     };
 
     return res.json({
@@ -2509,7 +2533,7 @@ exports.detectCSVType = async (req, res) => {
     });
   } catch (error) {
     logger.error('detectCSVType error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to detect CSV type' });
+    return res.status(500).json({ success: false, message: 'Failed to detect file format' });
   }
 };
 
