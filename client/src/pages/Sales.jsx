@@ -1096,6 +1096,59 @@ const mapAmazonRowToGenericRow = (row, rowNumber) => {
   };
 };
 
+const parseMeeshoSKU = (sku) => {
+  if (!sku) return { design: null, color: null };
+  const cleaned = sku.trim();
+  const parts = cleaned.split('-');
+  if (parts.length < 2) return { design: null, color: null };
+  const design = parts[0];
+  const color = parts.slice(1).join('-').trim();
+  return { design, color };
+};
+
+const splitMeeshoSubOrderNo = (subOrderNo) => {
+  if (!subOrderNo) return { orderId: null, orderItemId: null };
+  const lastUnderscoreIndex = subOrderNo.lastIndexOf('_');
+  if (lastUnderscoreIndex === -1) {
+    return { orderId: subOrderNo, orderItemId: subOrderNo };
+  }
+  const orderId = subOrderNo.substring(0, lastUnderscoreIndex);
+  const orderItemId = subOrderNo;
+  return { orderId, orderItemId };
+};
+
+const mapMeeshoRowToGenericRow = (row, rowNumber) => {
+  const sku = row['SKU'];
+  const size = row['Size'];
+  const { design, color } = parseMeeshoSKU(sku);
+
+  if (!sku || !sku.trim() || !size) {
+    return {
+      failed: true,
+      row: rowNumber,
+      reason: 'Missing SKU or Size',
+      sku: sku || 'NA',
+      orderId: row['Sub Order No'],
+    };
+  }
+
+  const { orderId, orderItemId } = splitMeeshoSubOrderNo(row['Sub Order No']);
+  const quantity = parseInt(row['Quantity']) || 1;
+
+  return {
+    failed: false,
+    design: design || '',
+    color: color || '',
+    size: size.trim(),
+    quantity,
+    orderId,
+    orderItemId,
+    trackingId: null, // captured later via scan
+    flyerId: null,    // captured later via scan
+    sku,
+  };
+};
+
 const handleCSVUpload = (e, overrideFile = null) => {
   const file = overrideFile || e?.target?.files?.[0];
   if (!file) return;
@@ -1130,10 +1183,10 @@ const handleCSVUpload = (e, overrideFile = null) => {
 
       const isReturnCSV   = headers.includes('Return Status');   // Flipkart return report
       const isPendingOrDispatchCSV = headers.includes('Order State'); // Flipkart seller panel CSV
-      // ✅ NEW: Amazon order report signature
       const isAmazonCSV = headers.includes('order-item-id') && headers.includes('asin');
+      const isMeeshoCSV = headers.includes('Sub Order No') && headers.includes('Reason for Credit Entry');
 
-      if (!isReturnCSV && !isPendingOrDispatchCSV && !isAmazonCSV) {
+      if (!isReturnCSV && !isPendingOrDispatchCSV && !isAmazonCSV && !isMeeshoCSV) {
         toast.error(`Unrecognised file format. Please upload a Flipkart order/return CSV or Amazon order report.`);
         return;
       }
@@ -1193,6 +1246,35 @@ const handleCSVUpload = (e, overrideFile = null) => {
           { duration: 5000 }
         );
         return; // ⛔ stop here — don't fall through to Flipkart logic below
+      }
+
+      if (isMeeshoCSV) {
+        const preview = { success: [], failed: [], skipped: [], detectedType: 'dispatched', productBreakdown: new Map() };
+
+        results.data.forEach((row, idx) => {
+          const mapped = mapMeeshoRowToGenericRow(row, idx + 2);
+          if (mapped.failed) {
+            preview.failed.push({ row: mapped.row, reason: mapped.reason, sku: mapped.sku, orderId: mapped.orderId });
+            return;
+          }
+          preview.success.push(mapped);
+
+          if (mapped.design && mapped.color && mapped.size) {
+            const variantKey = `${mapped.design}-${mapped.color}-${mapped.size}`;
+            if (preview.productBreakdown.has(variantKey)) {
+              const existing = preview.productBreakdown.get(variantKey);
+              existing.quantity += mapped.quantity;
+              existing.orderCount += 1;
+            } else {
+              preview.productBreakdown.set(variantKey, { design: mapped.design, color: mapped.color, size: mapped.size, quantity: mapped.quantity, orderCount: 1 });
+            }
+          }
+        });
+
+        setImportPreview(preview);
+        setParsedCsvData(preview.success);
+        toast.success(`🔍 Detected: MEESHO ORDERS\n✅ ${preview.success.length} orders to import\n⚠️ ${preview.failed.length} failed`, { duration: 5000 });
+        return;
       }
 
       // ── PENDING / DISPATCHED CSV PATH (existing Flipkart logic, unchanged) ───────
@@ -1268,6 +1350,7 @@ const handleCSVUpload = (e, overrideFile = null) => {
           orderId:     row['Order Id'],
           orderItemId: row['ORDER ITEM ID']?.replace(/\r/g, '').trim().replace(/^'/, ''),
           trackingId:  row['Tracking ID']?.trim() || null,
+          flyerId:     row['Flyer ID']?.trim() || null,
           sku,
           buyerName: row['Buyer name'] || row['Ship to name'] || '',
           city: row['City'] || '',
@@ -1318,10 +1401,10 @@ const handleSmartCSVDetect = (e) => {
       const headers = results.meta?.fields || (results.data.length > 0 ? Object.keys(results.data[0]) : []);
       const isReturnCSV   = headers.includes('Return Status');
       const isOrderCSV    = headers.includes('Order State');
-      // ✅ NEW: Amazon signature check
       const isAmazonCSV   = headers.includes('order-item-id') && headers.includes('asin');
+      const isMeeshoCSV = headers.includes('Sub Order No') && headers.includes('Reason for Credit Entry');
 
-      if (!isReturnCSV && !isOrderCSV && !isAmazonCSV) {
+      if (!isReturnCSV && !isOrderCSV && !isAmazonCSV && !isMeeshoCSV) {
         toast.error('Unrecognised file format. Please upload a Flipkart order/return CSV or Amazon order report.');
         return;
       }
@@ -3120,6 +3203,20 @@ const handleDelete = async (id) => {
                           >
                             {sale.returnTrackingId || (sale.trackingId ? '-' : '')}
                           </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (sale.flyerId) {
+                                navigator.clipboard.writeText(sale.flyerId);
+                                toast.success('Flyer ID copied!');
+                              }
+                            }}
+                            className="font-mono hover:underline text-left"
+                          >
+                            <span className="font-semibold text-gray-600">Flyer ID:</span>{' '}
+                            {sale.flyerId || '-'}
+                          </button>
                         </div>
                       </div>
 
@@ -3272,6 +3369,20 @@ const handleDelete = async (id) => {
                     value={saleFormData.trackingId}
                     onChange={e => setSaleFormData(prev => ({ ...prev, trackingId: e.target.value }))}
                     placeholder="Enter tracking ID"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Flyer ID
+                    <span className="text-xs text-gray-400 font-normal ml-1">(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={saleFormData.flyerId}
+                    onChange={e => setSaleFormData(prev => ({ ...prev, flyerId: e.target.value }))}
+                    placeholder="Enter flyer ID"
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                   />
                 </div>

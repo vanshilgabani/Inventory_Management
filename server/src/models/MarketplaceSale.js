@@ -64,6 +64,12 @@ const marketplaceSaleSchema = new mongoose.Schema({
     default: null,
     trim: true
   },
+  flyerId: {
+    type: String,
+    default: null,
+    trim: true,
+    index: true
+  },
   design: {
     type: String,
     required: true

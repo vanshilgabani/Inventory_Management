@@ -157,6 +157,30 @@ const FLIPKART_COLOR_MAP = {
   'PISTACHIO': 'Pista'
 };
 
+// Meesho SKU: design + color only, size comes separately
+function parseMeeshoSKU(sku) {
+  if (!sku) return { design: null, color: null };
+  const cleaned = sku.trim();
+  const parts = cleaned.split('-');
+  if (parts.length < 2) return { design: null, color: null };
+
+  const design = parts[0];
+  const color = parts.slice(1).join('-').trim();
+  return { design, color };
+}
+
+// Sub Order No: "314301101037703808_1" → orderId + orderItemId
+function splitMeeshoSubOrderNo(subOrderNo) {
+  if (!subOrderNo) return { orderId: null, orderItemId: null };
+  const lastUnderscoreIndex = subOrderNo.lastIndexOf('_');
+  if (lastUnderscoreIndex === -1) {
+    return { orderId: subOrderNo, orderItemId: subOrderNo };
+  }
+  const orderId = subOrderNo.substring(0, lastUnderscoreIndex);
+  const orderItemId = subOrderNo; // full string stays unique per line item
+  return { orderId, orderItemId };
+}
+
 // ============================================
 // SKU PARSER - Handles Flipkart SKU formats
 // ============================================
@@ -262,6 +286,7 @@ exports.createSale = async (req, res) => {
       marketplaceOrderId,
       orderItemId,
       trackingId,
+      flyerId,
       design,
       color,
       size,
@@ -490,7 +515,8 @@ exports.createSale = async (req, res) => {
       accountName,
       marketplaceOrderId: marketplaceOrderId || `MP-${Date.now()}`,
       orderItemId,
-      trackingId: trackingId || null,   
+      trackingId: trackingId || null,  
+      flyerId: flyerId || null, 
       design,
       color,
       size,
@@ -585,7 +611,7 @@ exports.createSaleWithMainStock = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { accountName, marketplaceOrderId, orderItemId, trackingId, design, color, size, quantity, saleDate, status, notes, useMainStock } = req.body;
+    const { accountName, marketplaceOrderId, orderItemId, trackingId, flyerId, design, color, size, quantity, saleDate, status, notes, useMainStock } = req.body;
     const { organizationId, id: userId } = req.user;
 
     // ✅ Validate flag first
@@ -652,7 +678,8 @@ exports.createSaleWithMainStock = async (req, res) => {
       accountName,
       marketplaceOrderId: marketplaceOrderId || `MP-${Date.now()}`,
       orderItemId: orderItemId,
-      trackingId: trackingId || null,   
+      trackingId: trackingId || null,
+      flyerId: flyerId || null,
       design,
       color,
       size,
@@ -1135,6 +1162,7 @@ exports.searchSales = async (req, res) => {
       filter.$or = [
         { trackingId:       { $regex: searchTerm, $options: 'i' } },  // forward tracking
         { returnTrackingId: { $regex: searchTerm, $options: 'i' } },  // return tracking (NEW)
+        { flyerId:          { $regex: searchTerm, $options: 'i' } }   // flyer ID (NEW)
       ];
     } else {
       filter.$or = [
@@ -1144,6 +1172,7 @@ exports.searchSales = async (req, res) => {
         { color: { $regex: searchTerm, $options: 'i' } },
         { size: { $regex: searchTerm, $options: 'i' } },
         { trackingId:         { $regex: searchTerm, $options: 'i' } }, 
+        { flyerId:          { $regex: searchTerm, $options: 'i' } },
         { returnTrackingId:   { $regex: searchTerm, $options: 'i' } },
       ];
     }
@@ -1542,7 +1571,7 @@ exports.updateSale = async (req, res) => {
     // ─────────────────────────────────────────────
     if (userRole === 'admin') {
       const {
-        accountName, saleDate, marketplaceOrderId, orderItemId, trackingId,
+        accountName, saleDate, marketplaceOrderId, orderItemId, trackingId, flyerId, returnTrackingId,
         design, color, size, quantity, status, notes, comments, changedAt
       } = req.body;
 
@@ -1622,6 +1651,7 @@ exports.updateSale = async (req, res) => {
       if (marketplaceOrderId !== undefined) sale.marketplaceOrderId  = marketplaceOrderId;
       if (orderItemId        !== undefined) sale.orderItemId         = orderItemId;
       if (trackingId !== undefined) sale.trackingId = trackingId;   
+      if (flyerId !== undefined) sale.flyerId = flyerId;
       if (notes              !== undefined) sale.notes               = notes;
 
       // Status change
@@ -2311,6 +2341,7 @@ exports.importFromCSV = async (req, res) => {
         marketplaceOrderId: orderId,
         orderItemId,
         trackingId: trackingId || null,   
+        flyerId: flyerId || null,
         design: finalDesign,
         color: matchedColor,
         size: finalSize,
@@ -3021,6 +3052,7 @@ exports.searchOrderGlobally = async (req, res) => {
         { marketplaceOrderId: { $regex: searchTerm, $options: 'i' } },
         { trackingId: { $regex: searchTerm, $options: 'i' } },  
         { returnTrackingId: { $regex: searchTerm, $options: 'i' } },
+        { flyerId: { $regex: searchTerm, $options: 'i' } },
         { design: { $regex: searchTerm, $options: 'i' } },
         { color: { $regex: searchTerm, $options: 'i' } },
         { size: { $regex: searchTerm, $options: 'i' } }
