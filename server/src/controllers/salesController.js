@@ -2341,7 +2341,7 @@ exports.importFromCSV = async (req, res) => {
         marketplaceOrderId: orderId,
         orderItemId,
         trackingId: trackingId || null,   
-        flyerId: flyerId || null,
+        flyerId: row.flyerId || null,
         design: finalDesign,
         color: matchedColor,
         size: finalSize,

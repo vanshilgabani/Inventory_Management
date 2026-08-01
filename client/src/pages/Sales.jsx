@@ -1144,7 +1144,7 @@ const mapMeeshoRowToGenericRow = (row, rowNumber) => {
     orderId,
     orderItemId,
     trackingId: null, // captured later via scan
-    flyerId: null,    // captured later via scan
+    flyerId: row['packetId']?.trim() || null,    // captured later via scan
     sku,
   };
 };
