@@ -231,9 +231,6 @@ const displayDateGroups = useMemo(() => {
   return source.map(summary => {
     // For expanded view we still use loadedOrders + client filters:
     const loadedForDate = loadedOrders[summary.date] || [];
-    const orderCount = loadedForDate.length > 0
-      ? new Set(loadedForDate.map(o => o.trackingId).filter(Boolean)).size
-      : (summary.orderCount ?? summary.count ?? 0);
 
     let filteredGroupOrders = loadedForDate;
     if (activeTab === 'dispatched') {
@@ -249,10 +246,17 @@ const displayDateGroups = useMemo(() => {
       }
     }
 
+    // ✅ Compute orderCount from the STATUS-FILTERED list (matches what's shown when expanded)
+    const withKey = filteredGroupOrders.filter(o => o.trackingId || o.flyerId);
+    const withoutKey = filteredGroupOrders.filter(o => !o.trackingId && !o.flyerId);
+    const orderCount = loadedForDate.length > 0
+      ? new Set(withKey.map(o => o.trackingId || o.flyerId)).size + withoutKey.length
+      : (summary.orderCount ?? summary.count ?? 0);
+
     return {
       ...summary,
-      orders: filteredGroupOrders,          // used in expanded view
-      orderCount,      // use tracking-based orders in header
+      orders: filteredGroupOrders,   // used in expanded view
+      orderCount,                    // now consistent whether loaded or not
       dateLabel: formatDateLabel(summary.date),
     };
   }).filter(Boolean);
@@ -2574,7 +2578,7 @@ const handleDelete = async (id) => {
                       handleTrackingSearch(trackingInput);
                     }
                   }}
-                  placeholder="Tracking ID..."
+                  placeholder="Tracking ID, Flyer ID"
                   className="w-full pl-9 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                 />
               </div>
@@ -2878,7 +2882,7 @@ const handleDelete = async (id) => {
 
                   const ordersCountForDate = hasLoadedOrders
                     ? new Set(
-                        dateGroup.orders.map((o) => o.trackingId).filter(Boolean)
+                        dateGroup.orders.map((o) => (o.trackingId || o.flyerId)).filter(Boolean)
                       ).size
                     : 0;
                     
@@ -3170,7 +3174,11 @@ const handleDelete = async (id) => {
                             }}
                             className="font-mono hover:underline text-left w-full truncate"
                           >
-                            <span className="font-semibold text-gray-600">Order Item ID:</span>{' '}
+                            <span className="text-gray-500">
+                              {(sale.accountName || "").trim().toLowerCase().includes("meesho")
+                                ? "Sub Order No."
+                                : "Order Item ID"}
+                            </span>{' '}
                             {sale.orderItemId || '-'}
                           </button>
                         </div>
@@ -4348,7 +4356,11 @@ const handleDelete = async (id) => {
                               <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                                 {/* Order Item ID — clickable to copy */}
                                 <div>
-                                  <span className="text-gray-500">Order Item ID</span>
+                                  <span className="text-gray-500">
+                                    {String(sale.accountName).toLowerCase().includes("meesho")
+                                      ? "Sub Order No."
+                                      : "Order Item ID"}
+                                  </span>
                                   <p
                                     className="font-semibold cursor-pointer hover:text-indigo-600 hover:underline transition-colors"
                                     title="Click to copy Order Item ID"
@@ -4431,6 +4443,30 @@ const handleDelete = async (id) => {
                                         >
                                           {sale.returnTrackingId}
                                         </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                                {sale.flyerId && (
+                                  <div
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      navigator.clipboard.writeText(sale.flyerId);
+                                      toast.success("Flyer ID copied!");
+                                    }}
+                                    className="cursor-pointer hover:text-indigo-600 transition-colors"
+                                  >
+                                    <div className="text-11px text-gray-400">
+                                      Flyer ID:
+                                    </div>
+
+                                    <div className="text-11px font-bold text-gray-700 hover:underline">
+                                      {activeSearchField === "order" &&
+                                      searchQuery &&
+                                      sale.flyerId?.toLowerCase().includes(searchQuery.toLowerCase()) ? (
+                                        <mark className="bg-yellow-200">{sale.flyerId}</mark>
+                                      ) : (
+                                        sale.flyerId
                                       )}
                                     </div>
                                   </div>
@@ -4877,10 +4913,10 @@ const handleDelete = async (id) => {
                               <div>
                                 <h3 className="font-semibold text-gray-900">
                                   {importPreview.detectedType === 'pending'
-                                    ? 'Pending Handover – Flipkart CSV Detected'
+                                    ? 'Pending Handover Orders'
                                     : importPreview.detectedType === 'return'
-                                    ? 'Return Orders – Flipkart CSV Detected'
-                                    : 'Dispatched Orders – Flipkart CSV Detected'}
+                                    ? 'Return Orders'
+                                    : 'Dispatched Orders'}
                                 </h3>
                                 <p className="text-xs text-gray-500">
                                   Quick overview of units, validation status and special cases.
@@ -4903,11 +4939,11 @@ const handleDelete = async (id) => {
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs sm:text-sm">
                             {/* Total Orders in CSV (Flipkart orders) */}
                             <div className="rounded-lg bg-blue-50 px-3 py-2">
-                              <div className="text-blue-700">Total Flipkart Orders</div>
+                              <div className="text-blue-700">Total Orders in CSV</div>
                               <div className="mt-1 text-base font-semibold text-blue-900">
                                 {importOrderStats.totalOrders}
                               </div>
-                              <div className="text-[11px] text-blue-700">
+                              <div className="text-[11px] text-black">
                                 {importOrderStats.multiItemOrders.length} multi‑product
                               </div>
                             </div>

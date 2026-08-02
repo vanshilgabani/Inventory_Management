@@ -3181,7 +3181,9 @@ exports.getDateSummaries = async (req, res) => {
               },
               else: { $dateToString: { format: '%Y-%m-%d', date: '$saleDate' } }
             }
-          }
+          },
+          // ✅ Unified dedupe key — mirrors frontend's (trackingId || flyerId) logic
+          dedupeKey: { $ifNull: ['$trackingId', '$flyerId'] }
         }
       },
       // Apply date range AFTER computing displayDate
@@ -3193,17 +3195,19 @@ exports.getDateSummaries = async (req, res) => {
           }
         }
       }] : []),
-      // ✅ $group is its own stage — closed properly
       {
         $group: {
           _id: '$displayDate',
           count: { $sum: 1 },
           totalQuantity: { $sum: '$quantity' },
-          accountDetails: { $push: { accountName: '$accountName', quantity: '$quantity' } }, // ← fixed closing brace + comma
-          uniqueTrackingIds: { $addToSet: '$trackingId' }  // ← now correctly inside $group
+          accountDetails: { $push: { accountName: '$accountName', quantity: '$quantity' } },
+          uniqueDedupeKeys: { $addToSet: '$dedupeKey' },
+          // ✅ Count docs with NEITHER trackingId nor flyerId — each is its own order
+          noKeyCount: {
+            $sum: { $cond: [{ $eq: ['$dedupeKey', null] }, 1, 0] }
+          }
         }
       },
-      // ✅ $project is a SEPARATE stage — not nested inside $group
       {
         $project: {
           _id: 1,
@@ -3211,12 +3215,17 @@ exports.getDateSummaries = async (req, res) => {
           totalQuantity: 1,
           accountDetails: 1,
           orderCount: {
-            $size: {
-              $filter: {
-                input: '$uniqueTrackingIds',
-                cond: { $ne: ['$$this', null] }
-              }
-            }
+            $add: [
+              {
+                $size: {
+                  $filter: {
+                    input: '$uniqueDedupeKeys',
+                    cond: { $ne: ['$$this', null] }
+                  }
+                }
+              },
+              '$noKeyCount'
+            ]
           }
         }
       },
@@ -3231,7 +3240,6 @@ exports.getDateSummaries = async (req, res) => {
       s.accountDetails.forEach(({ accountName, quantity }) => {
         accountBreakdown[accountName] = (accountBreakdown[accountName] || 0) + (quantity || 1);
       });
-      // ✅ now passes orderCount to frontend
       return { date: s._id, count: s.count, totalQuantity: s.totalQuantity, accountBreakdown, orderCount: s.orderCount };
     });
 

@@ -83,7 +83,7 @@ const FinalImportPreviewModal = ({
             </div>
 
             <div className="rounded-lg bg-blue-50 px-3 py-2">
-              <div className="text-blue-700">Flipkart Orders</div>
+              <div className="text-blue-700">Total Orders</div>
               <div className="mt-1 text-lg font-semibold text-blue-900">
                 {totalOrders}
               </div>
