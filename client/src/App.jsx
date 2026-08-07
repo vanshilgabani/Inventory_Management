@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
+import { Analytics } from '@vercel/analytics/react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SubscriptionProvider } from './context/SubscriptionContext';
 import { SettingsProvider } from './context/SettingsContext'; 
@@ -175,6 +176,7 @@ function App() {
           </SettingsProvider>
         </SubscriptionProvider>  {/* ✅ ADDED */}
       </SyncProvider>
+      <Analytics />
     </AuthProvider>
   );
 }
