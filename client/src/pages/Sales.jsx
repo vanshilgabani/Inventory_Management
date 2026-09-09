@@ -1071,31 +1071,20 @@ const parseFlipkartSKU = (sku) => {
 const mapAmazonRowToGenericRow = (row, rowNumber) => {
   const sku = row['sku'];
   const { design, color, size } = parseFlipkartSKU(sku);
-
   if (!sku || !sku.trim()) {
-    return {
-      failed: true,
-      row: rowNumber,
-      reason: 'Missing SKU — no product identifier found',
-      sku: 'NA',
-      orderId: row['order-id'],
-    };
+    return { failed: true, row: rowNumber, reason: 'Missing SKU — no product identifier found', sku: 'NA', orderId: row['order-id'] };
   }
-
   const quantity = parseInt(row['quantity-purchased']) || 1;
-
   return {
     failed: false,
-    design: design || '',
-    color: color || '',
-    size: size || '',
+    design: design || null, color: color || null, size: size || null,
     quantity,
     orderId: row['order-id'],
-    orderItemId: row['order-item-id']?.replace(/\r/g, '').trim(),
+    orderItemId: row['order-item-id']?.replace(/'/g, '').trim(),
     trackingId: row['tracking-id']?.trim() || null,
     sku,
-    buyerName: '', // Amazon order report doesn't include buyer name
     city: row['ship-city'] || '',
+    state: row['ship-state'] || '',
     pinCode: row['ship-postal-code'] || '',
   };
 };
@@ -1125,31 +1114,68 @@ const mapMeeshoRowToGenericRow = (row, rowNumber) => {
   const sku = row['SKU'];
   const size = row['Size'];
   const { design, color } = parseMeeshoSKU(sku);
-
   if (!sku || !sku.trim() || !size) {
+    return { failed: true, row: rowNumber, reason: 'Missing SKU or Size', sku: sku || 'NA', orderId: row['Sub Order No'] };
+  }
+  const { orderId, orderItemId } = splitMeeshoSubOrderNo(row['Sub Order No']);
+  const quantity = parseInt(row['Quantity']) || 1;
+  return {
+    failed: false,
+    design: design || null, color: color || null, size: size.trim(),
+    quantity, orderId, orderItemId,
+    trackingId: null, // captured later via scan
+    flyerId: row['Packet Id']?.trim() || null,
+    sku,
+    city: '',                         // ⚠️ not available in Meesho export
+    state: row['Customer State'] || '',
+    pinCode: '',                      // ⚠️ not available in Meesho export
+  };
+};
+
+const mapMyntraRowToGenericRow = (row, rowNumber) => {
+  const rawStatus = (row['Status'] || '').trim();
+  const status = rawStatus.toUpperCase(); // normalized match, worst-case-safe
+
+  // Non-PICKED rows are silently skipped (not shown as failures)
+  if (status !== 'PICKED') {
     return {
-      failed: true,
-      row: rowNumber,
-      reason: 'Missing SKU or Size',
-      sku: sku || 'NA',
-      orderId: row['Sub Order No'],
+      skipped: true,
+      failed: false,
+      sku: row['Seller_sku_code'] || 'NA',
+      orderId: row['Order id'] || row['Order_release_id'] || 'NA',
+      status: rawStatus || 'UNKNOWN'
     };
   }
 
-  const { orderId, orderItemId } = splitMeeshoSubOrderNo(row['Sub Order No']);
-  const quantity = parseInt(row['Quantity']) || 1;
+  const sku = row['Seller_sku_code'];
+  if (!sku || !sku.trim()) {
+    return {
+      failed: true,
+      skipped: false,
+      row: rowNumber,
+      reason: 'Missing SKU (Seller_sku_code) — no product identifier found',
+      sku: 'NA',
+      orderId: row['Order id'] || 'NA'
+    };
+  }
+
+  const { design, color, size } = parseFlipkartSKU(sku); // reused as-is
 
   return {
     failed: false,
-    design: design || '',
-    color: color || '',
-    size: size.trim(),
-    quantity,
-    orderId,
-    orderItemId,
-    trackingId: null, // captured later via scan
-    flyerId: row['Packet Id']?.trim() || null,    // captured later via scan
+    skipped: false,
+    design: design || null,
+    color: color || null,
+    size: size || null,
+    quantity: 1, // Myntra CSV has no quantity column — always 1 per row
+    orderId: row['Order id'] || null,
+    orderItemId: row['Order_release_id']?.trim() || null, // treated as separate order per row
+    trackingId: row['Tracking_id']?.trim() || null,
+    flyerId: null,
     sku,
+    city: row['Destination City'] || '',
+    state: row['Destination State'] || '',
+    pinCode: row['Destination pincode'] || '',
   };
 };
 
@@ -1189,9 +1215,13 @@ const handleCSVUpload = (e, overrideFile = null) => {
       const isPendingOrDispatchCSV = headers.includes('Order State'); // Flipkart seller panel CSV
       const isAmazonCSV = headers.includes('order-item-id') && headers.includes('asin');
       const isMeeshoCSV = headers.includes('Sub Order No') && headers.includes('Reason for Credit Entry');
+      const isMyntraCSV = headers.includes('Order_release_id')
+        && headers.includes('Seller_sku_code')
+        && headers.includes('Tracking_id')
+        && headers.includes('Status');
 
-      if (!isReturnCSV && !isPendingOrDispatchCSV && !isAmazonCSV && !isMeeshoCSV) {
-        toast.error(`Unrecognised file format. Please upload a Flipkart order/return CSV or Amazon order report.`);
+      if (!isReturnCSV && !isPendingOrDispatchCSV && !isAmazonCSV && !isMeeshoCSV && !isMyntraCSV) {
+        toast.error('Unrecognised file format. Please upload a Flipkart order/return CSV, Amazon order report, Meesho, or Myntra CSV.');
         return;
       }
 
@@ -1281,6 +1311,48 @@ const handleCSVUpload = (e, overrideFile = null) => {
         return;
       }
 
+      if (isMyntraCSV) {
+        const preview = { success: [], failed: [], skipped: [], detectedType: 'dispatched', productBreakdown: new Map() };
+
+        results.data.forEach((row, idx) => {
+          const rowNumber = idx + 2;
+          const mapped = mapMyntraRowToGenericRow(row, rowNumber);
+
+          if (mapped.skipped) {
+            preview.skipped.push({ orderId: mapped.orderId, sku: mapped.sku, status: mapped.status });
+            return;
+          }
+          if (mapped.failed) {
+            preview.failed.push({ row: mapped.row, reason: mapped.reason, sku: mapped.sku, orderId: mapped.orderId });
+            return;
+          }
+
+          preview.success.push(mapped);
+
+          if (mapped.design && mapped.color && mapped.size) {
+            const variantKey = `${mapped.design}-${mapped.color}-${mapped.size}`;
+            if (preview.productBreakdown.has(variantKey)) {
+              const existing = preview.productBreakdown.get(variantKey);
+              existing.quantity += mapped.quantity;
+              existing.orderCount += 1;
+            } else {
+              preview.productBreakdown.set(variantKey, {
+                design: mapped.design, color: mapped.color, size: mapped.size,
+                quantity: mapped.quantity, orderCount: 1
+              });
+            }
+          }
+        });
+
+        setImportPreview(preview);
+        setParsedCsvData(preview.success);
+        toast.success(
+          `Detected MYNTRA ORDERS — ${preview.success.length} orders to import, ${preview.skipped.length} skipped (not PICKED)${preview.failed.length ? `, ${preview.failed.length} failed` : ''}`,
+          { duration: 5000 }
+        );
+        return; // stop here, don't fall through to Flipkart logic below
+      }
+
       // ── PENDING / DISPATCHED CSV PATH (existing Flipkart logic, unchanged) ───────
       const allStatuses = new Set();
       results.data.forEach(row => {
@@ -1356,8 +1428,8 @@ const handleCSVUpload = (e, overrideFile = null) => {
           trackingId:  row['Tracking ID']?.trim() || null,
           flyerId:     row['Flyer ID']?.trim() || null,
           sku,
-          buyerName: row['Buyer name'] || row['Ship to name'] || '',
           city: row['City'] || '',
+          state: row['State'] || '',
           pinCode: row['PIN Code'] || '',
         });
 
@@ -1380,7 +1452,7 @@ const handleCSVUpload = (e, overrideFile = null) => {
       toast.success(
         `🔍 Detected: ${typeLabel}\n` +
         `✅ ${preview.success.length} orders to import\n` +
-        `⚠️ ${preview.skipped.length} orders skipped (returns)`,
+        `⚠️ ${preview.skipped.length} orders skipped\n`,
         { duration: 5000 }
       );
     },
@@ -1407,9 +1479,13 @@ const handleSmartCSVDetect = (e) => {
       const isOrderCSV    = headers.includes('Order State');
       const isAmazonCSV   = headers.includes('order-item-id') && headers.includes('asin');
       const isMeeshoCSV = headers.includes('Sub Order No') && headers.includes('Reason for Credit Entry');
+      const isMyntraCSV = headers.includes('Order_release_id')
+        && headers.includes('Seller_sku_code')
+        && headers.includes('Tracking_id')
+        && headers.includes('Status');
 
-      if (!isReturnCSV && !isOrderCSV && !isAmazonCSV && !isMeeshoCSV) {
-        toast.error('Unrecognised file format. Please upload a Flipkart order/return CSV or Amazon order report.');
+      if (!isReturnCSV && !isOrderCSV  && !isAmazonCSV && !isMeeshoCSV && !isMyntraCSV) {
+        toast.error('Unrecognised file format. Please upload a Flipkart order/return CSV, Amazon order report, Meesho, or Myntra CSV.');
         return;
       }
 
@@ -3169,7 +3245,12 @@ const handleDelete = async (id) => {
                               if (sale.orderItemId) {
                                 const cleanId = sale.orderItemId.replace(/^'/, '');
                                 navigator.clipboard.writeText(cleanId);
-                                toast.success('Item ID copied!');
+                                const label = (sale.accountName || "").trim().toLowerCase().includes("myntra")
+                                  ? "Order Release ID"
+                                  : (sale.accountName || "").trim().toLowerCase().includes("meesho")
+                                  ? "Sub Order No."
+                                  : "Order Item ID";
+                                toast.success(`${label} copied!`);
                               }
                             }}
                             className="font-mono hover:underline text-left w-full truncate"
@@ -3177,6 +3258,8 @@ const handleDelete = async (id) => {
                             <span className="text-gray-500">
                               {(sale.accountName || "").trim().toLowerCase().includes("meesho")
                                 ? "Sub Order No."
+                                : (sale.accountName || "").trim().toLowerCase().includes("myntra")
+                                ? "Order Release ID"
                                 : "Order Item ID"}
                             </span>{' '}
                             {sale.orderItemId || '-'}
@@ -4359,6 +4442,8 @@ const handleDelete = async (id) => {
                                   <span className="text-gray-500">
                                     {String(sale.accountName).toLowerCase().includes("meesho")
                                       ? "Sub Order No."
+                                      : String(sale.accountName).toLowerCase().includes("myntra")
+                                      ? "Order Release ID"
                                       : "Order Item ID"}
                                   </span>
                                   <p
@@ -4959,7 +5044,7 @@ const handleDelete = async (id) => {
                             {/* Skipped / Failed as you had before */}
                             {importPreview.skipped.length > 0 && (
                               <div className="rounded-lg bg-amber-50 px-3 py-2">
-                                <div className="text-amber-700">Skipped (Returns)</div>
+                                <div className="text-amber-700">Skipped</div>
                                 <div className="mt-1 text-base font-semibold text-amber-800">
                                   {importPreview.skipped.length} units
                                 </div>
@@ -5120,7 +5205,7 @@ const handleDelete = async (id) => {
                             <summary className="bg-amber-50 px-4 py-3 cursor-pointer hover:bg-amber-100 flex items-center gap-2">
                               <FiAlertTriangle className="text-amber-600" />
                               <span className="font-medium text-amber-900 text-sm">
-                                Skipped Orders ({importPreview.skipped.length} returns – not
+                                Skipped Orders ({importPreview.skipped.length} orders – not
                                 imported)
                               </span>
                             </summary>

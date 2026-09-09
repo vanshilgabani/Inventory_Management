@@ -97,7 +97,24 @@ const marketplaceSaleSchema = new mongoose.Schema({
     enum: ['dispatched', 'returned', 'wrongreturn', 'cancelled', 'RTO'],
     default: 'dispatched'
   },
-
+  shippingCity: {
+    type: String,
+    default: null,
+    trim: true,
+    index: true
+  },
+  shippingState: {
+    type: String,
+    default: null,
+    trim: true,
+    index: true
+  },
+  shippingPinCode: {
+    type: String,
+    default: null,
+    trim: true,
+    index: true
+  },
   returnTrackingId: {
     type: String,
     default: null,

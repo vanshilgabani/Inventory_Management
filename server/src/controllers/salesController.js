@@ -2085,7 +2085,10 @@ exports.importFromCSV = async (req, res) => {
     const unmappedSKUs = new Set(); // Track SKUs that need mapping
 
     for (const row of csvData) {
-      const { design, color, size, quantity, orderId, orderItemId, trackingId, sku } = row;
+      const {
+        design, color, size, quantity, orderId, orderItemId, trackingId, flyerId, sku,
+        city, state, pinCode
+      } = row;
 
       // Check duplicate
       if (existingOrderItemIds.has(orderItemId)) {
@@ -2341,7 +2344,10 @@ exports.importFromCSV = async (req, res) => {
         marketplaceOrderId: orderId,
         orderItemId,
         trackingId: trackingId || null,   
-        flyerId: row.flyerId || null,
+        flyerId: flyerId || null,
+        shippingCity: city || null,
+        shippingState: state || null,
+        shippingPinCode: pinCode || null,
         design: finalDesign,
         color: matchedColor,
         size: finalSize,
