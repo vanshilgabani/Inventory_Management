@@ -261,6 +261,17 @@ export const salesService = {
     return response.data;
   },
 
+  importMyntraReturnCSV: async (rows, accountName) => {
+    const response = await api.post(
+      '/sales/import-myntra-return-csv',
+      {
+        rows,
+        accountName
+      }
+    );
+    return response.data;
+  },
+
   // Import orders from CSV
   async importFromCSV(csvData, accountName, dispatchDate) {
     const payload = {

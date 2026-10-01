@@ -1210,8 +1210,10 @@ const handleCSVUpload = (e, overrideFile = null) => {
 
       // ✅ STEP 1: AUTO-DETECT CSV TYPE by column signature
       const headers = results.data.length > 0 ? Object.keys(results.data[0]) : [];
-
-      const isReturnCSV   = headers.includes('Return Status');   // Flipkart return report
+      const isMyntraReturnCSV = headers.includes('forward_tracking_number')
+        && headers.includes('return_tracking_number')
+        && headers.includes('order_group_id');
+      const isReturnCSV = headers.includes('Return Status') || isMyntraReturnCSV;
       const isPendingOrDispatchCSV = headers.includes('Order State'); // Flipkart seller panel CSV
       const isAmazonCSV = headers.includes('order-item-id') && headers.includes('asin');
       const isMeeshoCSV = headers.includes('Sub Order No') && headers.includes('Reason for Credit Entry');
@@ -1465,49 +1467,119 @@ const handleCSVUpload = (e, overrideFile = null) => {
 
 // ✅ NEW: Single entry-point — detects CSV type from headers before opening any modal
 const handleSmartCSVDetect = (e) => {
-  const file = e.target.files[0];
+  const file = e.target.files?.[0];
   if (!file) return;
-  e.target.value = ''; // reset so same file can be re-selected
+
+  // Allow the same file to be selected again after closing the modal.
+  e.target.value = '';
 
   Papa.parse(file, {
     header: true,
     skipEmptyLines: true,
-    preview: 1, // only peek at headers — fast
+    preview: 1,
     complete: (results) => {
-      const headers = results.meta?.fields || (results.data.length > 0 ? Object.keys(results.data[0]) : []);
-      const isReturnCSV   = headers.includes('Return Status');
-      const isOrderCSV    = headers.includes('Order State');
-      const isAmazonCSV   = headers.includes('order-item-id') && headers.includes('asin');
-      const isMeeshoCSV = headers.includes('Sub Order No') && headers.includes('Reason for Credit Entry');
-      const isMyntraCSV = headers.includes('Order_release_id')
-        && headers.includes('Seller_sku_code')
-        && headers.includes('Tracking_id')
-        && headers.includes('Status');
+      const headers =
+        results.meta?.fields ||
+        (results.data?.length ? Object.keys(results.data[0]) : []);
 
-      if (!isReturnCSV && !isOrderCSV  && !isAmazonCSV && !isMeeshoCSV && !isMyntraCSV) {
-        toast.error('Unrecognised file format. Please upload a Flipkart order/return CSV, Amazon order report, Meesho, or Myntra CSV.');
+      // Normalize only for detection; don't change the actual CSV rows.
+      const normalizedHeaders = new Set(
+        headers.map((header) =>
+          String(header || '')
+            .replace(/^\uFEFF/, '')
+            .trim()
+            .toLowerCase()
+        )
+      );
+
+      const isFlipkartReturnCSV =
+        normalizedHeaders.has('return status') &&
+        normalizedHeaders.has('return id');
+
+      const isMyntraReturnCSV = [
+        'order_id',
+        'order_group_id',
+        'forward_tracking_number',
+        'return_tracking_number',
+      ].every((header) => normalizedHeaders.has(header));
+
+      const isOrderCSV = normalizedHeaders.has('order state');
+
+      const isAmazonCSV =
+        normalizedHeaders.has('order-item-id') &&
+        normalizedHeaders.has('asin');
+
+      const isMeeshoCSV =
+        normalizedHeaders.has('sub order no') &&
+        normalizedHeaders.has('reason for credit entry');
+
+      const isMyntraOrderCSV = [
+        'order_release_id',
+        'seller_sku_code',
+        'tracking_id',
+        'status',
+      ].every((header) => normalizedHeaders.has(header));
+
+      if (
+        !isFlipkartReturnCSV &&
+        !isMyntraReturnCSV &&
+        !isOrderCSV &&
+        !isAmazonCSV &&
+        !isMeeshoCSV &&
+        !isMyntraOrderCSV
+      ) {
+        toast.error(
+          'Unrecognised file format. Upload a Flipkart order/return CSV, Amazon order report, Meesho CSV, Myntra orders CSV, or Myntra returns report.'
+        );
         return;
       }
 
-      if (isReturnCSV) {
-        toast.success('↩️ Return CSV detected — opening returns importer!', { duration: 2500 });
+      // Return reports do not use the dispatch-date/order-import flow.
+      if (isFlipkartReturnCSV || isMyntraReturnCSV) {
+        toast.success(
+          isMyntraReturnCSV
+            ? 'Myntra returns report detected — opening returns importer!'
+            : 'Flipkart return CSV detected — opening returns importer!',
+          { duration: 2500 }
+        );
+
+        setShowImportModal(false);
+        setPendingOrderCSVFile(null);
         setPendingReturnCSVFile(file);
         setShowImportReturnModal(true);
-      } else {
-        // ✅ Both Flipkart order CSV and Amazon TXT go through the same order-import modal
-        const label = isAmazonCSV ? '📦 Amazon order report detected' : '📦 Order CSV detected';
-        toast.success(`${label} — select account & dispatch date.`, { duration: 2500 });
-        setPendingOrderCSVFile(file);
-        const today = new Date();
-        const y = today.getFullYear();
-        const m = String(today.getMonth() + 1).padStart(2, '0');
-        const d = String(today.getDate()).padStart(2, '0');
-        setImportFilterDate(`${y}-${m}-${d}`);
-        if (marketplaceAccounts.length === 1) {
-          setImportAccount(marketplaceAccounts[0].accountName);
-        }
-        setShowImportModal(true);
+        return;
       }
+
+      // Existing new-order import flow.
+      const label = isAmazonCSV
+        ? 'Amazon order report detected'
+        : isMeeshoCSV
+          ? 'Meesho order CSV detected'
+          : isMyntraOrderCSV
+            ? 'Myntra order CSV detected'
+            : 'Order CSV detected';
+
+      toast.success(`${label} — select account & dispatch date.`, {
+        duration: 2500,
+      });
+
+      setPendingOrderCSVFile(file);
+
+      const today = new Date();
+      const y = today.getFullYear();
+      const m = String(today.getMonth() + 1).padStart(2, '0');
+      const d = String(today.getDate()).padStart(2, '0');
+
+      setImportFilterDate(`${y}-${m}-${d}`);
+
+      if (marketplaceAccounts.length === 1) {
+        setImportAccount(marketplaceAccounts[0].accountName);
+      }
+
+      setShowImportModal(true);
+    },
+    error: () => {
+      toast.error('Could not read the CSV file.');
     },
   });
 };
@@ -3246,21 +3318,21 @@ const handleDelete = async (id) => {
                                 const cleanId = sale.orderItemId.replace(/^'/, '');
                                 navigator.clipboard.writeText(cleanId);
                                 const label = (sale.accountName || "").trim().toLowerCase().includes("myntra")
-                                  ? "Order Release ID"
+                                  ? "Order Release ID: "
                                   : (sale.accountName || "").trim().toLowerCase().includes("meesho")
-                                  ? "Sub Order No."
-                                  : "Order Item ID";
+                                  ? "Sub Order No.: "
+                                  : "Order Item ID: ";
                                 toast.success(`${label} copied!`);
                               }
                             }}
                             className="font-mono hover:underline text-left w-full truncate"
                           >
-                            <span className="text-gray-500">
+                            <span className="text-gray-600">
                               {(sale.accountName || "").trim().toLowerCase().includes("meesho")
-                                ? "Sub Order No."
+                                ? "Sub Order No.: "
                                 : (sale.accountName || "").trim().toLowerCase().includes("myntra")
-                                ? "Order Release ID"
-                                : "Order Item ID"}
+                                ? "Order Release ID: "
+                                : "Order Item ID: "}
                             </span>{' '}
                             {sale.orderItemId || '-'}
                           </button>
@@ -3292,7 +3364,7 @@ const handleDelete = async (id) => {
                             }}
                             className="font-mono text-red-500 hover:underline text-left"
                           >
-                            {sale.returnTrackingId || (sale.trackingId ? '-' : '')}
+                            {sale.returnTrackingId || (sale.trackingId ? '' : '')}
                           </button>
                           <button
                             type="button"
@@ -5418,8 +5490,14 @@ const handleDelete = async (id) => {
           setShowImportReturnModal(false);
           setPendingReturnCSVFile(null); // ✅ clean up
         }}
-        onSuccess={() => { fetchStats(); fetchDateSummaries(); }}
+        onSuccess={() => {
+          setShowImportReturnModal(false);
+          setPendingReturnCSVFile(null);
+          fetchStats();
+          fetchDateSummaries();
+        }}
         preloadedFile={pendingReturnCSVFile} // ✅ pass the file
+        importAccount={importAccount}
       />
       <ScrollToTop />
     </div>

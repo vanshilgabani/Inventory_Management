@@ -7,12 +7,62 @@ import Papa from 'papaparse';
 import { salesService } from '../../services/salesService';
 import toast from 'react-hot-toast';
 
-
-
 const STEP = { UPLOAD: 'upload', PREVIEW: 'preview', RESULT: 'result' };
 const BATCH_SIZE = 300;
 
-const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => {
+const cleanId = value =>
+  String(value ?? '').trim().replace(/^'/, '');
+
+const cleanOptionalId = value => {
+  const cleaned = cleanId(value);
+  return cleaned || '';
+};
+
+const isScientificNotation = value =>
+  /^\d+(\.\d+)?e\+\d+$/i.test(String(value ?? '').trim());
+
+const normalizeMyntraReturnRow = row => {
+  const normalized = {};
+
+  Object.entries(row || {}).forEach(([key, value]) => {
+    normalized[String(key).trim().toLowerCase()] = value;
+  });
+
+  const status = String(normalized.status || '')
+    .trim()
+    .toUpperCase();
+
+  const isRTO = status === 'RTO';
+
+  return {
+    order_id: cleanOptionalId(normalized.order_id),
+    order_group_id: cleanOptionalId(normalized.order_group_id),
+    forward_tracking_number: cleanOptionalId(
+      normalized.forward_tracking_number
+    ),
+    seller_sku_code: String(normalized.seller_sku_code || '').trim(),
+
+    status,
+
+    return_id: cleanOptionalId(normalized.return_id),
+    return_reason: String(normalized.return_reason || '').trim(),
+    return_created_date: String(
+      normalized.return_created_date || ''
+    ).trim(),
+
+    return_tracking_number: isRTO
+      ? ''
+      : cleanOptionalId(normalized.return_tracking_number),
+
+    isRTO,
+
+    corrupted:
+      isScientificNotation(normalized.order_id) ||
+      isScientificNotation(normalized.order_group_id)
+  };
+};
+
+const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile, importAccount }) => {
   const [step, setStep] = useState(STEP.UPLOAD);
   const [file, setFile] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -20,9 +70,8 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
   const [result, setResult] = useState(null);
   const [parsedRows, setParsedRows] = useState([]);
   const [parseStats, setParseStats] = useState(null);
+  const [returnMarketplace, setReturnMarketplace] = useState('flipkart');
   const fileInputRef = useRef(null);
-
-
 
   const reset = () => {
     setStep(STEP.UPLOAD);
@@ -32,9 +81,8 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
     setResult(null);
     setParsedRows([]);
     setParseStats(null);
+    setReturnMarketplace('flipkart');
   };
-
-
 
   useEffect(() => {
     if (isOpen && preloadedFile) {
@@ -42,235 +90,374 @@ const ImportReturnCSVModal = ({ isOpen, onClose, onSuccess, preloadedFile }) => 
     }
   }, [isOpen, preloadedFile]);
 
-
-
   const handleClose = () => { reset(); onClose(); };
 
+const handleFile = async f => {
+  if (!f) return;
 
+  setFile(f);
+  setIsLoading(true);
+  setPreview(null);
+  setResult(null);
 
-  const handleFile = async (f) => {
-    setFile(f);
-    setIsLoading(true);
-    Papa.parse(f, {
-      header: true,
-      skipEmptyLines: true,
-      complete: async (results) => {
-        const rows = results.data;
+  Papa.parse(f, {
+    header: true,
+    skipEmptyLines: true,
+
+    complete: async results => {
+      try {
+        const rows = results.data || [];
+
         if (!rows.length) {
           toast.error('CSV file is empty.');
-          setIsLoading(false);
           return;
         }
 
-        // ── Header validation ──────────────────────────────────────────────
-        const headers = Object.keys(rows[0]).map(h => h.trim().toLowerCase());
-        const returnSignature = ['return id', 'return reason', 'return sub-reason', 'return status', 'return type'];
-        const matchCount = returnSignature.filter(col => headers.includes(col)).length;
-        if (matchCount < 2) {
-          toast.error('Not a Flipkart Return CSV. Please upload the correct file.', { duration: 4000 });
+        const rawHeaders = Object.keys(rows[0] || {});
+        const headers = rawHeaders.map(header =>
+          String(header).trim().toLowerCase()
+        );
+
+        const isMyntra =
+          headers.includes('order_id') &&
+          headers.includes('order_group_id') &&
+          headers.includes('forward_tracking_number') &&
+          headers.includes('return_tracking_number');
+
+        const isFlipkart =
+          headers.includes('return id') ||
+          headers.includes('return reason') ||
+          headers.includes('return status') ||
+          headers.includes('return type');
+
+        if (!isMyntra && !isFlipkart) {
+          toast.error(
+            'Unsupported return CSV. Upload a Flipkart Return CSV or Myntra Returns Report.',
+            { duration: 5000 }
+          );
           setFile(null);
-          setIsLoading(false);
           return;
         }
 
-        // ✅ STEP 1: Client-side filtering — skip rows with no Order Item ID
+        setReturnMarketplace(isMyntra ? 'myntra' : 'flipkart');
+
+        if (isMyntra) {
+          const normalizedRows = rows.map(normalizeMyntraReturnRow);
+
+          const validRows = normalizedRows.filter(row => {
+            const hasIdentifier =
+              row.order_id ||
+              row.order_group_id ||
+              row.forward_tracking_number;
+
+            return hasIdentifier || row.corrupted;
+          });
+
+          const skippedCount = normalizedRows.length - validRows.length;
+
+          const dedupeMap = new Map();
+
+          validRows.forEach(row => {
+            const key =
+              row.order_id ||
+              `${row.order_group_id}__${row.forward_tracking_number}__${row.seller_sku_code}`;
+
+            // Keep the last occurrence, matching the current Flipkart behavior.
+            dedupeMap.set(key, row);
+          });
+
+          const uniqueRows = Array.from(dedupeMap.values());
+
+          const parsedStats = {
+            total: rows.length,
+            invalid: skippedCount,
+            duplicates: validRows.length - uniqueRows.length,
+            toProcess: uniqueRows.length
+          };
+
+          setParseStats(parsedStats);
+          setParsedRows(uniqueRows);
+
+          const previewRows = uniqueRows.slice(0, 8).map(row => ({
+            orderItemId: row.order_id || '-',
+            orderId: row.order_group_id || '-',
+            returnType: row.isRTO
+              ? 'Courier Return'
+              : 'Customer Return',
+            returnReason: row.return_reason || '',
+            returnSubReason: '',
+            returnStatus: '',
+            isRTO: row.isRTO,
+            newReturnTrackingId: row.return_tracking_number || null,
+            comments: '',
+            matchedVia: 'Server matching'
+          }));
+
+          setPreview({
+            marketplace: 'myntra',
+            matchedCount: uniqueRows.length,
+            skippedCount,
+            matched: previewRows,
+            unmatched: []
+          });
+
+          setStep(STEP.PREVIEW);
+
+          toast.success(
+            `Myntra return report loaded: ${uniqueRows.length} unique rows`,
+            { duration: 4000 }
+          );
+
+          return;
+        }
+
+        /*
+         * Existing Flipkart path
+         */
+        const returnSignature = [
+          'return id',
+          'return reason',
+          'return sub-reason',
+          'return status',
+          'return type'
+        ];
+
+        const matchCount = returnSignature.filter(column =>
+          headers.includes(column)
+        ).length;
+
+        if (matchCount < 2) {
+          toast.error(
+            'Not a Flipkart Return CSV. Please upload the correct file.',
+            { duration: 4000 }
+          );
+          setFile(null);
+          return;
+        }
+
         const validRows = rows.filter(row => {
-          const id = (
+          const id =
             row['Order Item ID'] ||
             row['Order Item Id'] ||
-            row['ORDER ITEM ID']
-          )?.trim();
-          return !!id;
+            row['ORDER ITEM ID'];
+
+          return Boolean(String(id || '').trim());
         });
 
-        // ✅ STEP 2: Deduplication — keep only the last row per Order Item ID
-        //   Strip Excel apostrophe before keying so 'OD123 and OD123 don't create duplicates
         const deduped = new Map();
+
         validRows.forEach(row => {
-          const id = (
+          const id = String(
             row['Order Item ID'] ||
             row['Order Item Id'] ||
-            row['ORDER ITEM ID']
-          )?.trim().replace(/^'/, '');
+            row['ORDER ITEM ID'] ||
+            ''
+          )
+            .trim()
+            .replace(/^'/, '');
+
           if (id) deduped.set(id, row);
         });
 
-        // ✅ STEP 3: Slim payload — use EXACT key names the backend reads
-        //
-        //   Backend reads via row['Order Item ID']     ← capital ID, not Id
-        //   Backend reads via row['Order ID']          ← capital ID
-        //   Backend reads via row['Return ID']         ← capital ID
-        //   Backend reads via row['Tracking ID']       ← NOT 'Return Tracking Id'
-        //   Backend reads via row['Return Sub-reason'] ← lowercase 'r' in reason
-        //   Backend reads via row['Comments']          ← NOT 'Customer Comments'
-        //   Backend reads via row['Return Requested Date']
-        //   Backend reads via row['Completed Date']
         const slimRows = Array.from(deduped.values()).map(row => ({
-          'Order Item ID': (
+          'Order Item ID': String(
             row['Order Item ID'] ||
             row['Order Item Id'] ||
-            row['ORDER ITEM ID']
-          )?.trim().replace(/^'/, '') || '',
+            row['ORDER ITEM ID'] ||
+            ''
+          )
+            .trim()
+            .replace(/^'/, ''),
 
-          'Order ID': (
+          'Order ID': String(
             row['Order ID'] ||
-            row['Order Id']
-          )?.trim() || '',
+            row['Order Id'] ||
+            ''
+          ).trim(),
 
-          'Return ID': (
+          'Return ID': String(
             row['Return ID'] ||
-            row['Return Id']
-          )?.trim() || '',
+            row['Return Id'] ||
+            ''
+          ).trim(),
 
-          // Backend key is 'Tracking ID' — this is the return shipment AWB
-          'Tracking ID': (
+          'Tracking ID': String(
             row['Tracking ID'] ||
             row['Return Tracking Id'] ||
-            row['Return AWB']
-          )?.trim() || '',
+            row['Return AWB'] ||
+            ''
+          ).trim(),
 
-          'Return Status': row['Return Status']?.trim() || '',
+          'Return Status': String(
+            row['Return Status'] || ''
+          ).trim(),
 
-          'Return Reason': row['Return Reason']?.trim() || '',
+          'Return Reason': String(
+            row['Return Reason'] || ''
+          ).trim(),
 
-          // Backend key is 'Return Sub-reason' — lowercase 'r'
-          'Return Sub-reason': (
+          'Return Sub-reason': String(
             row['Return Sub-reason'] ||
-            row['Return Sub-Reason']
-          )?.trim() || '',
+            row['Return Sub-Reason'] ||
+            ''
+          ).trim(),
 
-          // Backend key is 'Comments' — not 'Customer Comments'
-          'Comments': (
+          Comments: String(
             row['Comments'] ||
-            row['Customer Comments']
-          )?.trim() || '',
+            row['Customer Comments'] ||
+            ''
+          ).trim(),
 
-          'Return Type': row['Return Type']?.trim() || '',
+          'Return Type': String(
+            row['Return Type'] || ''
+          ).trim(),
 
-          'Return Requested Date': row['Return Requested Date']?.trim() || '',
+          'Return Requested Date': String(
+            row['Return Requested Date'] || ''
+          ).trim(),
 
-          'Completed Date': row['Completed Date']?.trim() || '',
+          'Completed Date': String(
+            row['Completed Date'] || ''
+          ).trim()
         }));
 
         const stats = {
-          total:      rows.length,
-          invalid:    rows.length - validRows.length,
+          total: rows.length,
+          invalid: rows.length - validRows.length,
           duplicates: validRows.length - slimRows.length,
-          toProcess:  slimRows.length,
+          toProcess: slimRows.length
         };
 
-        console.log(
-          `📦 Return CSV: ${rows.length} total → ${validRows.length} valid → ${slimRows.length} unique`
-        );
         setParseStats(stats);
+        setParsedRows(slimRows);
 
-        try {
-          setParsedRows(slimRows);
+        setPreview({
+          marketplace: 'flipkart',
+          matchedCount: slimRows.length,
+          skippedCount: stats.invalid,
+          matched: slimRows.slice(0, 8).map(row => ({
+            orderItemId: row['Order Item ID'],
+            orderId: row['Order ID'],
+            returnType: row['Return Type'],
+            returnReason: row['Return Reason'],
+            returnSubReason: row['Return Sub-reason'],
+            returnStatus: row['Return Status'],
+            isRTO:
+              String(row['Return Type']).toLowerCase() ===
+              'courier_return',
+            newReturnTrackingId: row['Tracking ID'] || null,
+            comments: row.Comments
+          })),
+          unmatched: []
+        });
 
-          // Build preview entirely from CSV data
-          const clientPreview = {
-            matchedCount:  slimRows.length,    // "orders to attempt"
-            skippedCount:  stats.invalid,
-            matched: slimRows.slice(0, 8).map(row => ({
-              orderItemId:         row['Order Item ID'],
-              orderId:             row['Order ID'],
-              returnType:          row['Return Type'],
-              returnReason:        row['Return Reason'],
-              returnSubReason:     row['Return Sub-reason'],
-              returnStatus:        row['Return Status'],
-              isRTO:               row['Return Type'] === 'courier_return',
-              newReturnTrackingId: row['Tracking ID'] || null,
-              comments:            row['Comments'],
-            })),
-            unmatched: [], // unknown until server processes — shown in result
-          };
-
-          setPreview(clientPreview);
-          setStep(STEP.PREVIEW);
-        } catch (err) {
-          toast.error('Failed to build preview.');
-        } finally {
-          setIsLoading(false);
-        }
-      },
-      error: () => {
-        toast.error('Failed to read CSV file.');
+        setReturnMarketplace('flipkart');
+        setStep(STEP.PREVIEW);
+      } catch (error) {
+        console.error('Return CSV processing error:', error);
+        toast.error('Failed to process return CSV.');
+      } finally {
         setIsLoading(false);
       }
-    });
-  };
+    },
 
-  // ✅ Parallel batch import — all batches fire simultaneously via Promise.allSettled
-  const handleImport = async () => {
-    setIsLoading(true);
-    try {
-      const chunks = [];
-      for (let i = 0; i < parsedRows.length; i += BATCH_SIZE) {
-        chunks.push(parsedRows.slice(i, i + BATCH_SIZE));
-      }
-
-      console.log(
-        `🚀 Importing ${parsedRows.length} rows in ${chunks.length} parallel batch(es) of ${BATCH_SIZE}`
-      );
-
-      const batchResults = await Promise.allSettled(
-        chunks.map((chunk, i) =>
-          salesService.importReturnCSV(chunk).catch(err => {
-            console.error(`❌ Batch ${i + 1}/${chunks.length} failed:`, err.message);
-            throw err;
-          })
-        )
-      );
-
-      // ✅ All 6 fields initialized
-      const aggregated = {
-        updated:         0,
-        unmatched:       0,
-        skipped:         0,
-        rtoCount:        0,   // ✅ ADD
-        trackingStored:  0,   // ✅ ADD
-        errors:          [],
-        unmatchedOrders: [],  // ✅ ADD
-        failedBatches:   0,
-      };
-
-      batchResults.forEach((result, i) => {
-        if (result.status === 'fulfilled' && result.value?.success) {
-          const d = result.value.data;
-          aggregated.updated         += d.updated         || 0;
-          aggregated.unmatched       += d.unmatched       || 0;
-          aggregated.skipped         += d.skipped         || 0;
-          aggregated.rtoCount        += d.rtoCount        || 0;  // ✅ collect
-          aggregated.trackingStored  += d.trackingStored  || 0;  // ✅ collect
-          aggregated.errors           = [...aggregated.errors,         ...(d.errors          || [])];
-          aggregated.unmatchedOrders  = [...aggregated.unmatchedOrders, ...(d.unmatchedOrders || [])]; // ✅ collect
-        } else {
-          aggregated.failedBatches++;
-          console.error(
-            `❌ Batch ${i + 1}/${chunks.length} rejected:`,
-            result.reason?.message
-          );
-        }
-      });
-
-      setResult(aggregated);
-      setStep(STEP.RESULT);
-      if (onSuccess) onSuccess();
-
-      if (aggregated.failedBatches > 0) {
-        toast.error(
-          `⚠️ ${aggregated.failedBatches} batch(es) failed — ${aggregated.updated} updated, some may need re-import`,
-          { duration: 6000 }
-        );
-      } else {
-        toast.success(`${aggregated.updated} orders updated!`);
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Import failed. Please try again.');
-    } finally {
+    error: error => {
+      console.error('CSV parse error:', error);
+      toast.error('Failed to read CSV file.');
       setIsLoading(false);
     }
-  };
+  });
+};
+
+const handleImport = async () => {
+  if (!parsedRows.length) {
+    toast.error('No valid rows to import.');
+    return;
+  }
+
+  setIsLoading(true);
+
+  try {
+    /*
+     * Do not run parallel batches.
+     *
+     * Myntra matching may use tracking ID or Order ID for multiple
+     * line items in one parcel. Sequential processing prevents two
+     * batches from trying to claim the same sale.
+     */
+    const BATCH_SIZE = 300;
+    const chunks = [];
+
+    for (let i = 0; i < parsedRows.length; i += BATCH_SIZE) {
+      chunks.push(parsedRows.slice(i, i + BATCH_SIZE));
+    }
+
+    const aggregated = {
+      updated: 0,
+      unmatched: 0,
+      skipped: parseStats?.invalid || 0,
+      rtoCount: 0,
+      trackingStored: 0,
+      errors: [],
+      unmatchedOrders: [],
+      failedBatches: 0
+    };
+
+    for (let i = 0; i < chunks.length; i += 1) {
+      const response =
+        returnMarketplace === 'myntra'
+          ? await salesService.importMyntraReturnCSV(
+              chunks[i],
+              importAccount
+            )
+          : await salesService.importReturnCSV(
+              chunks[i],
+              importAccount
+            );
+
+      if (!response?.success) {
+        throw new Error(
+          response?.message || `Batch ${i + 1} failed`
+        );
+      }
+
+      const data = response.data || {};
+
+      aggregated.updated += data.updated || 0;
+      aggregated.unmatched += data.unmatched || 0;
+      aggregated.skipped +=
+        i === 0 ? data.skipped || 0 : 0;
+      aggregated.rtoCount += data.rtoCount || 0;
+      aggregated.trackingStored += data.trackingStored || 0;
+      aggregated.errors.push(...(data.errors || []));
+      aggregated.unmatchedOrders.push(
+        ...(data.unmatchedOrders || [])
+      );
+    }
+
+    setResult(aggregated);
+    setStep(STEP.RESULT);
+
+    if (onSuccess) {
+      onSuccess();
+    }
+
+    toast.success(
+      `${aggregated.updated} orders updated successfully!`
+    );
+  } catch (error) {
+    console.error('Return import failed:', error);
+
+    toast.error(
+      error?.response?.data?.message ||
+        error.message ||
+        'Import failed. Please try again.',
+      { duration: 6000 }
+    );
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   if (!isOpen) return null;
 

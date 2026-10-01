@@ -59,6 +59,222 @@ const detectAmazonTXT = (headers) => {
   return 'unknown';
 };
 
+// ============ MYNTRA RETURN REPORT SUPPORT ============
+const isMyntraReturnCSV = (keys = []) => {
+  const n = keys.map(k => String(k || '').trim().toLowerCase());
+  return ['order_id', 'order_group_id', 'forward_tracking_number', 'return_tracking_number']
+    .every(c => n.includes(c));
+};
+
+const cleanMyntraId = v => {
+  const s = String(v ?? '').trim().replace(/^'/, '');
+  return s || null;
+};
+
+const isSciNotation = v => /^\d+(\.\d+)?e\+\d+$/i.test(String(v ?? '').trim());
+
+const parseMyntraReturnDate = v => {
+  const s = String(v ?? '').trim();
+  if (!s || s.startsWith('1970-01-01')) return null; // Myntra placeholder
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+const normalizeMyntraReturnRow = raw => {
+  const row = {};
+  Object.entries(raw || {}).forEach(([k, v]) => { row[String(k).trim().toLowerCase()] = v; });
+
+  const status = String(row.status || '').trim().toUpperCase();
+  const isRTO = status === 'RTO';
+  const corrupted = isSciNotation(row.order_id) || isSciNotation(row.order_group_id);
+
+  return {
+    validStatus: status === 'RTO' || status === 'RETURN',
+    isRTO,
+    corrupted,
+    orderItemId: corrupted ? null : cleanMyntraId(row.order_id),
+    orderGroupId: corrupted ? null : cleanMyntraId(row.order_group_id),
+    forwardTracking: cleanMyntraId(row.forward_tracking_number),
+    sku: String(row.seller_sku_code || '').trim() || null,
+    returnType: isRTO ? 'Courier Return' : 'Customer Return',
+    returnId: cleanMyntraId(row.return_id),
+    returnReason: String(row.return_reason || '').trim() || null,
+    returnRequestedDate: isRTO ? null : parseMyntraReturnDate(row.return_created_date),
+    // Same rule as Flipkart: never store a tracking ID for RTO rows
+    returnTrackingId: isRTO ? null : cleanMyntraId(row.return_tracking_number),
+  };
+};
+
+const skuMatchesSale = (sku, sale) => {
+  if (!sku) return false;
+  const p = parseFlipkartSKU(sku);
+  if (!p.design || !p.color || !p.size) return false;
+  return String(p.design).toUpperCase() === String(sale.design || '').toUpperCase()
+    && String(p.size).toUpperCase() === String(sale.size || '').toUpperCase()
+    && matchColor(p.color, [sale.color]) === sale.color;
+};
+
+// Pass 1: exact Order Release ID. Pass 2: forward tracking ID, then Order ID,
+// using the SKU to pick the right item when several orders share a parcel.
+const matchMyntraReturnRows = (items, sales) => {
+  const byItem = new Map(), byTracking = new Map(), byGroup = new Map();
+  const push = (m, k, s) => { if (!k) return; if (!m.has(k)) m.set(k, []); m.get(k).push(s); };
+
+  for (const s of sales) {
+    if (s.orderItemId) byItem.set(String(s.orderItemId).replace(/^'/, ''), s);
+    push(byTracking, s.trackingId, s);
+    push(byGroup, s.marketplaceOrderId, s);
+  }
+
+  const claimed = new Set();
+  const results = new Array(items.length).fill(null);
+
+  items.forEach((it, i) => {
+    const s = it.orderItemId ? byItem.get(it.orderItemId) : null;
+    if (s && !claimed.has(String(s._id))) {
+      results[i] = { sale: s, via: 'Order Release ID' };
+      claimed.add(String(s._id));
+    }
+  });
+
+  items.forEach((it, i) => {
+    if (results[i]) return;
+    const attempts = [
+      [it.forwardTracking, byTracking, 'Forward Tracking ID'],
+      [it.orderGroupId, byGroup, 'Order ID'],
+    ];
+    for (const [key, map, label] of attempts) {
+      if (!key) continue;
+      const cands = (map.get(key) || []).filter(s => !claimed.has(String(s._id)));
+      if (cands.length === 0) continue;
+      const pick = cands.length === 1 ? cands[0] : cands.find(s => skuMatchesSale(it.sku, s)) || null;
+      if (pick) {
+        results[i] = { sale: pick, via: label };
+        claimed.add(String(pick._id));
+        return;
+      }
+      results[i] = { sale: null, reason: `${cands.length} orders share this ${label} and the SKU could not pick one` };
+    }
+    if (!results[i]) {
+      results[i] = {
+        sale: null,
+        reason: it.corrupted
+          ? 'Order ID is corrupted (Excel scientific notation). Re-download the original report.'
+          : 'No order found with this Order Release ID, tracking ID or Order ID',
+      };
+    }
+  });
+  return results;
+};
+
+const processMyntraReturnCSV = async (req, res, mode) => {
+  try {
+    const { organizationId } = req.user;
+    const { rows, accountName } = req.body;
+
+    const items = [];
+    let skipped = 0;
+    for (const raw of rows) {
+      const it = normalizeMyntraReturnRow(raw);
+      const hasAnyId = it.orderItemId || it.orderGroupId || it.forwardTracking;
+      if (!it.validStatus || (!hasAnyId && !it.corrupted)) { skipped++; continue; }
+      items.push(it);
+    }
+    if (items.length === 0) {
+      return res.status(200).json({ success: true, message: 'No valid rows to process.', data: { updated: 0, unmatched: 0, skipped, rtoCount: 0, trackingStored: 0, errors: [], unmatchedOrders: [] } });
+    }
+
+    const uniq = arr => [...new Set(arr.filter(Boolean))];
+    const itemIds = uniq(items.map(i => i.orderItemId));
+    const trackingIds = uniq(items.map(i => i.forwardTracking));
+    const groupIds = uniq(items.map(i => i.orderGroupId));
+
+    const orClauses = [];
+    if (itemIds.length) orClauses.push({ orderItemId: { $in: itemIds.flatMap(id => [id, `'${id}`]) } });
+    if (trackingIds.length) orClauses.push({ trackingId: { $in: trackingIds } });
+    if (groupIds.length) orClauses.push({ marketplaceOrderId: { $in: groupIds } });
+
+    const query = { organizationId, deletedAt: null };
+    if (orClauses.length) query.$or = orClauses;
+    if (accountName && accountName !== 'all') query.accountName = accountName;
+
+    const sales = orClauses.length
+      ? await MarketplaceSale.find(query)
+          .select('orderItemId marketplaceOrderId trackingId returnTrackingId design color size status accountName')
+          .lean()
+      : [];
+
+    const matches = matchMyntraReturnRows(items, sales);
+
+    if (mode === 'preview') {
+      const matched = [], unmatched = [];
+      items.forEach((it, i) => {
+        const m = matches[i];
+        if (!m.sale) {
+          unmatched.push({ orderItemId: it.orderItemId, orderId: it.orderGroupId, forwardTrackingId: it.forwardTracking, returnType: it.returnType, returnReason: it.returnReason, reason: m.reason });
+          return;
+        }
+        const s = m.sale;
+        matched.push({
+          orderItemId: s.orderItemId, orderId: s.marketplaceOrderId,
+          design: s.design, color: s.color, size: s.size, accountName: s.accountName,
+          currentStatus: s.status, forwardTrackingId: s.trackingId || null,
+          existingReturnTracking: s.returnTrackingId || null,
+          returnId: it.returnId, returnType: it.returnType, returnReason: it.returnReason,
+          returnSubReason: null, comments: null,
+          newReturnTrackingId: it.returnTrackingId,
+          isRTO: it.isRTO, willStoreTracking: !!it.returnTrackingId,
+          matchedVia: m.via,
+          note: it.isRTO ? 'RTO order: tracking ID will NOT be stored'
+            : it.returnTrackingId ? 'Customer return tracking ID will be stored'
+            : 'No return tracking ID in report row',
+        });
+      });
+      return res.json({ success: true, data: { totalRows: rows.length, matchedCount: matched.length, unmatchedCount: unmatched.length, skippedCount: skipped, matched, unmatched } });
+    }
+
+    // mode === 'import'
+    const results = { updated: 0, unmatched: 0, skipped, rtoCount: 0, trackingStored: 0, errors: [], unmatchedOrders: [] };
+    const bulkOps = [];
+
+    items.forEach((it, i) => {
+      try {
+        const m = matches[i];
+        if (!m.sale) {
+          results.unmatched++;
+          results.unmatchedOrders.push({ orderItemId: it.orderItemId, orderId: it.orderGroupId, forwardTrackingId: it.forwardTracking, returnType: it.returnType, returnReason: it.returnReason, reason: m.reason });
+          return;
+        }
+        const set = {};
+        if (it.returnId) set.returnId = it.returnId;
+        if (it.returnType) set.returnType = it.returnType;
+        if (it.returnReason) set.returnReason = it.returnReason;
+        if (it.returnRequestedDate) set.returnRequestedDate = it.returnRequestedDate;
+        if (it.returnTrackingId) set.returnTrackingId = it.returnTrackingId;
+
+        bulkOps.push({ updateOne: { filter: { _id: m.sale._id }, update: { $set: set } } });
+        results.updated++;
+        if (it.isRTO) results.rtoCount++;
+        else if (it.returnTrackingId) results.trackingStored++;
+      } catch (rowError) {
+        results.errors.push({ orderItemId: it.orderItemId || 'unknown', error: rowError.message });
+      }
+    });
+
+    if (bulkOps.length) await MarketplaceSale.bulkWrite(bulkOps, { ordered: false });
+
+    logger.info('Myntra return CSV import complete', { organizationId, updated: results.updated, unmatched: results.unmatched, skipped });
+    return res.status(200).json({
+      success: true,
+      message: `Myntra return CSV imported: ${results.updated} updated, ${results.unmatched} unmatched, ${results.skipped} skipped`,
+      data: results,
+    });
+  } catch (error) {
+    logger.error('processMyntraReturnCSV error', { error: error.message });
+    return res.status(500).json({ success: false, message: 'Server error processing Myntra return CSV', error: error.message });
+  }
+};
+
 // ✅ ADD THIS HELPER AT THE TOP OF EACH CONTROLLER FILE
 const decrementEditSession = async (req, action, module, itemId) => {
   // Only decrement for salespeople with active sessions, not admins
@@ -2595,6 +2811,8 @@ exports.previewReturnCSV = async (req, res) => {
         detectedType: detectFlipkartCSVType(firstRowKeys),
       });
 
+    if (isMyntraReturnCSV(firstRowKeys)) return processMyntraReturnCSV(req, res, 'preview');
+
     const matched = [];
     const unmatched = [];
     let skipped = 0;
@@ -2681,6 +2899,10 @@ exports.previewReturnCSV = async (req, res) => {
   }
 };
 
+exports.previewMyntraReturnCSV = async (req, res) => {
+  return processMyntraReturnCSV(req, res, 'preview');
+};
+
 // ─── ENDPOINT: Import Return CSV (actual DB writes) ───────────────────────
 // POST /api/sales/import-return-csv
 // Body: { rows: object[] }  ← parsed CSV rows from frontend
@@ -2701,6 +2923,7 @@ exports.importReturnCSV = async (req, res) => {
         message: 'This does not appear to be a Flipkart Return CSV. Please upload the correct file.',
         detectedType: detectFlipkartCSVType(firstRowKeys),
       });
+    if (isMyntraReturnCSV(firstRowKeys)) return processMyntraReturnCSV(req, res, 'import');
 
     // ── Helpers ─────────────────────────────────────────────────────────────
     const parseFlipkartDate = (dateStr) => {
@@ -2894,6 +3117,10 @@ exports.importReturnCSV = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+exports.importMyntraReturnCSV = async (req, res) => {
+  return processMyntraReturnCSV(req, res, 'import');
 };
 
 // ✅ ADD THIS - Get date summary
