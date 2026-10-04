@@ -113,6 +113,11 @@ const SIZE_PATTERN = /^(?:XS|S|M|L|XL|XXL|XXXL|3XL|4XL|5XL)$/i;
 const COMPLETE_SKU_PATTERN = /#?D\d+-[A-Z0-9._]+-(?:XS|S|M|L|XL|XXL|XXXL|3XL|4XL|5XL)\b/i;
 const PARTIAL_SKU_PATTERN = /#?D\d+-[A-Z0-9._]+-$/i;
 
+// Myntra SKU Code is marketplace-generated and can use different prefixes
+// across brands/catalogues (for example VNRD..., RRR...). Never hard-code
+// a brand prefix here. The code is a long contiguous alphanumeric token.
+const MYNTRA_SKU_PATTERN = /\b[A-Z0-9]{10,}\b/i;
+
 const sanitizePdfText = value =>
   String(value ?? '')
     .replace(/[\uFFFE\uFFFF\uFFFD]/g, '-')
@@ -163,7 +168,7 @@ const parsePicklistRows = pages => {
     for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
       const row = rows[rowIndex];
       const rowText = row.items.map(item => sanitizePdfText(item.text)).join(' ');
-      const myntraSkuMatch = rowText.match(/\bVNRD[A-Z0-9]+\b/i);
+      const myntraSkuMatch = rowText.match(MYNTRA_SKU_PATTERN);
       if (!myntraSkuMatch) continue;
 
       const myntraSku = myntraSkuMatch[0];
@@ -174,7 +179,7 @@ const parsePicklistRows = pages => {
       let nextProductY = -Infinity;
       for (let next = rowIndex + 1; next < rows.length; next += 1) {
         const nextText = rows[next].items.map(item => sanitizePdfText(item.text)).join(' ');
-        if (/\bVNRD[A-Z0-9]+\b/i.test(nextText)) {
+        if (MYNTRA_SKU_PATTERN.test(nextText)) {
           nextProductY = rows[next].y;
           break;
         }
@@ -527,73 +532,90 @@ export default function MyntraPicklist() {
     printWindow.document.close();
   };
 
-const printSkuQuantitySheet = () => {
-  if (!items.length) {
-    toast.error('Upload a picklist first.');
-    return;
-  }
+  const printSkuQuantitySheet = () => {
+    if (!items.length) {
+      toast.error('Upload a picklist first.');
+      return;
+    }
 
-  // Keep all SKUs in their existing sorted order.
-  const skuItems = items
-    .map(
-      item => `
-        <div class="sku-item">
-          ${item.sellerSku}
-          <strong>(${item.requiredQuantity})</strong>
-        </div>
+    // "items" is already grouped and sorted by Design -> Color -> Size.
+    const rows = items
+      .map(
+        (item, index) => `
+          <tr>
+            <td class="serial">${index + 1}</td>
+            <td class="sku">${item.sellerSku}</td>
+            <td class="qty">${item.requiredQuantity}</td>
+          </tr>
+        `
+      )
+      .join('');
+
+    openPrintWindow(
+      'Myntra SKU Quantity Sheet',
       `
-    )
-    .join('');
+        <h1 class="sheet-title">Myntra SKU Quantity Sheet</h1>
+        <p class="sheet-meta">
+          ${fileName || 'Myntra Picklist'} &nbsp;|&nbsp;
+          Unique SKUs: ${items.length} &nbsp;|&nbsp;
+          Total Quantity: ${totalRequired}
+        </p>
 
-  openPrintWindow(
-    'Myntra SKU Quantity Sheet',
-    `
-      <h1 class="sheet-title">Myntra SKU Quantity Sheet</h1>
-
-      <p class="sheet-meta">
-        ${fileName || 'Myntra Picklist'} &nbsp;|&nbsp;
-        Unique SKUs: ${items.length} &nbsp;|&nbsp;
-        Total Quantity: ${totalRequired}
-      </p>
-
-      <div class="sku-list">
-        ${skuItems}
-      </div>
-    `,
-    `
-      .sku-list {
-        column-count: 2;
-        column-gap: 30px;
-        column-rule: 1px solid #d1d5db;
-      }
-
-      .sku-item {
-        font-family: "Courier New", monospace;
-        font-size: 25px;
-        font-weight: 600;
-        padding: 5px 6px;
-        border-bottom: 1px solid #e5e7eb;
-
-        break-inside: avoid;
-        page-break-inside: avoid;
-        -webkit-column-break-inside: avoid;
-      }
-
-      .sku-item strong {
-        font-weight: 800;
-        margin-left: 3px;
-      }
-
-      @media print {
-        .sku-list {
-          column-count: 2;
-          column-gap: 30px;
-          column-rule: 1px solid #d1d5db;
+        <table class="sku-table">
+          <thead>
+            <tr>
+              <th class="serial">#</th>
+              <th>Seller SKU</th>
+              <th class="qty">Quantity</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `,
+      `
+        .sku-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 14px;
         }
-      }
-    `
-  );
-};
+
+        .sku-table th,
+        .sku-table td {
+          border: 1px solid #9ca3af;
+          padding: 8px 10px;
+          text-align: left;
+        }
+
+        .sku-table th {
+          background: #f3f4f6;
+          font-weight: 700;
+        }
+
+        .sku-table .serial {
+          width: 50px;
+          text-align: center;
+        }
+
+        .sku-table .sku {
+          font-family: "Courier New", monospace;
+          font-weight: 700;
+        }
+
+        .sku-table .qty {
+          width: 100px;
+          text-align: center;
+          font-weight: 700;
+        }
+
+        .sku-table tr {
+          break-inside: avoid;
+          page-break-inside: avoid;
+        }
+      `
+    );
+  };
 
   const printBarcodeSheet = () => {
     if (!items.length) {
@@ -619,7 +641,7 @@ const printSkuQuantitySheet = () => {
             lineColor: '#000000',
             width: 2,
             height: 70,
-            displayValue: false,
+            displayValue: true,
             fontSize: 14,
             margin: 8,
             textMargin: 4,
@@ -632,15 +654,25 @@ const printSkuQuantitySheet = () => {
         }
 
         return `
-            <div class="print-barcode-card">
-                <div class="barcode-wrap">
-                ${svg.outerHTML}
-                </div>
-
-                <div class="barcode-sku">
-                ${item.sellerSku} (${item.requiredQuantity})
-                </div>
+          <div class="print-barcode-card">
+            <div class="card-top">
+              <div>
+                <div class="number">SKU ${index + 1}</div>
+                <div class="sku-text">${item.sellerSku}</div>
+              </div>
+              <div class="qty-badge">Qty: ${item.requiredQuantity}</div>
             </div>
+
+            <div class="details">
+              <span><strong>Design:</strong> ${item.design || '-'}</span>
+              <span><strong>Color:</strong> ${item.color || '-'}</span>
+              <span><strong>Size:</strong> ${item.size || '-'}</span>
+            </div>
+
+            <div class="barcode-wrap">
+              ${svg.outerHTML}
+            </div>
+          </div>
         `;
       })
       .join('');
@@ -929,7 +961,7 @@ const printSkuQuantitySheet = () => {
               </label>
 
               <p className="text-sm text-gray-500">
-                Scan the printed barcode in the Myntra Packing desk.
+                Scan the printed barcode in the Myntra tab.
               </p>
             </div>
 
