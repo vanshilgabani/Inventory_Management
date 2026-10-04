@@ -3283,9 +3283,6 @@ exports.searchOrderGlobally = async (req, res) => {
       $or: [
         { orderItemId: { $regex: searchTerm, $options: 'i' } },
         { marketplaceOrderId: { $regex: searchTerm, $options: 'i' } },
-        { trackingId: { $regex: searchTerm, $options: 'i' } },  
-        { returnTrackingId: { $regex: searchTerm, $options: 'i' } },
-        { flyerId: { $regex: searchTerm, $options: 'i' } },
         { design: { $regex: searchTerm, $options: 'i' } },
         { color: { $regex: searchTerm, $options: 'i' } },
         { size: { $regex: searchTerm, $options: 'i' } }

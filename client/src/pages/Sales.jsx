@@ -117,6 +117,7 @@ const Sales = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchInput, setSearchInput] = useState(''); 
   const searchTimeoutRef = useRef(null);
+  const searchInputRef = useRef(null);
   const trackingInputRef = useRef(null);
   const smartCSVInputRef = useRef(null); 
   const [filteredOrders, setFilteredOrders] = useState(null); // For date-filtered orders
@@ -607,6 +608,26 @@ const fetchSettlements = async () => {
     return () => window.removeEventListener('keydown', handleGlobalKey);
   }, []); // no deps needed — ref is stable
 
+    // ✅ Auto-select the searched value as soon as results appear (no need to close the modal)
+  useEffect(() => {
+    if (!showSearchModal) return;
+
+    const input =
+      activeSearchField === 'tracking'
+        ? trackingInputRef.current
+        : searchInputRef.current;
+
+    // Small delay so the modal finishes mounting/focusing first
+    const timer = setTimeout(() => {
+      if (input && input.isConnected) {
+        input.focus();
+        input.select();
+      }
+    }, 120);
+
+    return () => clearTimeout(timer);
+  }, [showSearchModal, activeSearchField, modalOrders]);
+
 useEffect(() => {
   if (!loading) {
     if (activeTab === 'settlements' && showSettlementsTab) {
@@ -706,8 +727,9 @@ const handleSearch = useCallback(async (searchValue) => {
     return;
   }
 
-  const query = searchValue.trim();
-  setSearchQuery(query);
+    const query = searchValue.trim();
+    setSearchQuery(query);
+    setActiveSearchField('order');
 
   // ✅ STATUS KEYWORD SEARCH — must come before date check
   const STATUS_SEARCH_MAP = {
@@ -926,6 +948,23 @@ const clearSearchFilter = () => {
   // ✅ ADD THIS: Refresh the normal view after clearing
   fetchDateSummaries();
   toast.success('Search cleared', { duration: 2000 });
+};
+
+// Close the results modal, keep the typed text, and select it in the box that was used
+const closeSearchResultsAndSelect = () => {
+  const field = activeSearchField;
+  setShowSearchModal(false);
+  setModalOrders([]);
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const input = field === 'tracking' ? trackingInputRef.current : searchInputRef.current;
+      if (input && input.isConnected) {
+        input.focus();
+        input.select();
+      }
+    });
+  });
 };
 
 // NEW: Input handler - NO auto-search, only on Enter or button click
@@ -2625,8 +2664,7 @@ const handleDelete = async (id) => {
         toast.success(`Status updated to ${newStatus}`);
       }
 
-      setShowSearchModal(false); 
-      setModalOrders([]);
+      closeSearchResultsAndSelect(); 
       fetchStats();
       fetchDateSummaries();
     } catch (error) {
@@ -2689,6 +2727,7 @@ const handleDelete = async (id) => {
               <div className="relative flex-1">
                 <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
+                  ref={searchInputRef}
                   value={searchInput}
                   onChange={e => handleSearchInput(e.target.value)}
                   onKeyDown={handleSearchKeyPress}
@@ -4413,10 +4452,7 @@ const handleDelete = async (id) => {
             {/* ============ SEARCH RESULTS MODAL (for Order ID search) ============ */}
             <Modal
               isOpen={showSearchModal}
-              onClose={() => {
-                setShowSearchModal(false);
-                setModalOrders([]);
-              }}
+              onClose={closeSearchResultsAndSelect}
               title={`Search Results: "${activeSearchField === 'tracking' ? trackingInput : searchQuery}"`}
               maxWidth="max-w-6xl"
             >
@@ -4435,11 +4471,7 @@ const handleDelete = async (id) => {
                     </div>
                   </div>
                   <button
-                    onClick={() => {
-                      setShowSearchModal(false);
-                      setModalOrders([]);
-                      clearSearchFilter();
-                    }}
+                    onClick={closeSearchResultsAndSelect}
                     className="text-blue-600 hover:text-blue-800 font-medium flex items-center gap-2"
                   >
                     <FiX /> Close

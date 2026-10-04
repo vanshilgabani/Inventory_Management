@@ -47,7 +47,7 @@ export const generateInvoice = async (order, options = {}) => {
       // 1. HEADER SECTION (Box 1)
       // ==========================================
       const headerStartY = 10;
-      const headerHeight = 35;
+      const headerHeight = 27;
 
       doc.setDrawColor(0);
       doc.setLineWidth(0.2);
@@ -58,7 +58,7 @@ export const generateInvoice = async (order, options = {}) => {
         doc.addImage(logo, 'PNG', margin + 2, headerStartY + 2, 25, 25);
       } catch (e) { console.error('Logo error', e); }
 
-      const textLeftX = margin + 30;
+      const textLeftX = margin + 26;
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(18);
       doc.text((settings.companyName || 'VEERAA IMPEX').toUpperCase(), textLeftX, headerStartY + 8);
@@ -84,7 +84,7 @@ export const generateInvoice = async (order, options = {}) => {
       // 2. BILL TO & CHALLAN INFO (Box 2)
       // ==========================================
       const billToY = headerStartY + headerHeight;
-      const billToHeight = 35;
+      const billToHeight = 30;
 
       // Draw Box
       doc.rect(margin, billToY, contentWidth, billToHeight);
@@ -96,16 +96,21 @@ export const generateInvoice = async (order, options = {}) => {
       // --- LEFT SIDE: Bill To Details ---
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
-      doc.text('Bill To:', margin + 3, billToY + 5);
 
-      doc.setFontSize(10);
-      doc.text((order.businessName || order.buyerName || '').toUpperCase(), margin + 3, billToY + 10);
+      const buyerName = (order.businessName || order.buyerName || '').toUpperCase();
+
+      // Challan To + Buyer name on same line
+      doc.text(`Challan To: ${buyerName}`, margin + 3, billToY + 6);
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
+
       const maxAddressWidth = (splitX - margin) - 10;
-      const buyerAddr = order.buyerAddress ? doc.splitTextToSize(order.buyerAddress, maxAddressWidth) : [];
-      let currentBillY = billToY + 15;
+      const buyerAddr = order.buyerAddress
+        ? doc.splitTextToSize(order.buyerAddress, maxAddressWidth)
+        : [];
+
+      let currentBillY = billToY + 12;
 
       if (buyerAddr.length > 0) {
         doc.text(buyerAddr, margin + 3, currentBillY);
@@ -148,7 +153,7 @@ export const generateInvoice = async (order, options = {}) => {
       // ==========================================
       const hasDiscount = (order.items || []).some(i => i.discount > 0) || order.discountAmount > 0;
 
-      const head = [['#', 'Item', 'Qty', 'Rate', hasDiscount ? 'Discount' : null, 'Total'].filter(Boolean)];
+      const head = [['#', 'Item', 'Qty', 'Rate', 'Total'].filter(Boolean)];
 
       const body = (order.items || []).map((item, index) => {
         const total = (item.quantity * item.pricePerUnit) - (item.discount || 0);
@@ -161,7 +166,6 @@ export const generateInvoice = async (order, options = {}) => {
           itemName,
           `${item.quantity} Pcs`,
           formatCurrency(item.pricePerUnit),
-          hasDiscount ? formatCurrency(item.discount || 0) : null,
           formatCurrency(total)
         ].filter(Boolean);
       });
@@ -172,7 +176,6 @@ export const generateInvoice = async (order, options = {}) => {
         `Total Qty:`,
         `${totalQty} Pcs`,
         '',
-        hasDiscount ? '' : null,
         ''
       ].filter(val => val !== null);
 
@@ -202,8 +205,7 @@ export const generateInvoice = async (order, options = {}) => {
           1: { halign: 'left', cellWidth: 'auto' },
           2: { halign: 'center', cellWidth: 25 },
           3: { halign: 'right', cellWidth: 30 },
-          4: { halign: 'right', cellWidth: 30 },
-          5: { halign: 'right', cellWidth: 35 },
+          4: { halign: 'right', cellWidth: 35 },
         },
         margin: { left: margin, right: margin },
         tableLineWidth: 0.2,
@@ -227,7 +229,7 @@ export const generateInvoice = async (order, options = {}) => {
         finalY = margin;
       }
 
-      const footerHeight = 55;
+      const footerHeight = 40;
       doc.rect(margin, finalY, contentWidth, footerHeight);
 
       const totalBoxWidth = 75;
@@ -251,8 +253,8 @@ export const generateInvoice = async (order, options = {}) => {
 
       // ✅ NEW: Inject signature image above label if enabled
       if (challanSignatureImage && attachSignatureInChallan) {
-        const sigImgW = 38;
-        const sigImgH = 14;
+        const sigImgW = 32;
+        const sigImgH = 11;
         const sigImgX = totalBoxX - 5 - sigImgW;
         const sigImgY = sigY - sigImgH - 2;
         try {
@@ -273,8 +275,18 @@ export const generateInvoice = async (order, options = {}) => {
 
       if (order.discountAmount > 0) {
         calcY += lineSpacing;
+
+        const discountPercentage = order.subtotalAmount > 0
+          ? (order.discountAmount / order.subtotalAmount) * 100
+          : 0;
+
         doc.text('Discount:', labelX, calcY);
-        doc.text(`- ${formatCurrency(order.discountAmount)}`, valX, calcY, { align: 'right' });
+        doc.text(
+          `- ${formatCurrency(order.discountAmount)} (${discountPercentage.toFixed(2)}%)`,
+          valX,
+          calcY,
+          { align: 'right' }
+        );
       }
 
       if (order.gstEnabled && order.cgst > 0) {
