@@ -36,6 +36,7 @@ import SupplierSyncLogs from './pages/SupplierSyncLogs';
 import CustomerManagement from './pages/CustomerManagement';
 import ForgotPassword from './pages/ForgotPassword';
 import Reports from './pages/Reports';
+import MyntraPicklist from './pages/MyntraPicklist';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -123,6 +124,7 @@ const AppRoutes = () => {
           <Route path="/received-from-supplier" element={<ReceivedFromSupplier />} />  
           <Route path="/sync/supplier-logs" element={<SupplierSyncLogs />} />    
           <Route path="/reports" element={<Reports />} />  
+          <Route path="/myntra-picklist" element={<MyntraPicklist />} />
           
           {/* Admin Routes */}
           <Route path="monthly-bills" element={

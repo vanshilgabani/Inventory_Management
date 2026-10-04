@@ -30,6 +30,12 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
   const { subscription, isTrial } = useSubscription();
   const { settings } = useSettings();
 
+  const [marketplaceHover, setMarketplaceHover] = useState(false);
+  const [marketplaceMenuPos, setMarketplaceMenuPos] = useState({
+    top: 0,
+    left: 0,
+  });
+
   // Permission state
   const [allowedSidebarItems, setAllowedSidebarItems] = useState([]);
   const [loadingPermissions, setLoadingPermissions] = useState(true);
@@ -182,6 +188,13 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
       icon: FiBarChart2,
       label: 'Marketplace Sales',
       color: 'text-indigo-500',
+      hoverSubmenu: [
+        {
+          key: 'myntra-picklist',
+          path: '/myntra-picklist',
+          label: 'Myntra Picklist',
+        },
+      ],
     },
     {
       key: 'wholesale-buyers',
@@ -447,6 +460,105 @@ const Sidebar = ({ sidebarOpen, setSidebarOpen }) => {
                           ))}
                         </div>
                       )}
+                    </div>
+                  );
+                }
+
+                // Marketplace Sales with floating overlay submenu
+                if (item.key === 'marketplace-sales') {
+                  return (
+                    <div key={item.key} className="relative group">
+
+                      {/* Main Marketplace Sales Button */}
+                      <NavLink
+                        to={item.path}
+                        onClick={() => setSidebarOpen(false)}
+                        className={({ isActive }) =>
+                          `flex items-center justify-between px-4 py-3 rounded-lg transition-all duration-200 transform hover:scale-1.02 ${
+                            isActive
+                              ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg'
+                              : 'text-gray-700 hover:bg-gray-100'
+                          }`
+                        }
+                        style={{
+                          animationDelay: `${index * 50}ms`,
+                          animation: 'slideIn 0.3s ease-out forwards',
+                        }}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <Icon className={`text-lg ${item.color}`} />
+                          <span className="text-sm font-medium">
+                            {item.label}
+                          </span>
+                        </div>
+
+                        <FiChevronDown className="text-sm opacity-60" />
+                      </NavLink>
+
+
+                      {/* Floating Myntra Picklist - DOES NOT PUSH OTHER ITEMS */}
+                      <div
+                        className="
+                          absolute
+                          top-full
+                          left-0
+                          right-0
+                          z-[100]
+                          pt-1
+
+                          opacity-0
+                          invisible
+                          group-hover:opacity-100
+                          group-hover:visible
+
+                          transition-all
+                          duration-200
+                        "
+                      >
+                        <NavLink
+                          to="/myntra-picklist"
+                          onClick={() => setSidebarOpen(false)}
+                          className={({ isActive }) =>
+                            `flex items-center gap-3 px-4 py-3 rounded-lg shadow-xl border transition-all duration-200 ${
+                              isActive
+                                ? 'bg-gradient-to-r from-pink-500 to-purple-600 text-white border-transparent'
+                                : 'bg-white text-gray-700 border-gray-200 hover:bg-gradient-to-r hover:from-pink-50 hover:to-purple-50 hover:text-purple-700'
+                            }`
+                          }
+                        >
+                          {/* Myntra Icon */}
+                          <div
+                            className="
+                              w-9 h-9
+                              flex-shrink-0
+                              flex items-center justify-center
+                              rounded-lg
+                              bg-gradient-to-br
+                              from-pink-500
+                              via-red-500
+                              to-orange-400
+                              text-white
+                              font-bold
+                              shadow-md
+                            "
+                          >
+                            M
+                          </div>
+
+                          <div className="flex flex-col">
+                            <span className="text-sm font-semibold">
+                              Myntra Picklist
+                            </span>
+
+                            <span className="text-[10px] opacity-70">
+                              Picklist & Barcodes
+                            </span>
+                          </div>
+
+                          <FiChevronRight className="ml-auto" />
+                        </NavLink>
+                      </div>
+
                     </div>
                   );
                 }
