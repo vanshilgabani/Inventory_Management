@@ -17,6 +17,7 @@ import toast from 'react-hot-toast';
 import { FiShoppingBag, FiPlus, FiTrash2, FiEdit2, FiCheckCircle, FiTruck, FiClock, FiRotateCcw, FiDollarSign, FiXCircle, FiAlertTriangle, FiFilter, FiCalendar, FiChevronDown, FiPackage, FiUpload, FiSearch, FiX, FiArrowRight, FiAlertCircle, FiFileText, FiInfo } from 'react-icons/fi';
 import { formatCurrency } from '../utils/dateUtils';
 import Papa from 'papaparse';
+import * as XLSX from 'xlsx';
 import RefillLockStockModal from '../components/RefillLockStockModal';
 import SettlementsView from '../components/SettlementsView';
 import ScrollToTop from '../components/common/ScrollToTop';
@@ -1218,6 +1219,135 @@ const mapMyntraRowToGenericRow = (row, rowNumber) => {
   };
 };
 
+// ─── AJIO ORDER MAPPER ──────────────────────────────────────────────────────
+const mapAjioRowToGenericRow = (row, rowNumber) => {
+  const rawStatus = String(row['Status'] || '').trim();
+  const status = rawStatus.toUpperCase();
+
+  const pickupTimestamp = row['Pickup Timestamp'];
+
+  const sku = String(row['Seller SKU'] || '').trim();
+  const orderId = String(row['Cust Order No'] || '').trim();
+  const orderItemId = String(row['FWD Seller Order NO'] || '').trim();
+  const trackingId = String(row['FWD AWB'] || '').trim();
+
+  // ── RULE 1: Import ONLY shipped orders
+  if (status !== 'SHIPPED') {
+    return {
+      skipped: true,
+      failed: false,
+      sku: sku || 'NA',
+      orderId: orderId || 'NA',
+      status: rawStatus || 'UNKNOWN',
+      reason: `Status is ${rawStatus || 'blank'}`
+    };
+  }
+
+  // ── RULE 2: Pickup Timestamp is compulsory
+  // Even a SHIPPED order is skipped until AJIO provides pickup timestamp.
+  if (
+    pickupTimestamp === undefined ||
+    pickupTimestamp === null ||
+    String(pickupTimestamp).trim() === ''
+  ) {
+    return {
+      skipped: true,
+      failed: false,
+      sku: sku || 'NA',
+      orderId: orderId || 'NA',
+      status: rawStatus || 'UNKNOWN',
+      reason: 'Pickup Timestamp not available'
+    };
+  }
+
+  // ── Required fields
+  if (!sku) {
+    return {
+      failed: true,
+      skipped: false,
+      row: rowNumber,
+      reason: 'Missing Seller SKU',
+      sku: 'NA',
+      orderId: orderId || 'NA'
+    };
+  }
+
+  if (!orderId) {
+    return {
+      failed: true,
+      skipped: false,
+      row: rowNumber,
+      reason: 'Missing Cust Order No',
+      sku,
+      orderId: 'NA'
+    };
+  }
+
+  if (!orderItemId) {
+    return {
+      failed: true,
+      skipped: false,
+      row: rowNumber,
+      reason: 'Missing FWD Seller Order NO',
+      sku,
+      orderId
+    };
+  }
+
+  if (!trackingId) {
+    return {
+      failed: true,
+      skipped: false,
+      row: rowNumber,
+      reason: 'Missing FWD AWB',
+      sku,
+      orderId
+    };
+  }
+
+  // Reuse your existing universal SKU parser
+  const { design, color, size } = parseFlipkartSKU(sku);
+
+  const quantity = parseInt(row['Shipped QTY'], 10);
+
+  if (!quantity || quantity <= 0) {
+    return {
+      failed: true,
+      skipped: false,
+      row: rowNumber,
+      reason: 'Invalid or missing Shipped QTY',
+      sku,
+      orderId
+    };
+  }
+
+  return {
+    failed: false,
+    skipped: false,
+
+    design: design || null,
+    color: color || null,
+    size: size || null,
+
+    quantity,
+
+    orderId,
+    orderItemId,
+    trackingId,
+
+    flyerId: null,
+    sku,
+
+    // AJIO order report does not provide these in a usable form
+    city: '',
+    state: '',
+    pinCode: '',
+
+    // Optional AJIO information — useful for debugging/reference
+    pickupTimestamp: String(pickupTimestamp).trim()
+  };
+};
+
 const handleCSVUpload = (e, overrideFile = null) => {
   const file = overrideFile || e?.target?.files?.[0];
   if (!file) return;
@@ -1238,15 +1368,18 @@ const handleCSVUpload = (e, overrideFile = null) => {
     return;
   }
 
-  Papa.parse(file, {
-    header: true,
-    skipEmptyLines: true,
-    // ✅ NEW: no explicit delimiter — PapaParse auto-detects comma vs tab
-    complete: (results) => {
-      console.log('CSV Parsed - Total rows:', results.data.length);
-      console.log('📋 CSV Column Headers:', results.data.length > 0 ? Object.keys(results.data[0]) : 'No rows');
-      console.log('📋 First row sample:', results.data[0]);
+    const processParsedRows = (rows) => {
+      const results = { data: rows };
 
+      console.log('File Parsed - Total rows:', results.data.length);
+      console.log(
+        '📋 File Column Headers:',
+        results.data.length > 0
+          ? Object.keys(results.data[0])
+          : 'No rows'
+      );
+      console.log('📋 First row sample:', results.data[0]);
+      
       // ✅ STEP 1: AUTO-DETECT CSV TYPE by column signature
       const headers = results.data.length > 0 ? Object.keys(results.data[0]) : [];
       const isMyntraReturnCSV = headers.includes('forward_tracking_number')
@@ -1260,9 +1393,16 @@ const handleCSVUpload = (e, overrideFile = null) => {
         && headers.includes('Seller_sku_code')
         && headers.includes('Tracking_id')
         && headers.includes('Status');
-
-      if (!isReturnCSV && !isPendingOrDispatchCSV && !isAmazonCSV && !isMeeshoCSV && !isMyntraCSV) {
-        toast.error('Unrecognised file format. Please upload a Flipkart order/return CSV, Amazon order report, Meesho, or Myntra CSV.');
+      const isAjioFile =
+        headers.includes('Cust Order No') &&
+        headers.includes('FWD Seller Order NO') &&
+        headers.includes('FWD AWB') &&
+        headers.includes('Seller SKU') &&
+        headers.includes('Shipped QTY') &&
+        headers.includes('Pickup Timestamp') &&
+        headers.includes('Status');
+      if (!isReturnCSV && !isPendingOrDispatchCSV && !isAmazonCSV && !isMeeshoCSV && !isMyntraCSV && !isAjioFile) {
+        toast.error('Unrecognised file format. Please upload a Flipkart order/return CSV, Amazon order report, Meesho, Myntra, or Ajio.');
         return;
       }
 
@@ -1394,6 +1534,84 @@ const handleCSVUpload = (e, overrideFile = null) => {
         return; // stop here, don't fall through to Flipkart logic below
       }
 
+      // ─── AJIO ORDER REPORT PATH ───────────────────────────────────────────────
+      if (isAjioFile) {
+        const preview = {
+          success: [],
+          failed: [],
+          skipped: [],
+          detectedType: 'dispatched',
+          productBreakdown: new Map()
+        };
+
+        results.data.forEach((row, idx) => {
+          const rowNumber = idx + 2;
+
+          const mapped = mapAjioRowToGenericRow(row, rowNumber);
+
+          // Skip:
+          // 1. Anything not SHIPPED
+          // 2. SHIPPED orders without Pickup Timestamp
+          if (mapped.skipped) {
+            preview.skipped.push({
+              orderId: mapped.orderId,
+              sku: mapped.sku,
+              status: mapped.status,
+              reason: mapped.reason
+            });
+            return;
+          }
+
+          if (mapped.failed) {
+            preview.failed.push({
+              row: mapped.row,
+              reason: mapped.reason,
+              sku: mapped.sku,
+              orderId: mapped.orderId
+            });
+            return;
+          }
+
+          preview.success.push(mapped);
+
+          if (mapped.design && mapped.color && mapped.size) {
+            const variantKey =
+              `${mapped.design}-${mapped.color}-${mapped.size}`;
+
+            if (preview.productBreakdown.has(variantKey)) {
+              const existing =
+                preview.productBreakdown.get(variantKey);
+
+              existing.quantity += mapped.quantity;
+              existing.orderCount += 1;
+            } else {
+              preview.productBreakdown.set(variantKey, {
+                design: mapped.design,
+                color: mapped.color,
+                size: mapped.size,
+                quantity: mapped.quantity,
+                orderCount: 1
+              });
+            }
+          }
+        });
+
+        setImportPreview(preview);
+        setParsedCsvData(preview.success);
+
+        toast.success(
+          `Detected AJIO ORDERS — ` +
+          `${preview.success.length} orders to import, ` +
+          `${preview.skipped.length} skipped` +
+          `${preview.failed.length
+            ? `, ${preview.failed.length} failed`
+            : ''}`,
+          { duration: 5000 }
+        );
+
+        return;
+      }
+
       // ── PENDING / DISPATCHED CSV PATH (existing Flipkart logic, unchanged) ───────
       const allStatuses = new Set();
       results.data.forEach(row => {
@@ -1486,23 +1704,104 @@ const handleCSVUpload = (e, overrideFile = null) => {
         }
       });
 
-      setImportPreview(preview);
-      setParsedCsvData(preview.success);
+          setImportPreview(preview);
+    setParsedCsvData(preview.success);
 
-      const typeLabel = detectedType === 'pending' ? 'PENDING HANDOVER' : 'DISPATCHED ORDERS';
-      toast.success(
-        `🔍 Detected: ${typeLabel}\n` +
-        `✅ ${preview.success.length} orders to import\n` +
-        `⚠️ ${preview.skipped.length} orders skipped\n`,
-        { duration: 5000 }
-      );
-    },
-    error: (error) => {
-      console.error('CSV Parse Error:', error);
-      toast.error('Failed to parse file');
-    }
-  });
-};
+    const typeLabel =
+      detectedType === 'pending'
+        ? 'PENDING HANDOVER'
+        : 'DISPATCHED ORDERS';
+
+    toast.success(
+      `🔍 Detected: ${typeLabel}\n` +
+      `✅ ${preview.success.length} orders to import\n` +
+      `⚠️ ${preview.skipped.length} orders skipped\n`,
+      { duration: 5000 }
+    );
+
+  }; // END processParsedRows
+
+
+  // ============================================================
+  // READ CSV OR EXCEL FILE
+  // ============================================================
+
+  const fileName = file.name.toLowerCase();
+
+  const isExcelFile =
+    fileName.endsWith('.xlsx') ||
+    fileName.endsWith('.xls');
+
+  if (isExcelFile) {
+
+    // ───────────── EXCEL / XLSX ─────────────
+    const reader = new FileReader();
+
+    reader.onload = (event) => {
+      try {
+        const data = event.target.result;
+
+        const workbook = XLSX.read(data, {
+          type: 'array',
+          cellDates: false
+        });
+
+        if (!workbook.SheetNames.length) {
+          toast.error('Excel file contains no sheets');
+          return;
+        }
+
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+
+        const rows = XLSX.utils.sheet_to_json(worksheet, {
+          defval: '',
+          raw: false
+        });
+
+        if (!rows.length) {
+          toast.error('Excel file contains no order data');
+          return;
+        }
+
+        console.log('📊 Excel detected:', file.name);
+        console.log('📊 Sheet:', firstSheetName);
+        console.log('📊 Rows:', rows.length);
+        console.log('📊 Headers:', Object.keys(rows[0]));
+
+        // Same importer used by CSV files
+        processParsedRows(rows);
+
+      } catch (error) {
+        console.error('Excel parsing error:', error);
+        toast.error('Failed to read Excel file');
+      }
+    };
+
+    reader.onerror = () => {
+      toast.error('Failed to read Excel file');
+    };
+
+    reader.readAsArrayBuffer(file);
+
+  } else {
+
+    // ───────────── CSV / TXT / TSV ─────────────
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+
+      complete: (results) => {
+        processParsedRows(results.data);
+      },
+
+      error: (error) => {
+        console.error('CSV parsing error:', error);
+        toast.error('Failed to read file');
+      }
+    });
+  }
+}; 
 
 // ✅ NEW: Single entry-point — detects CSV type from headers before opening any modal
 const handleSmartCSVDetect = (e) => {
@@ -1512,85 +1811,106 @@ const handleSmartCSVDetect = (e) => {
   // Allow the same file to be selected again after closing the modal.
   e.target.value = '';
 
-  Papa.parse(file, {
-    header: true,
-    skipEmptyLines: true,
-    preview: 1,
-    complete: (results) => {
-      const headers =
-        results.meta?.fields ||
-        (results.data?.length ? Object.keys(results.data[0]) : []);
+  // ============================================================
+  // COMMON HEADER DETECTION
+  // Works for CSV + XLSX
+  // ============================================================
+  const detectFileFromHeaders = (headers) => {
+    const normalizedHeaders = new Set(
+      headers.map((header) =>
+        String(header || '')
+          .replace(/^\uFEFF/, '')
+          .trim()
+          .toLowerCase()
+      )
+    );
 
-      // Normalize only for detection; don't change the actual CSV rows.
-      const normalizedHeaders = new Set(
-        headers.map((header) =>
-          String(header || '')
-            .replace(/^\uFEFF/, '')
-            .trim()
-            .toLowerCase()
-        )
+    console.log('📋 Smart Detect Headers:', [...normalizedHeaders]);
+
+    const isFlipkartReturnCSV =
+      normalizedHeaders.has('return status') &&
+      normalizedHeaders.has('return id');
+
+    const isMyntraReturnCSV = [
+      'order_id',
+      'order_group_id',
+      'forward_tracking_number',
+      'return_tracking_number',
+    ].every((header) => normalizedHeaders.has(header));
+
+    const isOrderCSV =
+      normalizedHeaders.has('order state');
+
+    const isAmazonCSV =
+      normalizedHeaders.has('order-item-id') &&
+      normalizedHeaders.has('asin');
+
+    const isMeeshoCSV =
+      normalizedHeaders.has('sub order no') &&
+      normalizedHeaders.has('reason for credit entry');
+
+    const isMyntraOrderCSV = [
+      'order_release_id',
+      'seller_sku_code',
+      'tracking_id',
+      'status',
+    ].every((header) => normalizedHeaders.has(header));
+
+    // ============================================================
+    // AJIO
+    // ============================================================
+    const isAjioFile = [
+      'cust order no',
+      'fwd seller order no',
+      'fwd awb',
+      'seller sku',
+      'shipped qty',
+      'pickup timestamp',
+      'status',
+    ].every((header) => normalizedHeaders.has(header));
+
+    // ============================================================
+    // UNRECOGNISED FILE
+    // ============================================================
+    if (
+      !isFlipkartReturnCSV &&
+      !isMyntraReturnCSV &&
+      !isOrderCSV &&
+      !isAmazonCSV &&
+      !isMeeshoCSV &&
+      !isMyntraOrderCSV &&
+      !isAjioFile
+    ) {
+      toast.error(
+        'Unrecognised file format. Upload a Flipkart order/return CSV, Amazon order report, Meesho CSV, Myntra orders CSV, Myntra returns report, or AJIO order report.'
+      );
+      return;
+    }
+
+    // ============================================================
+    // RETURN REPORTS
+    // ============================================================
+    if (isFlipkartReturnCSV || isMyntraReturnCSV) {
+      toast.success(
+        isMyntraReturnCSV
+          ? 'Myntra returns report detected — opening returns importer!'
+          : 'Flipkart return CSV detected — opening returns importer!',
+        { duration: 2500 }
       );
 
-      const isFlipkartReturnCSV =
-        normalizedHeaders.has('return status') &&
-        normalizedHeaders.has('return id');
+      setShowImportModal(false);
+      setPendingOrderCSVFile(null);
+      setPendingReturnCSVFile(file);
+      setShowImportReturnModal(true);
+      return;
+    }
 
-      const isMyntraReturnCSV = [
-        'order_id',
-        'order_group_id',
-        'forward_tracking_number',
-        'return_tracking_number',
-      ].every((header) => normalizedHeaders.has(header));
-
-      const isOrderCSV = normalizedHeaders.has('order state');
-
-      const isAmazonCSV =
-        normalizedHeaders.has('order-item-id') &&
-        normalizedHeaders.has('asin');
-
-      const isMeeshoCSV =
-        normalizedHeaders.has('sub order no') &&
-        normalizedHeaders.has('reason for credit entry');
-
-      const isMyntraOrderCSV = [
-        'order_release_id',
-        'seller_sku_code',
-        'tracking_id',
-        'status',
-      ].every((header) => normalizedHeaders.has(header));
-
-      if (
-        !isFlipkartReturnCSV &&
-        !isMyntraReturnCSV &&
-        !isOrderCSV &&
-        !isAmazonCSV &&
-        !isMeeshoCSV &&
-        !isMyntraOrderCSV
-      ) {
-        toast.error(
-          'Unrecognised file format. Upload a Flipkart order/return CSV, Amazon order report, Meesho CSV, Myntra orders CSV, or Myntra returns report.'
-        );
-        return;
-      }
-
-      // Return reports do not use the dispatch-date/order-import flow.
-      if (isFlipkartReturnCSV || isMyntraReturnCSV) {
-        toast.success(
-          isMyntraReturnCSV
-            ? 'Myntra returns report detected — opening returns importer!'
-            : 'Flipkart return CSV detected — opening returns importer!',
-          { duration: 2500 }
-        );
-
-        setShowImportModal(false);
-        setPendingOrderCSVFile(null);
-        setPendingReturnCSVFile(file);
-        setShowImportReturnModal(true);
-        return;
-      }
-
-      // Existing new-order import flow.
-      const label = isAmazonCSV
+    // ============================================================
+    // NEW ORDER IMPORT
+    // ============================================================
+    const label = isAjioFile
+      ? 'AJIO order report detected'
+      : isAmazonCSV
         ? 'Amazon order report detected'
         : isMeeshoCSV
           ? 'Meesho order CSV detected'
@@ -1598,27 +1918,117 @@ const handleSmartCSVDetect = (e) => {
             ? 'Myntra order CSV detected'
             : 'Order CSV detected';
 
-      toast.success(`${label} — select account & dispatch date.`, {
-        duration: 2500,
-      });
+    toast.success(`${label} — select account & dispatch date.`, {
+      duration: 2500,
+    });
 
-      setPendingOrderCSVFile(file);
+    setPendingOrderCSVFile(file);
 
-      const today = new Date();
-      const y = today.getFullYear();
-      const m = String(today.getMonth() + 1).padStart(2, '0');
-      const d = String(today.getDate()).padStart(2, '0');
+    // Default dispatch date = today
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const d = String(today.getDate()).padStart(2, '0');
 
-      setImportFilterDate(`${y}-${m}-${d}`);
+    setImportFilterDate(`${y}-${m}-${d}`);
 
-      if (marketplaceAccounts.length === 1) {
-        setImportAccount(marketplaceAccounts[0].accountName);
+    if (marketplaceAccounts.length === 1) {
+      setImportAccount(marketplaceAccounts[0].accountName);
+    }
+
+    setShowImportModal(true);
+  };
+
+
+  // ============================================================
+  // DECIDE HOW TO READ FILE
+  // ============================================================
+
+  const fileName = file.name.toLowerCase();
+
+  const isExcelFile =
+    fileName.endsWith('.xlsx') ||
+    fileName.endsWith('.xls');
+
+  // ============================================================
+  // EXCEL / AJIO XLSX
+  // ============================================================
+  if (isExcelFile) {
+    const reader = new FileReader();
+
+    reader.onload = (event) => {
+      try {
+        const workbook = XLSX.read(event.target.result, {
+          type: 'array',
+          cellDates: false,
+        });
+
+        if (!workbook.SheetNames.length) {
+          toast.error('Excel file contains no sheets.');
+          return;
+        }
+
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+
+        // Read only first row because smart detection
+        // only needs column names.
+        const rows = XLSX.utils.sheet_to_json(worksheet, {
+          defval: '',
+          raw: false,
+          range: 0,
+        });
+
+        if (!rows.length) {
+          toast.error('Excel file contains no data.');
+          return;
+        }
+
+        const headers = Object.keys(rows[0]);
+
+        console.log('📊 Excel smart detection:', file.name);
+        console.log('📊 Sheet:', firstSheetName);
+        console.log('📊 Headers:', headers);
+
+        detectFileFromHeaders(headers);
+
+      } catch (error) {
+        console.error('Excel detection error:', error);
+        toast.error('Could not read the Excel file.');
       }
+    };
 
-      setShowImportModal(true);
+    reader.onerror = () => {
+      toast.error('Could not read the Excel file.');
+    };
+
+    reader.readAsArrayBuffer(file);
+
+    return;
+  }
+
+
+  // ============================================================
+  // CSV / TXT / TSV
+  // ============================================================
+  Papa.parse(file, {
+    header: true,
+    skipEmptyLines: true,
+    preview: 1,
+
+    complete: (results) => {
+      const headers =
+        results.meta?.fields ||
+        (results.data?.length
+          ? Object.keys(results.data[0])
+          : []);
+
+      detectFileFromHeaders(headers);
     },
-    error: () => {
-      toast.error('Could not read the CSV file.');
+
+    error: (error) => {
+      console.error('CSV detection error:', error);
+      toast.error('Could not read the file.');
     },
   });
 };
@@ -2835,7 +3245,7 @@ const handleDelete = async (id) => {
                 <input
                   ref={smartCSVInputRef}
                   type="file"
-                  accept=".csv"
+                  accept=".csv,.xlsx,.xls"
                   className="hidden"
                   onChange={handleSmartCSVDetect}
                 />
@@ -3360,6 +3770,8 @@ const handleDelete = async (id) => {
                                   ? "Order Release ID: "
                                   : (sale.accountName || "").trim().toLowerCase().includes("meesho")
                                   ? "Sub Order No.: "
+                                  : (sale.accountName || "").trim().toLowerCase().includes("ajio")
+                                  ? "Seller Order No.: "
                                   : "Order Item ID: ";
                                 toast.success(`${label} copied!`);
                               }
@@ -3371,6 +3783,8 @@ const handleDelete = async (id) => {
                                 ? "Sub Order No.: "
                                 : (sale.accountName || "").trim().toLowerCase().includes("myntra")
                                 ? "Order Release ID: "
+                                : (sale.accountName || "").trim().toLowerCase().includes("ajio")
+                                ? "Seller Order No.: "
                                 : "Order Item ID: "}
                             </span>{' '}
                             {sale.orderItemId || '-'}
@@ -4548,6 +4962,8 @@ const handleDelete = async (id) => {
                                       ? "Sub Order No."
                                       : String(sale.accountName).toLowerCase().includes("myntra")
                                       ? "Order Release ID"
+                                      : (sale.accountName || "").trim().toLowerCase().includes("ajio")
+                                      ? "Seller Order No. "
                                       : "Order Item ID"}
                                   </span>
                                   <p
@@ -4580,7 +4996,7 @@ const handleDelete = async (id) => {
                                   </p>
                                 </div>
                                 <div>
-                                  <span className="text-gray-500">Product:</span>
+                                  <span className="text-gray-500">Product</span>
                                   <p className="font-semibold">
                                     {sale.design} - {sale.color} - {sale.size}
                                   </p>
