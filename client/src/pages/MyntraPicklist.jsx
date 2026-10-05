@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
 import JsBarcode from 'jsbarcode';
 import {
   FiDownload,
@@ -13,9 +12,6 @@ import {
 } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const SIZE_ORDER = [
   'XS',
@@ -85,203 +81,132 @@ const sortPicklistItems = (a, b) => {
   return getSizeIndex(a.size) - getSizeIndex(b.size);
 };
 
-const extractPdfText = async file => {
-  const buffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-  const pages = [];
+const parseCsvLine = line => {
+  const values = [];
+  let current = '';
+  let inQuotes = false;
 
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const content = await page.getTextContent();
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
 
-    const items = content.items
-      .map(item => ({
-        text: normalizeText(item.str),
-        x: Number(item.transform?.[4] || 0),
-        y: Number(item.transform?.[5] || 0),
-        width: Number(item.width || 0),
-      }))
-      .filter(item => item.text);
-
-    pages.push({ pageNumber, items });
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      values.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
   }
 
-  return pages;
+  values.push(current);
+  return values;
 };
 
-const SIZE_PATTERN = /^(?:XS|S|M|L|XL|XXL|XXXL|3XL|4XL|5XL)$/i;
-const COMPLETE_SKU_PATTERN = /#?D\d+-[A-Z0-9._]+-(?:XS|S|M|L|XL|XXL|XXXL|3XL|4XL|5XL)\b/i;
-const PARTIAL_SKU_PATTERN = /#?D\d+-[A-Z0-9._]+-$/i;
-
-// Myntra SKU Code is marketplace-generated and can use different prefixes
-// across brands/catalogues (for example VNRD..., RRR...). Never hard-code
-// a brand prefix here. The code is a long contiguous alphanumeric token.
-const MYNTRA_SKU_PATTERN = /\b[A-Z0-9]{10,}\b/i;
-
-const sanitizePdfText = value =>
+const normalizeHeader = value =>
   String(value ?? '')
-    .replace(/[\uFFFE\uFFFF\uFFFD]/g, '-')
-    .replace(/[–—−]/g, '-')
-    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/^\uFEFF/, '')
+    .replace(/[\s_-]+/g, '')
+    .trim()
+    .toLowerCase();
 
-const findCompleteSellerSku = value => {
-  const match = sanitizePdfText(value).match(COMPLETE_SKU_PATTERN);
-  return match ? cleanSku(match[0]) : '';
-};
+const parseMyntraCsv = async file => {
+  const rawText = await file.text();
+  const text = rawText.replace(/^\uFEFF/, '');
 
-const groupItemsIntoRows = items => {
-  const sorted = items.slice().sort((a, b) => {
-    if (Math.abs(a.y - b.y) > 3) return b.y - a.y;
-    return a.x - b.x;
-  });
+  // Split only on newlines that are outside quoted CSV fields.
+  const lines = [];
+  let currentLine = '';
+  let inQuotes = false;
 
-  const rows = [];
-  for (const item of sorted) {
-    let row = rows.find(candidate => Math.abs(candidate.y - item.y) <= 3);
-    if (!row) {
-      row = { y: item.y, items: [] };
-      rows.push(row);
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+
+    if (char === '"') {
+      if (inQuotes && text[i + 1] === '"') {
+        currentLine += '""';
+        i += 1;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      currentLine += char;
+      continue;
     }
-    row.items.push(item);
+
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && text[i + 1] === '\n') i += 1;
+      if (currentLine.trim()) lines.push(currentLine);
+      currentLine = '';
+      continue;
+    }
+
+    currentLine += char;
   }
 
-  return rows
-    .map(row => ({
-      ...row,
-      items: row.items.sort((a, b) => a.x - b.x),
-    }))
-    .sort((a, b) => b.y - a.y);
-};
+  if (currentLine.trim()) lines.push(currentLine);
 
-const parsePicklistRows = pages => {
+  if (lines.length < 2) {
+    throw new Error('CSV contains no picklist rows.');
+  }
+
+  const headers = parseCsvLine(lines[0]).map(normalizeHeader);
+  const findColumn = (...names) =>
+    headers.findIndex(header => names.map(normalizeHeader).includes(header));
+
+  const sellerSkuIndex = findColumn('sellerSkuCode', 'sellerSku', 'seller sku code', 'seller sku');
+  const quantityIndex = findColumn('quantity', 'qty');
+  const myntraSkuIndex = findColumn('myntraSkuCode', 'myntraSku', 'myntra sku code', 'myntra sku');
+  const descriptionIndex = findColumn('productDescription', 'product description', 'description');
+
+  if (sellerSkuIndex === -1 || quantityIndex === -1) {
+    throw new Error(
+      'Invalid Myntra picklist CSV. Required columns sellerSkuCode and quantity were not found.'
+    );
+  }
+
   const parsedRows = [];
-  const unparsedLines = [];
+  const warnings = [];
 
-  for (const page of pages) {
-    const rows = groupItemsIntoRows(page.items);
-    let pageFound = 0;
+  for (let i = 1; i < lines.length; i += 1) {
+    const columns = parseCsvLine(lines[i]);
+    const sellerSku = cleanSku(columns[sellerSkuIndex]);
+    const quantityText = String(columns[quantityIndex] ?? '').trim();
+    const quantity = Number(quantityText);
 
-    // Locate product rows by the Myntra SKU column. This is much more stable
-    // than assuming Seller SKU is always one PDF.js text item.
-    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-      const row = rows[rowIndex];
-      const rowText = row.items.map(item => sanitizePdfText(item.text)).join(' ');
-      const myntraSkuMatch = rowText.match(MYNTRA_SKU_PATTERN);
-      if (!myntraSkuMatch) continue;
-
-      const myntraSku = myntraSkuMatch[0];
-      const currentY = row.y;
-
-      // A Myntra product entry can span several visual lines. Its block ends
-      // immediately before the next row containing another Myntra SKU.
-      let nextProductY = -Infinity;
-      for (let next = rowIndex + 1; next < rows.length; next += 1) {
-        const nextText = rows[next].items.map(item => sanitizePdfText(item.text)).join(' ');
-        if (MYNTRA_SKU_PATTERN.test(nextText)) {
-          nextProductY = rows[next].y;
-          break;
-        }
-      }
-
-      const blockRows = rows.filter(candidate =>
-        candidate.y <= currentY + 8 && candidate.y > nextProductY + 3
-      );
-      const blockItems = blockRows.flatMap(candidate => candidate.items);
-
-      // Seller SKU column starts around x=174 in Myntra's picklist. We use a
-      // generous range so minor layout changes do not break parsing.
-      const sellerColumnItems = blockItems
-        .filter(item => item.x >= 150 && item.x < 256)
-        .sort((a, b) => {
-          if (Math.abs(a.y - b.y) > 3) return b.y - a.y;
-          return a.x - b.x;
-        });
-
-      let sellerSku = '';
-      const sellerCombined = sellerColumnItems
-        .map(item => sanitizePdfText(item.text))
-        .join(' ');
-
-      sellerSku = findCompleteSellerSku(sellerCombined);
-
-      if (!sellerSku) {
-        for (let i = 0; i < sellerColumnItems.length; i += 1) {
-          const text = sanitizePdfText(sellerColumnItems[i].text);
-          const complete = findCompleteSellerSku(text);
-          if (complete) {
-            sellerSku = complete;
-            break;
-          }
-
-          const partial = text.match(PARTIAL_SKU_PATTERN)?.[0];
-          if (!partial) continue;
-
-          for (let j = i + 1; j < Math.min(i + 5, sellerColumnItems.length); j += 1) {
-            const size = sanitizePdfText(sellerColumnItems[j].text);
-            if (SIZE_PATTERN.test(size)) {
-              sellerSku = cleanSku(`${partial}${size}`);
-              break;
-            }
-          }
-          if (sellerSku) break;
-        }
-      }
-
-      // Fallback: search the entire product block. This handles exports where
-      // Myntra SKU + Seller SKU are merged into a single PDF.js text item.
-      if (!sellerSku) {
-        sellerSku = findCompleteSellerSku(
-          blockItems.map(item => sanitizePdfText(item.text)).join(' ')
-        );
-      }
-
-      if (!sellerSku) continue;
-
-      // Product description column.
-      const description = normalizeText(
-        blockItems
-          .filter(item => item.x >= 250 && item.x < 410)
-          .sort((a, b) => {
-            if (Math.abs(a.y - b.y) > 3) return b.y - a.y;
-            return a.x - b.x;
-          })
-          .map(item => sanitizePdfText(item.text))
-          .filter(text => text && !/Product Description/i.test(text))
-          .join(' ')
-      );
-
-      // Quantity column. Restricting by x avoids accidentally using digits
-      // from SKU codes or the Total Quantity footer.
-      const quantityCandidates = blockItems
-        .filter(item => item.x >= 405 && item.x < 490)
-        .map(item => sanitizePdfText(item.text))
-        .filter(text => /^\d+$/.test(text))
-        .map(Number)
-        .filter(value => Number.isFinite(value) && value > 0);
-
-      const quantity = quantityCandidates[0] || 1;
-
-      parsedRows.push({
-        sellerSku,
-        myntraSku,
-        quantity,
-        productDescription: description,
-        pageNumber: page.pageNumber,
-      });
-      pageFound += 1;
+    if (!sellerSku) {
+      warnings.push({ rowNumber: i + 1, message: 'Seller SKU is empty.' });
+      continue;
     }
 
-    if (!pageFound) {
-      unparsedLines.push({
-        pageNumber: page.pageNumber,
-        message: 'No Seller SKU code detected on this page.',
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      warnings.push({
+        rowNumber: i + 1,
+        message: `Invalid quantity for ${sellerSku}: ${quantityText || 'blank'}`,
       });
+      continue;
     }
+
+    parsedRows.push({
+      sellerSku,
+      myntraSku: myntraSkuIndex >= 0 ? cleanSku(columns[myntraSkuIndex]) : '',
+      quantity,
+      productDescription:
+        descriptionIndex >= 0 ? normalizeText(columns[descriptionIndex]) : '',
+      pageNumber: 1,
+      sourceRow: i + 1,
+    });
   }
 
-  return { parsedRows, unparsedLines };
+  if (!parsedRows.length) {
+    throw new Error('No valid Seller SKU rows were found in the Myntra CSV.');
+  }
+
+  return { parsedRows, warnings };
 };
 
 const buildGroupedPicklist = rows => {
@@ -415,8 +340,8 @@ export default function MyntraPicklist() {
       return;
     }
 
-    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      toast.error('Please upload a PDF picklist.');
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      toast.error('Please upload the CSV picklist downloaded from Myntra.');
       return;
     }
 
@@ -426,30 +351,40 @@ export default function MyntraPicklist() {
     setUnparsedLines([]);
 
     try {
-      const pages = await extractPdfText(file);
-      const { parsedRows, unparsedLines: warnings } =
-        parsePicklistRows(pages);
-
-      if (!parsedRows.length) {
-        toast.error(
-          'No Seller SKU codes were detected. This PDF may be image-based or have a different layout.'
-        );
-        setUnparsedLines(warnings);
-        return;
-      }
-
+      const { parsedRows, warnings } = await parseMyntraCsv(file);
       const groupedItems = buildGroupedPicklist(parsedRows);
+
+      const sourceTotal = parsedRows.reduce(
+        (sum, row) => sum + Number(row.quantity || 0),
+        0
+      );
+      const groupedTotal = groupedItems.reduce(
+        (sum, item) => sum + Number(item.requiredQuantity || 0),
+        0
+      );
+
+      if (sourceTotal !== groupedTotal) {
+        throw new Error(
+          `Quantity reconciliation failed: CSV ${sourceTotal}, parsed ${groupedTotal}.`
+        );
+      }
 
       setItems(groupedItems);
       setUnparsedLines(warnings);
 
-      toast.success(
-        `${groupedItems.length} unique Seller SKU(s) found.`
-      );
+      if (warnings.length) {
+        toast.error(
+          `Parsed ${groupedItems.length} unique SKUs / ${groupedTotal} units, but ${warnings.length} CSV row(s) need attention.`
+        );
+      } else {
+        toast.success(
+          `${groupedItems.length} unique Seller SKU(s), ${groupedTotal} total unit(s) found.`
+        );
+      }
     } catch (error) {
-      console.error('Myntra picklist processing error:', error);
+      console.error('Myntra picklist CSV processing error:', error);
       toast.error(
-        'Could not read this PDF. Please try the original Myntra picklist file.'
+        error?.message || 'Could not read this Myntra picklist CSV.'
       );
     } finally {
       setIsProcessing(false);
@@ -538,80 +473,86 @@ export default function MyntraPicklist() {
       return;
     }
 
-    // "items" is already grouped and sorted by Design -> Color -> Size.
-    const rows = items
-      .map(
-        (item, index) => `
-          <tr>
-            <td class="serial">${index + 1}</td>
-            <td class="sku">${item.sellerSku}</td>
-            <td class="qty">${item.requiredQuantity}</td>
-          </tr>
-        `
-      )
-      .join('');
+    // Fixed capacity prevents the browser from balancing columns early.
+    // Order is always top-to-bottom in column 1, then column 2.
+    const ROWS_PER_COLUMN = 36;
+    const ITEMS_PER_PAGE = ROWS_PER_COLUMN * 2;
+    const pages = [];
+
+    for (let start = 0; start < items.length; start += ITEMS_PER_PAGE) {
+      const pageItems = items.slice(start, start + ITEMS_PER_PAGE);
+      const leftColumn = pageItems.slice(0, ROWS_PER_COLUMN);
+      const rightColumn = pageItems.slice(ROWS_PER_COLUMN);
+
+      const renderColumn = columnItems =>
+        columnItems
+          .map(
+            item => `
+              <div class="sku-item">
+                ${item.sellerSku} <strong>(${item.requiredQuantity})</strong>
+              </div>
+            `
+          )
+          .join('');
+
+      pages.push(`
+        <section class="sku-print-page">
+          ${start === 0 ? `
+            <h1 class="sheet-title">Myntra SKU Quantity Sheet</h1>
+            <p class="sheet-meta">
+              ${fileName || 'Myntra Picklist'} &nbsp;|&nbsp;
+              Unique SKUs: ${items.length} &nbsp;|&nbsp;
+              Total Quantity: ${totalRequired}
+            </p>
+          ` : ''}
+
+          <div class="sku-columns">
+            <div class="sku-column">${renderColumn(leftColumn)}</div>
+            <div class="sku-column">${renderColumn(rightColumn)}</div>
+          </div>
+        </section>
+      `);
+    }
 
     openPrintWindow(
       'Myntra SKU Quantity Sheet',
+      pages.join(''),
       `
-        <h1 class="sheet-title">Myntra SKU Quantity Sheet</h1>
-        <p class="sheet-meta">
-          ${fileName || 'Myntra Picklist'} &nbsp;|&nbsp;
-          Unique SKUs: ${items.length} &nbsp;|&nbsp;
-          Total Quantity: ${totalRequired}
-        </p>
-
-        <table class="sku-table">
-          <thead>
-            <tr>
-              <th class="serial">#</th>
-              <th>Seller SKU</th>
-              <th class="qty">Quantity</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows}
-          </tbody>
-        </table>
-      `,
-      `
-        .sku-table {
-          width: 100%;
-          border-collapse: collapse;
-          font-size: 14px;
+        .sku-print-page {
+          break-after: page;
+          page-break-after: always;
         }
 
-        .sku-table th,
-        .sku-table td {
-          border: 1px solid #9ca3af;
-          padding: 8px 10px;
-          text-align: left;
+        .sku-print-page:last-child {
+          break-after: auto;
+          page-break-after: auto;
         }
 
-        .sku-table th {
-          background: #f3f4f6;
-          font-weight: 700;
+        .sku-columns {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          column-gap: 24px;
+          align-items: start;
         }
 
-        .sku-table .serial {
-          width: 50px;
-          text-align: center;
+        .sku-column {
+          min-width: 0;
         }
 
-        .sku-table .sku {
+        .sku-item {
           font-family: "Courier New", monospace;
-          font-weight: 700;
-        }
-
-        .sku-table .qty {
-          width: 100px;
-          text-align: center;
-          font-weight: 700;
-        }
-
-        .sku-table tr {
+          font-size: 16px;
+          line-height: 1.15;
+          font-weight: 600;
+          padding: 3px 4px;
+          border-bottom: 1px solid #e5e7eb;
+          white-space: nowrap;
           break-inside: avoid;
           page-break-inside: avoid;
+        }
+
+        .sku-item strong {
+          font-weight: 800;
         }
       `
     );
@@ -803,7 +744,7 @@ export default function MyntraPicklist() {
               Myntra Picklist
             </h1>
             <p className="text-sm text-gray-500 mt-1">
-              Upload a Myntra picklist PDF and generate Seller SKU barcodes.
+              Upload a Myntra picklist CSV and generate Seller SKU barcodes.
             </p>
           </div>
 
@@ -814,7 +755,7 @@ export default function MyntraPicklist() {
               className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
             >
               <FiUpload />
-              Upload Picklist PDF
+              Upload Picklist CSV
             </button>
 
             <button
@@ -851,7 +792,7 @@ export default function MyntraPicklist() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="application/pdf,.pdf"
+            accept=".csv,text/csv"
             onChange={handleFile}
             className="hidden"
           />
@@ -873,7 +814,7 @@ export default function MyntraPicklist() {
           </div>
 
           <div className="bg-white border border-gray-200 rounded-xl p-4">
-            <p className="text-xs text-gray-500">Pages With Warnings</p>
+            <p className="text-xs text-gray-500">CSV Row Warnings</p>
             <p className="text-2xl font-bold text-orange-600 mt-1">
               {unparsedLines.length}
             </p>
@@ -898,10 +839,10 @@ export default function MyntraPicklist() {
           <div className="no-print bg-white border-2 border-dashed border-gray-300 rounded-2xl p-12 text-center">
             <FiFileText className="mx-auto text-5xl text-gray-300 mb-4" />
             <h2 className="text-lg font-semibold text-gray-800">
-              Upload Myntra Picklist PDF
+              Upload Myntra Picklist CSV
             </h2>
             <p className="text-sm text-gray-500 mt-2">
-              The system will group Seller SKU codes and generate printable barcodes.
+              The system will group Seller SKU codes and generate printable barcodes and SKUs.
             </p>
 
             <button
@@ -910,7 +851,7 @@ export default function MyntraPicklist() {
               className="mt-5 inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
             >
               <FiUpload />
-              Choose PDF
+              Choose CSV
             </button>
           </div>
         )}
