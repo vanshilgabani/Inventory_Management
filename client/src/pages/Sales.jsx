@@ -1182,7 +1182,7 @@ const mapMyntraRowToGenericRow = (row, rowNumber) => {
       skipped: true,
       failed: false,
       sku: row['Seller_sku_code'] || 'NA',
-      orderId: row['Order id'] || row['Order_release_id'] || 'NA',
+      orderId: row['Order id'] || row['Store Packet ID'] || 'NA',
       status: rawStatus || 'UNKNOWN'
     };
   }
@@ -1209,7 +1209,7 @@ const mapMyntraRowToGenericRow = (row, rowNumber) => {
     size: size || null,
     quantity: 1, // Myntra CSV has no quantity column — always 1 per row
     orderId: row['Order id'] || null,
-    orderItemId: row['Order_release_id']?.trim() || null, // treated as separate order per row
+    orderItemId: row['Store Packet ID']?.trim() || null, // treated as separate order per row
     trackingId: row['Tracking_id']?.trim() || null,
     flyerId: null,
     sku,
@@ -3767,7 +3767,7 @@ const handleDelete = async (id) => {
                                 const cleanId = sale.orderItemId.replace(/^'/, '');
                                 navigator.clipboard.writeText(cleanId);
                                 const label = (sale.accountName || "").trim().toLowerCase().includes("myntra")
-                                  ? "Order Release ID: "
+                                  ? "Store Packet ID: "
                                   : (sale.accountName || "").trim().toLowerCase().includes("meesho")
                                   ? "Sub Order No.: "
                                   : (sale.accountName || "").trim().toLowerCase().includes("ajio")
@@ -3782,7 +3782,7 @@ const handleDelete = async (id) => {
                               {(sale.accountName || "").trim().toLowerCase().includes("meesho")
                                 ? "Sub Order No.: "
                                 : (sale.accountName || "").trim().toLowerCase().includes("myntra")
-                                ? "Order Release ID: "
+                                ? "Store Packet ID: "
                                 : (sale.accountName || "").trim().toLowerCase().includes("ajio")
                                 ? "Seller Order No.: "
                                 : "Order Item ID: "}
@@ -4961,7 +4961,7 @@ const handleDelete = async (id) => {
                                     {String(sale.accountName).toLowerCase().includes("meesho")
                                       ? "Sub Order No."
                                       : String(sale.accountName).toLowerCase().includes("myntra")
-                                      ? "Order Release ID"
+                                      ? "Store Packet ID"
                                       : (sale.accountName || "").trim().toLowerCase().includes("ajio")
                                       ? "Seller Order No. "
                                       : "Order Item ID"}
