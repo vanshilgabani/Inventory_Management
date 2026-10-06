@@ -1224,8 +1224,6 @@ const mapAjioRowToGenericRow = (row, rowNumber) => {
   const rawStatus = String(row['Status'] || '').trim();
   const status = rawStatus.toUpperCase();
 
-  const pickupTimestamp = row['Pickup Timestamp'];
-
   const sku = String(row['Seller SKU'] || '').trim();
   const orderId = String(row['Cust Order No'] || '').trim();
   const orderItemId = String(row['FWD Seller Order NO'] || '').trim();
@@ -1240,23 +1238,6 @@ const mapAjioRowToGenericRow = (row, rowNumber) => {
       orderId: orderId || 'NA',
       status: rawStatus || 'UNKNOWN',
       reason: `Status is ${rawStatus || 'blank'}`
-    };
-  }
-
-  // ── RULE 2: Pickup Timestamp is compulsory
-  // Even a SHIPPED order is skipped until AJIO provides pickup timestamp.
-  if (
-    pickupTimestamp === undefined ||
-    pickupTimestamp === null ||
-    String(pickupTimestamp).trim() === ''
-  ) {
-    return {
-      skipped: true,
-      failed: false,
-      sku: sku || 'NA',
-      orderId: orderId || 'NA',
-      status: rawStatus || 'UNKNOWN',
-      reason: 'Pickup Timestamp not available'
     };
   }
 
@@ -1343,8 +1324,6 @@ const mapAjioRowToGenericRow = (row, rowNumber) => {
     state: '',
     pinCode: '',
 
-    // Optional AJIO information — useful for debugging/reference
-    pickupTimestamp: String(pickupTimestamp).trim()
   };
 };
 
@@ -1399,7 +1378,6 @@ const handleCSVUpload = (e, overrideFile = null) => {
         headers.includes('FWD AWB') &&
         headers.includes('Seller SKU') &&
         headers.includes('Shipped QTY') &&
-        headers.includes('Pickup Timestamp') &&
         headers.includes('Status');
       if (!isReturnCSV && !isPendingOrDispatchCSV && !isAmazonCSV && !isMeeshoCSV && !isMyntraCSV && !isAjioFile) {
         toast.error('Unrecognised file format. Please upload a Flipkart order/return CSV, Amazon order report, Meesho, Myntra, or Ajio.');
@@ -1865,7 +1843,6 @@ const handleSmartCSVDetect = (e) => {
       'fwd awb',
       'seller sku',
       'shipped qty',
-      'pickup timestamp',
       'status',
     ].every((header) => normalizedHeaders.has(header));
 
