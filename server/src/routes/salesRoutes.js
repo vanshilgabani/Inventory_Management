@@ -24,6 +24,7 @@ const {
   previewReturnCSV,
   importReturnCSV,
   importMyntraReturnCSV,
+  importAjioReturnCSV
 } = require('../controllers/salesController');
 const { protect } = require('../middleware/auth');
 const { canEditDelete } = require('../middleware/checkEditPermission'); // ✅ ADD THIS
@@ -49,6 +50,7 @@ router.post('/detect-csv-type', protect, detectCSVType);
 router.post('/preview-return-csv', protect, previewReturnCSV);
 router.post('/import-return-csv', protect, importReturnCSV);
 router.post('/import-myntra-return-csv', protect, importMyntraReturnCSV);
+router.post('/import-ajio-return-csv', protect, importAjioReturnCSV);
 
 // Read routes (no middleware needed)
 router.get('/', protect, getAllSales);

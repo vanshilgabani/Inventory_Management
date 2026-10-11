@@ -3123,6 +3123,678 @@ exports.importMyntraReturnCSV = async (req, res) => {
   return processMyntraReturnCSV(req, res, 'import');
 };
 
+// ============================================================
+// AJIO RETURN REPORT IMPORT
+// ============================================================
+// Purpose:
+//   - Find the EXISTING AJIO sale
+//   - Store Return AWB No -> returnTrackingId
+//   - Store Cust Return Reason -> returnReason
+//
+// IMPORTANT:
+//   - Does NOT change order status
+//   - Does NOT restore inventory
+//   - Does NOT change quantity
+//   - Does NOT overwrite forward trackingId
+// ============================================================
+
+exports.importAjioReturnCSV = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    const { rows, accountName } = req.body;
+
+    // =========================================================
+    // VALIDATION
+    // =========================================================
+
+    if (!rows || !Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No AJIO return rows provided'
+      });
+    }
+
+    // =========================================================
+    // HELPERS
+    // =========================================================
+
+    const cleanId = value => {
+      const str = String(value ?? '')
+        .trim()
+        .replace(/^'/, '');
+
+      return str || null;
+    };
+
+    // =========================================================
+    // NORMALIZE ROWS
+    // =========================================================
+
+    const items = [];
+    let skipped = 0;
+
+    for (const raw of rows) {
+      const orderItemId = cleanId(
+        raw.order_item_id
+      );
+
+      const orderId = cleanId(
+        raw.order_id
+      );
+
+      const forwardTracking = cleanId(
+        raw.forward_tracking_number
+      );
+
+      const sku = String(
+        raw.seller_sku_code || ''
+      ).trim() || null;
+
+      const returnTrackingId = cleanId(
+        raw.return_tracking_number
+      );
+
+      const returnReason = String(
+        raw.return_reason || ''
+      ).trim() || null;
+
+      /*
+       * We need at least ONE original-order identifier.
+       *
+       * Priority later will be:
+       *
+       * 1. orderItemId
+       * 2. orderId
+       * 3. forwardTracking
+       */
+      if (
+        !orderItemId &&
+        !orderId &&
+        !forwardTracking
+      ) {
+        skipped++;
+        continue;
+      }
+
+      items.push({
+        orderItemId,
+        orderId,
+        forwardTracking,
+        sku,
+        returnTrackingId,
+        returnReason
+      });
+    }
+
+    // =========================================================
+    // NOTHING TO PROCESS
+    // =========================================================
+
+    if (items.length === 0) {
+      return res.status(200).json({
+        success: true,
+
+        message:
+          'No valid AJIO return rows to process.',
+
+        data: {
+          updated: 0,
+          unmatched: 0,
+          skipped,
+          rtoCount: 0,
+          trackingStored: 0,
+          errors: [],
+          unmatchedOrders: []
+        }
+      });
+    }
+
+    // =========================================================
+    // COLLECT UNIQUE IDENTIFIERS
+    // =========================================================
+
+    const unique = values =>
+      [...new Set(values.filter(Boolean))];
+
+    const orderItemIds = unique(
+      items.map(item => item.orderItemId)
+    );
+
+    const orderIds = unique(
+      items.map(item => item.orderId)
+    );
+
+    const forwardTrackingIds = unique(
+      items.map(item => item.forwardTracking)
+    );
+
+    // =========================================================
+    // BUILD ONE DATABASE QUERY
+    // =========================================================
+
+    const orClauses = [];
+
+    if (orderItemIds.length) {
+      orClauses.push({
+        orderItemId: {
+          $in: orderItemIds.flatMap(id => [
+            id,
+            `'${id}`
+          ])
+        }
+      });
+    }
+
+    if (orderIds.length) {
+      orClauses.push({
+        marketplaceOrderId: {
+          $in: orderIds
+        }
+      });
+    }
+
+    if (forwardTrackingIds.length) {
+      orClauses.push({
+        trackingId: {
+          $in: forwardTrackingIds
+        }
+      });
+    }
+
+    const query = {
+      organizationId,
+      deletedAt: null
+    };
+
+    if (
+      accountName &&
+      accountName !== 'all'
+    ) {
+      query.accountName = accountName;
+    }
+
+    if (orClauses.length) {
+      query.$or = orClauses;
+    }
+
+    // =========================================================
+    // FETCH CANDIDATE SALES ONCE
+    // =========================================================
+
+    const sales = orClauses.length
+      ? await MarketplaceSale.find(query)
+          .select(
+            '_id ' +
+            'orderItemId ' +
+            'marketplaceOrderId ' +
+            'trackingId ' +
+            'returnTrackingId ' +
+            'returnReason ' +
+            'design ' +
+            'color ' +
+            'size ' +
+            'accountName'
+          )
+          .lean()
+      : [];
+
+    logger.info(
+      'AJIO return import: candidate sales fetched',
+      {
+        organizationId,
+        accountName,
+        rows: items.length,
+        salesFetched: sales.length
+      }
+    );
+
+    // =========================================================
+    // BUILD LOOKUP MAPS
+    // =========================================================
+
+    const byOrderItemId = new Map();
+    const byOrderId = new Map();
+    const byTrackingId = new Map();
+
+    const pushToMap = (map, key, sale) => {
+      if (!key) return;
+
+      const cleanedKey = String(key)
+        .trim()
+        .replace(/^'/, '');
+
+      if (!map.has(cleanedKey)) {
+        map.set(cleanedKey, []);
+      }
+
+      map.get(cleanedKey).push(sale);
+    };
+
+    for (const sale of sales) {
+      if (sale.orderItemId) {
+        const cleanedItemId = String(
+          sale.orderItemId
+        )
+          .trim()
+          .replace(/^'/, '');
+
+        /*
+         * orderItemId should normally be unique,
+         * but keep array support for safety.
+         */
+        pushToMap(
+          byOrderItemId,
+          cleanedItemId,
+          sale
+        );
+      }
+
+      pushToMap(
+        byOrderId,
+        sale.marketplaceOrderId,
+        sale
+      );
+
+      pushToMap(
+        byTrackingId,
+        sale.trackingId,
+        sale
+      );
+    }
+
+    // =========================================================
+    // SKU MATCH HELPER
+    // =========================================================
+
+    const ajioSkuMatchesSale = (sku, sale) => {
+      if (!sku || !sale) return false;
+
+      const parsed = parseFlipkartSKU(sku);
+
+      if (
+        !parsed.design ||
+        !parsed.color ||
+        !parsed.size
+      ) {
+        return false;
+      }
+
+      const designMatches =
+        String(parsed.design)
+          .trim()
+          .toUpperCase() ===
+        String(sale.design || '')
+          .trim()
+          .toUpperCase();
+
+      const sizeMatches =
+        String(parsed.size)
+          .trim()
+          .toUpperCase() ===
+        String(sale.size || '')
+          .trim()
+          .toUpperCase();
+
+      /*
+       * Use your existing inventory color matcher.
+       * Example:
+       *
+       * L.GREY -> Light Grey
+       * KHAKHI -> Khaki
+       */
+      const colorMatches =
+        matchColorToInventory(
+          parsed.color,
+          [{ color: sale.color }]
+        ) === sale.color;
+
+      return (
+        designMatches &&
+        sizeMatches &&
+        colorMatches
+      );
+    };
+
+    // =========================================================
+    // MATCH ONE RETURN ROW TO ONE EXISTING SALE
+    // =========================================================
+
+    const findSaleForItem = item => {
+      // -------------------------------------------------------
+      // PRIORITY 1:
+      // FWD Seller Order ID -> existing orderItemId
+      // -------------------------------------------------------
+
+      if (item.orderItemId) {
+        const candidates =
+          byOrderItemId.get(
+            item.orderItemId
+          ) || [];
+
+        if (candidates.length === 1) {
+          return {
+            sale: candidates[0],
+            via: 'FWD Seller Order ID'
+          };
+        }
+
+        if (candidates.length > 1) {
+          const skuMatch =
+            candidates.find(sale =>
+              ajioSkuMatchesSale(
+                item.sku,
+                sale
+              )
+            );
+
+          if (skuMatch) {
+            return {
+              sale: skuMatch,
+              via:
+                'FWD Seller Order ID + SKU'
+            };
+          }
+        }
+      }
+
+      // -------------------------------------------------------
+      // PRIORITY 2:
+      // Cust Order No -> marketplaceOrderId
+      // -------------------------------------------------------
+
+      if (item.orderId) {
+        const candidates =
+          byOrderId.get(
+            item.orderId
+          ) || [];
+
+        if (candidates.length === 1) {
+          return {
+            sale: candidates[0],
+            via: 'Cust Order No'
+          };
+        }
+
+        if (candidates.length > 1) {
+          const skuMatch =
+            candidates.find(sale =>
+              ajioSkuMatchesSale(
+                item.sku,
+                sale
+              )
+            );
+
+          if (skuMatch) {
+            return {
+              sale: skuMatch,
+              via:
+                'Cust Order No + SKU'
+            };
+          }
+        }
+      }
+
+      // -------------------------------------------------------
+      // PRIORITY 3:
+      // FWD AWB -> existing trackingId
+      // -------------------------------------------------------
+
+      if (item.forwardTracking) {
+        const candidates =
+          byTrackingId.get(
+            item.forwardTracking
+          ) || [];
+
+        if (candidates.length === 1) {
+          return {
+            sale: candidates[0],
+            via: 'FWD AWB'
+          };
+        }
+
+        if (candidates.length > 1) {
+          const skuMatch =
+            candidates.find(sale =>
+              ajioSkuMatchesSale(
+                item.sku,
+                sale
+              )
+            );
+
+          if (skuMatch) {
+            return {
+              sale: skuMatch,
+              via: 'FWD AWB + SKU'
+            };
+          }
+        }
+      }
+
+      return {
+        sale: null,
+        via: null
+      };
+    };
+
+    // =========================================================
+    // RESULT OBJECT
+    // Same shape expected by your existing return modal.
+    // =========================================================
+
+    const results = {
+      updated: 0,
+      unmatched: 0,
+      skipped,
+      rtoCount: 0,
+      trackingStored: 0,
+      errors: [],
+      unmatchedOrders: []
+    };
+
+    const bulkOps = [];
+
+    // Prevent accidentally updating same sale twice
+    // from duplicate report rows.
+    const claimedSales = new Set();
+
+    // =========================================================
+    // PROCESS EACH AJIO RETURN
+    // =========================================================
+
+    for (const item of items) {
+      try {
+        const match =
+          findSaleForItem(item);
+
+        if (!match.sale) {
+          results.unmatched++;
+
+          results.unmatchedOrders.push({
+            orderItemId:
+              item.orderItemId,
+
+            orderId:
+              item.orderId,
+
+            forwardTrackingId:
+              item.forwardTracking,
+
+            sku:
+              item.sku,
+
+            returnReason:
+              item.returnReason,
+
+            reason:
+              'No matching AJIO order found'
+          });
+
+          continue;
+        }
+
+        const sale = match.sale;
+
+        const saleId =
+          String(sale._id);
+
+        // =====================================================
+        // DUPLICATE PROTECTION
+        // =====================================================
+
+        if (claimedSales.has(saleId)) {
+          results.skipped++;
+
+          continue;
+        }
+
+        claimedSales.add(saleId);
+
+        // =====================================================
+        // ONLY TWO FIELDS ARE UPDATED
+        // =====================================================
+
+        const updateFields = {};
+
+        if (item.returnTrackingId) {
+          updateFields.returnTrackingId =
+            item.returnTrackingId;
+        }
+
+        if (item.returnReason) {
+          updateFields.returnReason =
+            item.returnReason;
+        }
+
+        /*
+         * If the AJIO row contains neither tracking nor reason,
+         * there is nothing useful to update.
+         */
+        if (
+          Object.keys(updateFields).length === 0
+        ) {
+          results.skipped++;
+
+          continue;
+        }
+
+        bulkOps.push({
+          updateOne: {
+            filter: {
+              _id: sale._id,
+              organizationId
+            },
+
+            update: {
+              $set: updateFields
+            }
+          }
+        });
+
+        results.updated++;
+
+        if (item.returnTrackingId) {
+          results.trackingStored++;
+        }
+
+        logger.info(
+          'AJIO return matched',
+          {
+            organizationId,
+            accountName,
+            orderItemId:
+              sale.orderItemId,
+            marketplaceOrderId:
+              sale.marketplaceOrderId,
+            matchedVia:
+              match.via,
+            returnTrackingId:
+              item.returnTrackingId
+          }
+        );
+
+      } catch (rowError) {
+        results.errors.push({
+          orderItemId:
+            item.orderItemId ||
+            'unknown',
+
+          error:
+            rowError.message
+        });
+
+        logger.error(
+          'AJIO return row error',
+          {
+            organizationId,
+            orderItemId:
+              item.orderItemId,
+            error:
+              rowError.message
+          }
+        );
+      }
+    }
+
+    // =========================================================
+    // BULK UPDATE
+    // =========================================================
+
+    if (bulkOps.length > 0) {
+      await MarketplaceSale.bulkWrite(
+        bulkOps,
+        {
+          ordered: false
+        }
+      );
+    }
+
+    logger.info(
+      'AJIO return import complete',
+      {
+        organizationId,
+        accountName,
+        updated:
+          results.updated,
+        unmatched:
+          results.unmatched,
+        skipped:
+          results.skipped,
+        trackingStored:
+          results.trackingStored
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+
+      message:
+        `AJIO return report imported: ` +
+        `${results.updated} updated, ` +
+        `${results.unmatched} unmatched, ` +
+        `${results.skipped} skipped`,
+
+      data: results
+    });
+
+  } catch (error) {
+    logger.error(
+      'importAjioReturnCSV error',
+      {
+        error: error.message,
+        stack: error.stack
+      }
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        'Server error processing AJIO return report',
+      error:
+        error.message
+    });
+  }
+};
+
 // ✅ ADD THIS - Get date summary
 exports.getDateSummary = async (req, res) => {
   try {

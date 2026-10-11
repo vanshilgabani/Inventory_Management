@@ -1816,6 +1816,16 @@ const handleSmartCSVDetect = (e) => {
       'return_tracking_number',
     ].every((header) => normalizedHeaders.has(header));
 
+    const isAjioReturnFile = [
+      'cust order no',
+      'fwd seller order id',
+      'seller sku',
+      'return awb no',
+      'cust return reason',
+    ].every(header =>
+      normalizedHeaders.has(header)
+    );
+
     const isOrderCSV =
       normalizedHeaders.has('order state');
 
@@ -1856,7 +1866,8 @@ const handleSmartCSVDetect = (e) => {
       !isAmazonCSV &&
       !isMeeshoCSV &&
       !isMyntraOrderCSV &&
-      !isAjioFile
+      !isAjioFile &&
+      !isAjioReturnFile
     ) {
       toast.error(
         'Unrecognised file format. Upload a Flipkart order/return CSV, Amazon order report, Meesho CSV, Myntra orders CSV, Myntra returns report, or AJIO order report.'
@@ -1867,11 +1878,20 @@ const handleSmartCSVDetect = (e) => {
     // ============================================================
     // RETURN REPORTS
     // ============================================================
-    if (isFlipkartReturnCSV || isMyntraReturnCSV) {
+    if (
+      isFlipkartReturnCSV ||
+      isMyntraReturnCSV ||
+      isAjioReturnFile
+    ) {
+      const marketplaceLabel =
+        isAjioReturnFile
+          ? 'AJIO'
+          : isMyntraReturnCSV
+            ? 'Myntra'
+            : 'Flipkart';
+
       toast.success(
-        isMyntraReturnCSV
-          ? 'Myntra returns report detected — opening returns importer!'
-          : 'Flipkart return CSV detected — opening returns importer!',
+        `${marketplaceLabel} returns report detected — opening returns importer!`,
         { duration: 2500 }
       );
 
@@ -1879,6 +1899,7 @@ const handleSmartCSVDetect = (e) => {
       setPendingOrderCSVFile(null);
       setPendingReturnCSVFile(file);
       setShowImportReturnModal(true);
+
       return;
     }
 

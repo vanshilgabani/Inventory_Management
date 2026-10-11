@@ -272,6 +272,22 @@ export const salesService = {
     return response.data;
   },
 
+    // Import AJIO return report — updates return tracking ID + return reason
+  importAjioReturnCSV: async (rows, accountName) => {
+    const response = await api.post(
+      '/sales/import-ajio-return-csv',
+      {
+        rows,
+        accountName
+      },
+      {
+        timeout: 60000
+      }
+    );
+
+    return response.data;
+  },
+  
   // Import orders from CSV
   async importFromCSV(csvData, accountName, dispatchDate) {
     const payload = {
