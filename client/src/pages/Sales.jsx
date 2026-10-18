@@ -1038,7 +1038,16 @@ const parseFlipkartSKU = (sku) => {
   };
 
   const normalizeSize  = (s) => { const t = s?.trim(); return sizeMap[t] || t || null; };
-  const cleaned        = sku.replace(/#/g, '').replace(/,/g, '').trim();
+  let cleaned = sku.replace(/#/g, '').replace(/,/g, '').trim();
+
+  // Normalize marketplace/brand prefix before D<number> design
+  // HR_D13-L.GREY-XL  -> D13-L.GREY-XL
+  // HR_D9-D.GREY-XL   -> D9-D.GREY-XL
+  // AMZ_D13-BLACK-L   -> D13-BLACK-L
+  // FK_D11-KHAKI-M    -> D11-KHAKI-M
+  //
+  // Existing SKUs like D13-L.GREY-XL remain unchanged.
+  cleaned = cleaned.replace(/^[^_]+_(D\d+)(?=-|$)/i, '$1');
 
   // ── PRIORITY 1: Mixed prefix + D-NO-{num} + COLOR_SIZE
   // Handles: MN-D-NO-10-DARKGREY_32, BRAND-D-NO-5-NAVY_34
