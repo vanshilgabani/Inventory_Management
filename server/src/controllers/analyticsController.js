@@ -1883,6 +1883,762 @@ const getReorderPlannerData = async (req, res) => {
   }
 };
 
+// ============================================================
+// RETURN INSIGHTS
+// ============================================================
+const getReturnInsights = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+
+    const {
+      startDate,
+      endDate,
+      accountName,
+      design,
+      color,
+      size,
+      returnReason
+    } = req.query;
+
+    // ----------------------------------------------------------
+    // BASE FILTER
+    // ----------------------------------------------------------
+    const matchFilter = {
+      organizationId: new mongoose.Types.ObjectId(organizationId),
+      deletedAt: null
+    };
+
+    // Global Marketplace Analytics date filter
+    if (startDate || endDate) {
+      matchFilter.saleDate = {};
+
+      if (startDate) {
+        matchFilter.saleDate.$gte = new Date(startDate);
+      }
+
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        matchFilter.saleDate.$lte = end;
+      }
+    }
+
+    if (accountName) {
+      matchFilter.accountName = accountName;
+    }
+
+    if (design) {
+      matchFilter.design = design;
+    }
+
+    if (color) {
+      matchFilter.color = color;
+    }
+
+    if (size) {
+      matchFilter.size = size;
+    }
+
+    // ----------------------------------------------------------
+    // MAIN SALES DATA
+    // ----------------------------------------------------------
+    const sales = await MarketplaceSale.find(matchFilter)
+      .select(
+        'accountName marketplaceOrderId orderItemId design color size quantity saleDate status returnTrackingId returnType returnReason returnSubReason returnComments returnStatus returnRequestedDate returnCompletedDate shippingCity shippingState shippingPinCode returnedProduct'
+      )
+      .lean();
+
+    // ----------------------------------------------------------
+    // HELPERS
+    // ----------------------------------------------------------
+    const safeQty = (sale) => Number(sale.quantity || 0);
+
+    const round = (value) => {
+      return Number((Number(value || 0)).toFixed(2));
+    };
+
+    const percentage = (part, total) => {
+      if (!total) return 0;
+      return round((part / total) * 100);
+    };
+
+    const cleanText = (value) => {
+      if (value === null || value === undefined) return null;
+
+      const text = String(value).trim();
+
+      return text || null;
+    };
+
+    // Return reason priority:
+    // 1. returnReason
+    // 2. returnSubReason
+    // 3. returnComments
+    // 4. If all are empty, exclude from reason analytics
+    const getEffectiveReturnReason = (sale) => {
+      return (
+        cleanText(sale.returnReason) ||
+        cleanText(sale.returnSubReason) ||
+        cleanText(sale.returnComments) ||
+        null
+      );
+    };
+
+    // Cancelled orders are NOT included in the return-rate denominator.
+    const eligibleSales = sales.filter(
+      sale => sale.status !== 'cancelled'
+    );
+
+    const customerReturns = eligibleSales.filter(
+      sale => sale.status === 'returned'
+    );
+
+    const wrongReturns = eligibleSales.filter(
+      sale => sale.status === 'wrongreturn'
+    );
+
+    const rtoSales = eligibleSales.filter(
+      sale => sale.status === 'RTO'
+    );
+
+    // ----------------------------------------------------------
+    // OVERVIEW
+    // ----------------------------------------------------------
+    const totalUnits = eligibleSales.reduce(
+      (sum, sale) => sum + safeQty(sale),
+      0
+    );
+
+    const customerReturnUnits = customerReturns.reduce(
+      (sum, sale) => sum + safeQty(sale),
+      0
+    );
+
+    const wrongReturnUnits = wrongReturns.reduce(
+      (sum, sale) => sum + safeQty(sale),
+      0
+    );
+
+    const rtoUnits = rtoSales.reduce(
+      (sum, sale) => sum + safeQty(sale),
+      0
+    );
+
+    const totalIssueUnits =
+      customerReturnUnits +
+      wrongReturnUnits +
+      rtoUnits;
+
+    const overview = {
+      totalOrders: eligibleSales.length,
+      totalUnits,
+
+      customerReturnOrders: customerReturns.length,
+      customerReturnUnits,
+      customerReturnRate: percentage(customerReturnUnits, totalUnits),
+
+      wrongReturnOrders: wrongReturns.length,
+      wrongReturnUnits,
+      wrongReturnRate: percentage(wrongReturnUnits, totalUnits),
+
+      rtoOrders: rtoSales.length,
+      rtoUnits,
+      rtoRate: percentage(rtoUnits, totalUnits),
+
+      totalIssueUnits,
+      overallIssueRate: percentage(totalIssueUnits, totalUnits)
+    };
+
+    // ----------------------------------------------------------
+    // RETURN TYPE BREAKDOWN
+    // ----------------------------------------------------------
+    const returnTypeBreakdown = [
+      {
+        name: 'Customer Returns',
+        value: customerReturnUnits,
+        rate: percentage(customerReturnUnits, totalUnits)
+      },
+      {
+        name: 'RTO',
+        value: rtoUnits,
+        rate: percentage(rtoUnits, totalUnits)
+      },
+      {
+        name: 'Wrong Returns',
+        value: wrongReturnUnits,
+        rate: percentage(wrongReturnUnits, totalUnits)
+      }
+    ];
+
+    // ----------------------------------------------------------
+    // DESIGN ANALYSIS
+    // ----------------------------------------------------------
+    const designMap = {};
+
+    eligibleSales.forEach(sale => {
+      const designName = cleanText(sale.design);
+
+if (!designName) return;
+
+      if (!designMap[designName]) {
+        designMap[designName] = {
+          design: designName,
+          totalOrders: 0,
+          totalUnits: 0,
+          customerReturnUnits: 0,
+          wrongReturnUnits: 0,
+          rtoUnits: 0
+        };
+      }
+
+      const item = designMap[designName];
+      const qty = safeQty(sale);
+
+      item.totalOrders += 1;
+      item.totalUnits += qty;
+
+      if (sale.status === 'returned') {
+        item.customerReturnUnits += qty;
+      }
+
+      if (sale.status === 'wrongreturn') {
+        item.wrongReturnUnits += qty;
+      }
+
+      if (sale.status === 'RTO') {
+        item.rtoUnits += qty;
+      }
+    });
+
+    const designAnalysis = Object.values(designMap)
+      .map(item => ({
+        ...item,
+
+        customerReturnRate: percentage(
+          item.customerReturnUnits,
+          item.totalUnits
+        ),
+
+        wrongReturnRate: percentage(
+          item.wrongReturnUnits,
+          item.totalUnits
+        ),
+
+        rtoRate: percentage(
+          item.rtoUnits,
+          item.totalUnits
+        ),
+
+        overallIssueRate: percentage(
+          item.customerReturnUnits +
+            item.wrongReturnUnits +
+            item.rtoUnits,
+          item.totalUnits
+        )
+      }))
+      .sort(
+        (a, b) =>
+          b.customerReturnRate - a.customerReturnRate
+      );
+
+    // ----------------------------------------------------------
+    // DESIGN + COLOR + SIZE ANALYSIS
+    // ----------------------------------------------------------
+    const variantMap = {};
+
+    eligibleSales.forEach(sale => {
+    const designName = cleanText(sale.design);
+    const colorName = cleanText(sale.color);
+    const sizeName = cleanText(sale.size);
+
+    // A product combination is only useful if all 3 exist.
+    if (!designName || !colorName || !sizeName) {
+      return;
+    }
+
+    const key = `${designName}__${colorName}__${sizeName}`;
+
+      if (!variantMap[key]) {
+        variantMap[key] = {
+          design: designName,
+          color: colorName,
+          size: sizeName,
+
+          totalOrders: 0,
+          totalUnits: 0,
+
+          customerReturnUnits: 0,
+          wrongReturnUnits: 0,
+          rtoUnits: 0
+        };
+      }
+
+      const item = variantMap[key];
+      const qty = safeQty(sale);
+
+      item.totalOrders += 1;
+      item.totalUnits += qty;
+
+      if (sale.status === 'returned') {
+        item.customerReturnUnits += qty;
+      }
+
+      if (sale.status === 'wrongreturn') {
+        item.wrongReturnUnits += qty;
+      }
+
+      if (sale.status === 'RTO') {
+        item.rtoUnits += qty;
+      }
+    });
+
+    const variantAnalysis = Object.values(variantMap)
+      .map(item => ({
+        ...item,
+
+        customerReturnRate: percentage(
+          item.customerReturnUnits,
+          item.totalUnits
+        ),
+
+        wrongReturnRate: percentage(
+          item.wrongReturnUnits,
+          item.totalUnits
+        ),
+
+        rtoRate: percentage(
+          item.rtoUnits,
+          item.totalUnits
+        ),
+
+        overallIssueRate: percentage(
+          item.customerReturnUnits +
+            item.wrongReturnUnits +
+            item.rtoUnits,
+          item.totalUnits
+        )
+      }))
+      .sort(
+        (a, b) =>
+          b.customerReturnRate - a.customerReturnRate
+      );
+
+    // ----------------------------------------------------------
+    // RETURN REASON ANALYSIS
+    //
+    // Reason priority:
+    // 1. returnReason
+    // 2. returnSubReason
+    // 3. returnComments
+    //
+    // If none exist, the record is excluded ONLY from
+    // reason-based analytics.
+    // ----------------------------------------------------------
+    const reasonMap = {};
+
+    [...customerReturns, ...wrongReturns].forEach(sale => {
+      const reason = getEffectiveReturnReason(sale);
+
+      // No useful reason data -> don't display this record
+      // in reason analytics.
+      if (!reason) {
+        return;
+      }
+
+      // Apply selected reason filter
+      if (
+        returnReason &&
+        reason.toLowerCase() !==
+          String(returnReason).trim().toLowerCase()
+      ) {
+        return;
+      }
+
+      if (!reasonMap[reason]) {
+        reasonMap[reason] = {
+          reason,
+          count: 0,
+          units: 0,
+          customerReturnUnits: 0,
+          wrongReturnUnits: 0
+        };
+      }
+
+      const qty = safeQty(sale);
+
+      reasonMap[reason].count += 1;
+      reasonMap[reason].units += qty;
+
+      if (sale.status === 'returned') {
+        reasonMap[reason].customerReturnUnits += qty;
+      }
+
+      if (sale.status === 'wrongreturn') {
+        reasonMap[reason].wrongReturnUnits += qty;
+      }
+    });
+
+    const totalReasonUnits = Object.values(reasonMap).reduce(
+      (sum, item) => sum + item.units,
+      0
+    );
+
+    const reasonAnalysis = Object.values(reasonMap)
+      .map(item => ({
+        ...item,
+
+        percentage: percentage(
+          item.units,
+          totalReasonUnits
+        )
+      }))
+      .sort((a, b) => b.units - a.units);
+      
+    // ----------------------------------------------------------
+    // RETURN REASON × DESIGN ANALYSIS
+    // ----------------------------------------------------------
+    const reasonDesignMap = {};
+
+    [...customerReturns, ...wrongReturns].forEach(sale => {
+      const reason = getEffectiveReturnReason(sale);
+
+      // No usable reason -> exclude from reason analysis
+      if (!reason) {
+        return;
+      }
+
+      if (
+        returnReason &&
+        reason.toLowerCase() !==
+          String(returnReason).trim().toLowerCase()
+      ) {
+        return;
+      }
+
+      const designName = cleanText(sale.design);
+
+      // No design -> nothing useful to analyse here
+      if (!designName) {
+        return;
+      }
+
+      const key = `${reason}__${designName}`;
+
+      if (!reasonDesignMap[key]) {
+        reasonDesignMap[key] = {
+          reason,
+          design: designName,
+          count: 0,
+          units: 0
+        };
+      }
+
+      reasonDesignMap[key].count += 1;
+      reasonDesignMap[key].units += safeQty(sale);
+    });
+
+    const reasonDesignAnalysis = Object.values(
+      reasonDesignMap
+    ).sort((a, b) => b.units - a.units);
+
+    // ----------------------------------------------------------
+    // ACCOUNT / MARKETPLACE COMPARISON
+    // ----------------------------------------------------------
+    const accountMap = {};
+
+    eligibleSales.forEach(sale => {
+      const account = cleanText(sale.accountName);
+
+      if (!account) {
+        return;
+      }
+
+      if (!accountMap[account]) {
+        accountMap[account] = {
+          accountName: account,
+          totalUnits: 0,
+          customerReturnUnits: 0,
+          wrongReturnUnits: 0,
+          rtoUnits: 0
+        };
+      }
+
+      const qty = safeQty(sale);
+
+      accountMap[account].totalUnits += qty;
+
+      if (sale.status === 'returned') {
+        accountMap[account].customerReturnUnits += qty;
+      }
+
+      if (sale.status === 'wrongreturn') {
+        accountMap[account].wrongReturnUnits += qty;
+      }
+
+      if (sale.status === 'RTO') {
+        accountMap[account].rtoUnits += qty;
+      }
+    });
+
+    const accountComparison = Object.values(accountMap)
+      .map(item => ({
+        ...item,
+
+        customerReturnRate: percentage(
+          item.customerReturnUnits,
+          item.totalUnits
+        ),
+
+        wrongReturnRate: percentage(
+          item.wrongReturnUnits,
+          item.totalUnits
+        ),
+
+        rtoRate: percentage(
+          item.rtoUnits,
+          item.totalUnits
+        ),
+
+        overallIssueRate: percentage(
+          item.customerReturnUnits +
+            item.wrongReturnUnits +
+            item.rtoUnits,
+          item.totalUnits
+        )
+      }))
+      .sort(
+        (a, b) =>
+          b.overallIssueRate - a.overallIssueRate
+      );
+
+    // ----------------------------------------------------------
+    // RETURN TREND
+    // Group by sale date.
+    // ----------------------------------------------------------
+    const trendMap = {};
+
+    eligibleSales.forEach(sale => {
+      if (!sale.saleDate) return;
+
+      const date = new Date(sale.saleDate);
+
+      if (Number.isNaN(date.getTime())) return;
+
+      const key = date.toISOString().split('T')[0];
+
+      if (!trendMap[key]) {
+        trendMap[key] = {
+          date: key,
+          totalUnits: 0,
+          customerReturnUnits: 0,
+          wrongReturnUnits: 0,
+          rtoUnits: 0
+        };
+      }
+
+      const qty = safeQty(sale);
+
+      trendMap[key].totalUnits += qty;
+
+      if (sale.status === 'returned') {
+        trendMap[key].customerReturnUnits += qty;
+      }
+
+      if (sale.status === 'wrongreturn') {
+        trendMap[key].wrongReturnUnits += qty;
+      }
+
+      if (sale.status === 'RTO') {
+        trendMap[key].rtoUnits += qty;
+      }
+    });
+
+    const trends = Object.values(trendMap)
+      .map(item => ({
+        ...item,
+
+        customerReturnRate: percentage(
+          item.customerReturnUnits,
+          item.totalUnits
+        ),
+
+        rtoRate: percentage(
+          item.rtoUnits,
+          item.totalUnits
+        ),
+
+        wrongReturnRate: percentage(
+          item.wrongReturnUnits,
+          item.totalUnits
+        )
+      }))
+      .sort(
+        (a, b) =>
+          new Date(a.date) - new Date(b.date)
+      );
+
+    // ----------------------------------------------------------
+    // RTO GEOGRAPHY
+    // ----------------------------------------------------------
+    const rtoStateMap = {};
+
+    rtoSales.forEach(sale => {
+      const state = cleanText(sale.shippingState);
+
+      if (!state) {
+        return;
+      }
+
+      if (!rtoStateMap[state]) {
+        rtoStateMap[state] = {
+          state,
+          rtoOrders: 0,
+          rtoUnits: 0
+        };
+      }
+
+      rtoStateMap[state].rtoOrders += 1;
+      rtoStateMap[state].rtoUnits += safeQty(sale);
+    });
+
+    const rtoGeography = Object.values(rtoStateMap)
+      .sort((a, b) => b.rtoUnits - a.rtoUnits);
+
+    // ----------------------------------------------------------
+    // DETAILED ISSUE RECORDS
+    // ----------------------------------------------------------
+    const issueStatuses = [
+      'returned',
+      'wrongreturn',
+      'RTO'
+    ];
+
+    const records = eligibleSales
+      .filter(sale => issueStatuses.includes(sale.status))
+      .filter(sale => {
+        if (!returnReason) return true;
+
+        const effectiveReason =
+          getEffectiveReturnReason(sale);
+
+        if (!effectiveReason) {
+          return false;
+        }
+
+        return (
+          effectiveReason.toLowerCase() ===
+          String(returnReason).trim().toLowerCase()
+        );
+      })
+      .map(sale => ({
+        marketplace: sale.accountName || '',
+        orderId: sale.marketplaceOrderId || '',
+        orderItemId: sale.orderItemId || '',
+        design: sale.design || '',
+        color: sale.color || '',
+        size: sale.size || '',
+        quantity: safeQty(sale),
+        saleDate: sale.saleDate || null,
+        status: sale.status || '',
+        returnType: sale.returnType || '',
+        returnReason: getEffectiveReturnReason(sale) || '',
+        returnSubReason: sale.returnSubReason || '',
+        returnStatus: sale.returnStatus || '',
+        returnRequestedDate:
+          sale.returnRequestedDate || null,
+        returnCompletedDate:
+          sale.returnCompletedDate || null,
+        returnTrackingId:
+          sale.returnTrackingId || '',
+        shippingState:
+          sale.shippingState || '',
+        shippingCity:
+          sale.shippingCity || ''
+      }))
+      .sort(
+        (a, b) =>
+          new Date(b.saleDate || 0) -
+          new Date(a.saleDate || 0)
+      );
+
+    // ----------------------------------------------------------
+    // FILTER OPTIONS
+    // ----------------------------------------------------------
+    const accounts = [
+      ...new Set(
+        sales
+          .map(item => item.accountName)
+          .filter(Boolean)
+      )
+    ].sort();
+
+    const designs = [
+      ...new Set(
+        sales
+          .map(item => item.design)
+          .filter(Boolean)
+      )
+    ].sort();
+
+    const colors = [
+      ...new Set(
+        sales
+          .map(item => item.color)
+          .filter(Boolean)
+      )
+    ].sort();
+
+    const sizes = [
+      ...new Set(
+        sales
+          .map(item => item.size)
+          .filter(Boolean)
+      )
+    ].sort();
+
+    const reasons = [
+      ...new Set(
+        [...customerReturns, ...wrongReturns]
+          .map(item => getEffectiveReturnReason(item))
+          .filter(Boolean)
+      )
+    ].sort((a, b) => a.localeCompare(b));
+
+    return res.json({
+      success: true,
+
+      data: {
+        overview,
+        returnTypeBreakdown,
+        designAnalysis,
+        variantAnalysis,
+        reasonAnalysis,
+        reasonDesignAnalysis,
+        accountComparison,
+        trends,
+        rtoGeography,
+        records,
+
+        filters: {
+          accounts,
+          designs,
+          colors,
+          sizes,
+          reasons
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('getReturnInsights error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to load return insights'
+    });
+  }
+};
+
 module.exports = {
   getTodayMarketplaceSummary,
   getBestSellingWDProducts,
@@ -1909,6 +2665,9 @@ module.exports = {
   getOptimalReorderPoints,
   getColorSizeDistribution,
   
+  // Returns & RTO
+  getReturnInsights,
+
   // Growth Metrics
   getGrowthMetrics
 };

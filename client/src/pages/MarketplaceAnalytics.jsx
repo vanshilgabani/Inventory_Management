@@ -67,16 +67,38 @@ const MarketplaceAnalytics = () => {
   const [selectedReturnAccount, setSelectedReturnAccount] = useState('');
   const [returnSortBy, setReturnSortBy] = useState('totalOrders'); // 'returnRate' | 'totalOrders' | 'returnedCount'
 
-  useEffect(() => {
-    const { filterType, startDate, endDate } = dateRange;
-    if (filterType === 'alltime') {
-      fetchAllData();
-      fetchReturnRateByAccount(''); // ✅ ADD
-    } else if (filterType && startDate && endDate) {
-      fetchAllData();
-      fetchReturnRateByAccount(''); // ✅ ADD
-    }
-  }, [dateRange.filterType, dateRange.startDate, dateRange.endDate]);
+  // Return Insights
+  const [returnInsights, setReturnInsights] = useState(null);
+  const [returnInsightsLoading, setReturnInsightsLoading] = useState(false);
+
+  const [returnFilters, setReturnFilters] = useState({
+    accountName: '',
+    design: '',
+    color: '',
+    size: '',
+    returnReason: ''
+  });
+
+  const [variantSortBy, setVariantSortBy] = useState('customerReturnRate');
+  const [designSortBy, setDesignSortBy] = useState('customerReturnRate');
+
+useEffect(() => {
+  const { filterType, startDate, endDate } = dateRange;
+
+  if (filterType === 'alltime') {
+    fetchAllData();
+    fetchReturnRateByAccount('');
+    fetchReturnInsights(returnFilters);
+  } else if (filterType && startDate && endDate) {
+    fetchAllData();
+    fetchReturnRateByAccount('');
+    fetchReturnInsights(returnFilters);
+  }
+}, [
+  dateRange.filterType,
+  dateRange.startDate,
+  dateRange.endDate
+]);
 
 const getFilterLabel = () => {
   if (dateRange.filterType === 'alltime') return 'All Time';
@@ -114,6 +136,73 @@ const fetchReturnRateByAccount = async (account) => {
   } catch (error) {
     toast.error('Failed to filter return data');
   }
+};
+
+const fetchReturnInsights = async (filters = returnFilters) => {
+  setReturnInsightsLoading(true);
+
+  try {
+    const params =
+      dateRange.filterType === 'alltime'
+        ? {}
+        : {
+            startDate: dateRange.startDate,
+            endDate: dateRange.endDate
+          };
+
+    if (filters.accountName) {
+      params.accountName = filters.accountName;
+    }
+
+    if (filters.design) {
+      params.design = filters.design;
+    }
+
+    if (filters.color) {
+      params.color = filters.color;
+    }
+
+    if (filters.size) {
+      params.size = filters.size;
+    }
+
+    if (filters.returnReason) {
+      params.returnReason = filters.returnReason;
+    }
+
+    const response =
+      await analyticsService.getReturnInsights(params);
+
+    setReturnInsights(response.data || null);
+  } catch (error) {
+    console.error('Return Insights Error:', error);
+    toast.error('Failed to load return insights');
+  } finally {
+    setReturnInsightsLoading(false);
+  }
+};
+
+const handleReturnFilterChange = (name, value) => {
+  const updated = {
+    ...returnFilters,
+    [name]: value
+  };
+
+  setReturnFilters(updated);
+  fetchReturnInsights(updated);
+};
+
+const clearReturnFilters = () => {
+  const cleared = {
+    accountName: '',
+    design: '',
+    color: '',
+    size: '',
+    returnReason: ''
+  };
+
+  setReturnFilters(cleared);
+  fetchReturnInsights(cleared);
 };
 
   const fetchAllData = async () => {
@@ -312,6 +401,22 @@ const fetchReturnRateByAccount = async (account) => {
           Inventory Intelligence
         </button>
         <button
+          onClick={() => {
+            setActiveTab('returns');
+
+            if (!returnInsights) {
+              fetchReturnInsights(returnFilters);
+            }
+          }}
+          className={`px-6 py-3 font-medium transition-colors whitespace-nowrap ${
+            activeTab === 'returns'
+              ? 'border-b-2 border-indigo-600 text-indigo-600'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          Return Insights
+        </button>
+        <button
           onClick={() => setActiveTab('growth')}
           className={`px-6 py-3 font-medium transition-colors whitespace-nowrap ${
             activeTab === 'growth'
@@ -387,7 +492,7 @@ const fetchReturnRateByAccount = async (account) => {
                     {/* Rate 1: Return Rate = returned + wrongreturn */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm text-gray-600">Return Rate</span>
+                        <span className="text-sm text-gray-600">Customer Return Rate</span>
                         <span className="text-sm font-semibold text-gray-700">
                           {account.totalQuantity > 0
                             ? (((account.returnedQuantity ?? account.returnedCount) + (account.wrongReturnQuantity ?? account.wrongReturnCount)) / (account.totalQuantity ?? account.orderCount) * 100).toFixed(1)
@@ -435,151 +540,6 @@ const fetchReturnRateByAccount = async (account) => {
                 </div>
               </div>
             ))}
-          </div>
-
-          {/* Return Rate by Product */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-xl font-bold text-gray-900">Return Rate by Product & Account</h2>
-                <p className="text-sm text-gray-600">All channels — includes returns, wrong returns, RTO</p>
-              </div>
-              <ExportButton data={returnRateData} filename="return_rates" title="Return Rate Analysis" />
-            </div>
-
-            {/* Controls row */}
-            <div className="flex items-center gap-3 flex-wrap mb-5 pb-4 border-b border-gray-100">
-
-              {/* Account selector */}
-              <div className="flex items-center gap-2">
-                <label className="text-sm font-semibold text-gray-600 whitespace-nowrap">Account:</label>
-                <select
-                  value={selectedReturnAccount}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setSelectedReturnAccount(val);
-                    fetchReturnRateByAccount(val);
-                  }}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white cursor-pointer min-w-40"
-                >
-                  <option value="">All Accounts</option>
-                  {returnAccounts.map((a) => (
-                    <option key={a} value={a}>{a}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Sort selector */}
-              <div className="flex items-center gap-2">
-                <label className="text-sm font-semibold text-gray-600 whitespace-nowrap">Sort by:</label>
-                <select
-                  value={returnSortBy}
-                  onChange={(e) => setReturnSortBy(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white cursor-pointer"
-                >
-                  <option value="returnRateByQty">Return Rate (High → Low)</option>
-                  <option value="totalQuantity">Total Orders (High → Low)</option>
-                  <option value="returnedQuantity">Returned Orders (High → Low)</option>
-                  <option value="RTOQuantity">RTO Count (High → Low)</option>
-                  {/*<option value="totalIssueRate">Total Issue Rate (High → Low)</option>*/}
-                </select>
-              </div>
-
-              {/* Stats summary */}
-              <div className="ml-auto flex items-center gap-3">
-                <span className="text-xs text-gray-500 bg-gray-100 px-3 py-1.5 rounded-full">
-                  {returnRateData.length} products
-                </span>
-                {selectedReturnAccount && (
-                  <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-full font-medium">
-                    {selectedReturnAccount}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-gray-200">
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Product</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Color</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Size</th>
-                    {/*{!selectedReturnAccount && (
-                      <th className="text-left py-3 px-4 font-semibold text-gray-700">Account</th>
-                    )}*/}
-                    <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Units</th>
-                    <th className="text-center py-3 px-4 font-semibold text-gray-700">Successful</th>
-                    <th className="text-center py-3 px-4 font-semibold text-gray-700">Returned</th>
-                    <th className="text-center py-3 px-4 font-semibold text-gray-700">Wrong Return</th>
-                    <th className="text-center py-3 px-4 font-semibold text-gray-700">RTO</th>
-                    <th className="text-center py-3 px-4 font-semibold text-red-700 bg-red-50">
-                      Return Rate
-                      <div className="text-xs font-normal text-gray-400">Returned + Wrong</div>
-                    </th>
-                    <th className="text-center py-3 px-4 font-semibold text-gray-700 bg-gray-50">
-                      RTO Rate
-                      <div className="text-xs font-normal text-gray-400">RTO Only</div>
-                    </th>
-                    {/*<th className="text-center py-3 px-4 font-semibold text-orange-700 bg-orange-50">
-                      Total Issue Rate
-                    </th>*/}
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...returnRateData]
-                    .sort((a, b) => b[returnSortBy] - a[returnSortBy])
-                    .map((item, index) => (
-                      <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                        <td className="py-3.5 px-4 font-medium text-gray-900">{item.design}</td>
-                        <td className="py-3.5 px-4">
-                          <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded-full text-sm">{item.color}</span>
-                        </td>
-                        <td className="py-3.5 px-4">
-                          <span className="px-2 py-1 bg-indigo-50 text-indigo-700 rounded-full text-sm font-semibold">{item.size}</span>
-                        </td>
-                        {/*{!selectedReturnAccount && (
-                          <td className="py-3.5 px-4 text-gray-700 text-sm">{item.accountName}</td>
-                        )}*/}
-                        <td className="py-3.5 px-4 text-center font-bold text-gray-900">{item.totalQuantity ?? item.totalOrders}</td>
-                        <td className="py-3.5 px-4 text-center"><span className="text-green-600 font-semibold">{item.successfulQuantity ?? item.successfulCount}</span></td>
-                        <td className="py-3.5 px-4 text-center"><span className="text-red-600 font-semibold">{item.returnedQuantity ?? item.returnedCount}</span></td>
-                        <td className="py-3.5 px-4 text-center"><span className="text-orange-600 font-semibold">{item.wrongReturnQuantity ?? item.wrongReturnCount}</span></td>
-                        <td className="py-3.5 px-4 text-center"><span className="text-gray-700 font-semibold">{item.RTOQuantity ?? item.RTOCount}</span></td>
-                        <td className="py-3.5 px-4 text-center bg-red-50">
-                          <span className={`text-base font-bold ${(item.returnRateByQty ?? item.returnRate) > 20 ? 'text-green-600' : (item.returnRateByQty ?? item.returnRate) > 30 ? 'text-yellow-600' : 'text-red-600'}`}>
-                            {item.returnRateByQty ?? item.returnRate}
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-4 text-center bg-gray-50">
-                          <span className={`text-base font-bold ${(item.rtoRateByQty ?? item.rtoRate) > 15 ? 'text-green-600' : (item.rtoRateByQty ?? item.rtoRate) > 25 ? 'text-yellow-600' : 'text-red-600'}`}>
-                            {item.rtoRateByQty ?? item.rtoRate}
-                          </span>
-                        </td>
-                        {/*<td className="py-3.5 px-4 text-center bg-orange-50">
-                          <div className="flex items-center justify-center gap-1">
-                            <span className={`text-base font-bold ${
-                              item.totalIssueRate < 10 ? 'text-green-600'
-                              : item.totalIssueRate < 20 ? 'text-yellow-600'
-                              : 'text-red-600'
-                            }`}>
-                              {item.totalIssueRate}%
-                            </span>
-                            {item.totalIssueRate > 20 && <FiAlertTriangle className="text-red-500" size={14} />}
-                          </div>
-                        </td>*/}
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-
-              {returnRateData.length === 0 && (
-                <div className="text-center py-12 text-gray-400">
-                  <FiPackage size={36} className="mx-auto mb-3 opacity-20" />
-                  <p className="text-sm">No return data for selected filters</p>
-                </div>
-              )}
-            </div>
           </div>
         </div>
       )}
@@ -1296,6 +1256,1246 @@ const fetchReturnRateByAccount = async (account) => {
             </div>
           </div>
           */}
+        </div>
+      )}
+
+      {/* ============================================================
+          RETURN INSIGHTS TAB
+      ============================================================ */}
+      {activeTab === 'returns' && (
+        <div className="space-y-6 animate-fadeIn">
+
+          {returnInsightsLoading && !returnInsights ? (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12">
+              <div className="flex items-center justify-center">
+                <Loader message="Loading Return Insights..." />
+              </div>
+            </div>
+          ) : !returnInsights ? (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-10 text-center">
+              <FiBarChart2 className="mx-auto text-4xl text-gray-300 mb-3" />
+              <h3 className="text-lg font-semibold text-gray-900">
+                No Return Insights Available
+              </h3>
+              <p className="text-gray-500 mt-1">
+                No marketplace data was found for the selected period.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* ======================================================
+                  HEADER + FILTERS
+              ====================================================== */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 mb-5">
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900">
+                      Return Insights
+                    </h2>
+
+                    <p className="text-sm text-gray-600 mt-1">
+                      Analyse customer returns, RTOs and wrong returns by
+                      marketplace, design and product combination.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    {returnInsightsLoading && (
+                      <div className="flex items-center gap-2 text-sm text-indigo-600">
+                        <FiRefreshCw className="animate-spin" />
+                        Updating...
+                      </div>
+                    )}
+
+                    <button
+                      onClick={clearReturnFilters}
+                      className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      Clear Filters
+                    </button>
+
+                    <ExportButton
+                      data={returnInsights.records || []}
+                      filename="return_insights_detailed"
+                      title="Return Insights - Detailed Records"
+                    />
+                  </div>
+                </div>
+
+                {/* FILTERS */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+
+                  {/* Marketplace */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-2">
+                      Marketplace
+                    </label>
+
+                    <select
+                      value={returnFilters.accountName}
+                      onChange={(e) =>
+                        handleReturnFilterChange(
+                          'accountName',
+                          e.target.value
+                        )
+                      }
+                      className="w-full px-3 py-2.5 border border-gray-300 rounded-lg bg-white text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="">All Marketplaces</option>
+
+                      {(returnInsights.filters?.accounts || []).map(
+                        account => (
+                          <option key={account} value={account}>
+                            {account}
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Design */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-2">
+                      Design
+                    </label>
+
+                    <select
+                      value={returnFilters.design}
+                      onChange={(e) =>
+                        handleReturnFilterChange(
+                          'design',
+                          e.target.value
+                        )
+                      }
+                      className="w-full px-3 py-2.5 border border-gray-300 rounded-lg bg-white text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="">All Designs</option>
+
+                      {(returnInsights.filters?.designs || []).map(
+                        item => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Color */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-2">
+                      Color
+                    </label>
+
+                    <select
+                      value={returnFilters.color}
+                      onChange={(e) =>
+                        handleReturnFilterChange(
+                          'color',
+                          e.target.value
+                        )
+                      }
+                      className="w-full px-3 py-2.5 border border-gray-300 rounded-lg bg-white text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="">All Colors</option>
+
+                      {(returnInsights.filters?.colors || []).map(
+                        item => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Size */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-2">
+                      Size
+                    </label>
+
+                    <select
+                      value={returnFilters.size}
+                      onChange={(e) =>
+                        handleReturnFilterChange(
+                          'size',
+                          e.target.value
+                        )
+                      }
+                      className="w-full px-3 py-2.5 border border-gray-300 rounded-lg bg-white text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="">All Sizes</option>
+
+                      {(returnInsights.filters?.sizes || []).map(
+                        item => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Return Reason */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-2">
+                      Return Reason
+                    </label>
+
+                    <select
+                      value={returnFilters.returnReason}
+                      onChange={(e) =>
+                        handleReturnFilterChange(
+                          'returnReason',
+                          e.target.value
+                        )
+                      }
+                      className="w-full px-3 py-2.5 border border-gray-300 rounded-lg bg-white text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="">All Reasons</option>
+
+                      {(returnInsights.filters?.reasons || []).map(
+                        item => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* ======================================================
+                  OVERVIEW CARDS
+              ====================================================== */}
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-5">
+
+                {/* Total Units */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="bg-indigo-100 p-2.5 rounded-lg">
+                      <FiPackage className="text-indigo-600 text-xl" />
+                    </div>
+
+                    <span className="text-xs font-medium text-gray-400">
+                      ELIGIBLE
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-gray-600">
+                    Total Units
+                  </p>
+
+                  <p className="text-3xl font-bold text-gray-900 mt-1">
+                    {returnInsights.overview?.totalUnits || 0}
+                  </p>
+
+                  <p className="text-xs text-gray-400 mt-2">
+                    {returnInsights.overview?.totalOrders || 0} orders
+                  </p>
+                </div>
+
+                {/* Customer Returns */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="bg-red-100 p-2.5 rounded-lg">
+                      <FiRefreshCw className="text-red-600 text-xl" />
+                    </div>
+
+                    <span className="text-sm font-bold text-red-600">
+                      {returnInsights.overview?.customerReturnRate || 0}%
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-gray-600">
+                    Customer Returns
+                  </p>
+
+                  <p className="text-3xl font-bold text-gray-900 mt-1">
+                    {returnInsights.overview?.customerReturnUnits || 0}
+                  </p>
+
+                  <p className="text-xs text-gray-400 mt-2">
+                    {returnInsights.overview?.customerReturnOrders || 0} orders
+                  </p>
+                </div>
+
+                {/* RTO */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="bg-amber-100 p-2.5 rounded-lg">
+                      <FiAlertTriangle className="text-amber-600 text-xl" />
+                    </div>
+
+                    <span className="text-sm font-bold text-amber-600">
+                      {returnInsights.overview?.rtoRate || 0}%
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-gray-600">
+                    RTO
+                  </p>
+
+                  <p className="text-3xl font-bold text-gray-900 mt-1">
+                    {returnInsights.overview?.rtoUnits || 0}
+                  </p>
+
+                  <p className="text-xs text-gray-400 mt-2">
+                    {returnInsights.overview?.rtoOrders || 0} orders
+                  </p>
+                </div>
+
+                {/* Wrong Returns */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="bg-purple-100 p-2.5 rounded-lg">
+                      <FiXCircle className="text-purple-600 text-xl" />
+                    </div>
+
+                    <span className="text-sm font-bold text-purple-600">
+                      {returnInsights.overview?.wrongReturnRate || 0}%
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-gray-600">
+                    Wrong Returns
+                  </p>
+
+                  <p className="text-3xl font-bold text-gray-900 mt-1">
+                    {returnInsights.overview?.wrongReturnUnits || 0}
+                  </p>
+
+                  <p className="text-xs text-gray-400 mt-2">
+                    {returnInsights.overview?.wrongReturnOrders || 0} orders
+                  </p>
+                </div>
+
+                {/* Overall Issues */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="bg-gray-100 p-2.5 rounded-lg">
+                      <FiBarChart2 className="text-gray-700 text-xl" />
+                    </div>
+
+                    <span className="text-sm font-bold text-gray-700">
+                      {returnInsights.overview?.overallIssueRate || 0}%
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-gray-600">
+                    Overall Issues
+                  </p>
+
+                  <p className="text-3xl font-bold text-gray-900 mt-1">
+                    {returnInsights.overview?.totalIssueUnits || 0}
+                  </p>
+
+                  <p className="text-xs text-gray-400 mt-2">
+                    Return + RTO + Wrong
+                  </p>
+                </div>
+              </div>
+
+              {/* ======================================================
+                  BREAKDOWN + TREND
+              ====================================================== */}
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+
+                {/* Return Type Breakdown */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                  <div className="mb-5">
+                    <h3 className="text-lg font-bold text-gray-900">
+                      Return Type Breakdown
+                    </h3>
+
+                    <p className="text-sm text-gray-500">
+                      Distribution of marketplace return issues
+                    </p>
+                  </div>
+
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={returnInsights.returnTypeBreakdown || []}
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={95}
+                          innerRadius={55}
+                          dataKey="value"
+                          nameKey="name"
+                          label={({ name, rate }) =>
+                            `${name} ${rate}%`
+                          }
+                        >
+                          {(returnInsights.returnTypeBreakdown || []).map(
+                            (_, index) => (
+                              <Cell
+                                key={index}
+                                fill={COLORS[index % COLORS.length]}
+                              />
+                            )
+                          )}
+                        </Pie>
+
+                        <Tooltip />
+
+                        <Legend />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Trend */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                  <div className="mb-5">
+                    <h3 className="text-lg font-bold text-gray-900">
+                      Return Rate Trend
+                    </h3>
+
+                    <p className="text-sm text-gray-500">
+                      Return rates based on sales date
+                    </p>
+                  </div>
+
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        data={returnInsights.trends || []}
+                      >
+                        <CartesianGrid
+                          strokeDasharray="3 3"
+                          stroke="#f0f0f0"
+                        />
+
+                        <XAxis
+                          dataKey="date"
+                          stroke="#6b7280"
+                          style={{ fontSize: '11px' }}
+                        />
+
+                        <YAxis
+                          stroke="#6b7280"
+                          style={{ fontSize: '11px' }}
+                          unit="%"
+                        />
+
+                        <Tooltip
+                          formatter={(value) => `${value}%`}
+                        />
+
+                        <Legend />
+
+                        <Line
+                          type="monotone"
+                          dataKey="customerReturnRate"
+                          stroke="#ef4444"
+                          strokeWidth={2}
+                          name="Customer Return %"
+                          dot={false}
+                        />
+
+                        <Line
+                          type="monotone"
+                          dataKey="rtoRate"
+                          stroke="#f59e0b"
+                          strokeWidth={2}
+                          name="RTO %"
+                          dot={false}
+                        />
+
+                        <Line
+                          type="monotone"
+                          dataKey="wrongReturnRate"
+                          stroke="#8b5cf6"
+                          strokeWidth={2}
+                          name="Wrong Return %"
+                          dot={false}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+
+              {/* ======================================================
+                  DESIGN ANALYSIS
+              ====================================================== */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+
+                <div className="p-6 border-b border-gray-200 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div>
+                    <h3 className="text-lg font-bold text-gray-900">
+                      Design Return Analysis
+                    </h3>
+
+                    <p className="text-sm text-gray-500">
+                      Identify designs with the highest return and RTO rates
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+
+                    <select
+                      value={designSortBy}
+                      onChange={(e) =>
+                        setDesignSortBy(e.target.value)
+                      }
+                      className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                    >
+                      <option value="customerReturnRate">
+                        Sort: Return Rate
+                      </option>
+
+                      <option value="rtoRate">
+                        Sort: RTO Rate
+                      </option>
+
+                      <option value="wrongReturnRate">
+                        Sort: Wrong Return Rate
+                      </option>
+
+                      <option value="totalUnits">
+                        Sort: Total Units
+                      </option>
+                    </select>
+
+                    <ExportButton
+                      data={returnInsights.designAnalysis || []}
+                      filename="design_return_analysis"
+                      title="Design Return Analysis"
+                    />
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+
+                    <thead className="bg-gray-50 border-b border-gray-200">
+                      <tr>
+                        <th className="px-5 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Design
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          Units
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          Returns
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          Return %
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          RTO %
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          Wrong %
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          Overall Issue %
+                        </th>
+                      </tr>
+                    </thead>
+
+                    <tbody className="divide-y divide-gray-100">
+
+                      {[...(returnInsights.designAnalysis || [])]
+                        .sort(
+                          (a, b) =>
+                            Number(b[designSortBy] || 0) -
+                            Number(a[designSortBy] || 0)
+                        )
+                        .map((item, index) => (
+
+                          <tr
+                            key={`${item.design}-${index}`}
+                            className="hover:bg-gray-50 transition-colors"
+                          >
+
+                            <td className="px-5 py-4">
+                              <span className="font-semibold text-gray-900">
+                                {item.design}
+                              </span>
+                            </td>
+
+                            <td className="px-5 py-4 text-right text-gray-700">
+                              {item.totalUnits}
+                            </td>
+
+                            <td className="px-5 py-4 text-right font-medium text-red-600">
+                              {item.customerReturnUnits}
+                            </td>
+
+                            <td className="px-5 py-4 text-right">
+                              <span className={`font-bold ${
+                                item.customerReturnRate >= 25
+                                  ? 'text-red-600'
+                                  : item.customerReturnRate >= 15
+                                  ? 'text-amber-600'
+                                  : 'text-green-600'
+                              }`}>
+                                {item.customerReturnRate}%
+                              </span>
+                            </td>
+
+                            <td className="px-5 py-4 text-right text-amber-600 font-semibold">
+                              {item.rtoRate}%
+                            </td>
+
+                            <td className="px-5 py-4 text-right text-purple-600 font-semibold">
+                              {item.wrongReturnRate}%
+                            </td>
+
+                            <td className="px-5 py-4 text-right font-bold text-gray-900">
+                              {item.overallIssueRate}%
+                            </td>
+                          </tr>
+                        ))}
+
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* ======================================================
+                  DESIGN + COLOR + SIZE
+              ====================================================== */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+
+                <div className="p-6 border-b border-gray-200 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+
+                  <div>
+                    <h3 className="text-lg font-bold text-gray-900">
+                      Product Combination Analysis
+                    </h3>
+
+                    <p className="text-sm text-gray-500">
+                      Return performance for each Design + Color + Size combination
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+
+                    <select
+                      value={variantSortBy}
+                      onChange={(e) =>
+                        setVariantSortBy(e.target.value)
+                      }
+                      className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                    >
+                      <option value="customerReturnRate">
+                        Sort: Return Rate
+                      </option>
+
+                      <option value="rtoRate">
+                        Sort: RTO Rate
+                      </option>
+
+                      <option value="wrongReturnRate">
+                        Sort: Wrong Return Rate
+                      </option>
+
+                      <option value="totalUnits">
+                        Sort: Total Units
+                      </option>
+                    </select>
+
+                    <ExportButton
+                      data={returnInsights.variantAnalysis || []}
+                      filename="product_combination_return_analysis"
+                      title="Design Color Size Return Analysis"
+                    />
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto max-h-[600px]">
+
+                  <table className="w-full">
+
+                    <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+                      <tr>
+                        <th className="px-5 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Design
+                        </th>
+
+                        <th className="px-5 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Color
+                        </th>
+
+                        <th className="px-5 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Size
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          Units
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          Returns
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          Return %
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          RTO %
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                          Wrong %
+                        </th>
+                      </tr>
+                    </thead>
+
+                    <tbody className="divide-y divide-gray-100">
+
+                      {[...(returnInsights.variantAnalysis || [])]
+                        .sort(
+                          (a, b) =>
+                            Number(b[variantSortBy] || 0) -
+                            Number(a[variantSortBy] || 0)
+                        )
+                        .map((item, index) => (
+
+                          <tr
+                            key={`${item.design}-${item.color}-${item.size}-${index}`}
+                            className="hover:bg-gray-50 transition-colors"
+                          >
+
+                            <td className="px-5 py-4 font-semibold text-gray-900">
+                              {item.design}
+                            </td>
+
+                            <td className="px-5 py-4 text-gray-700">
+                              {item.color}
+                            </td>
+
+                            <td className="px-5 py-4">
+                              <span className="inline-flex items-center justify-center min-w-[36px] px-2.5 py-1 rounded-md bg-gray-100 text-gray-700 text-xs font-bold">
+                                {item.size}
+                              </span>
+                            </td>
+
+                            <td className="px-5 py-4 text-right text-gray-700">
+                              {item.totalUnits}
+                            </td>
+
+                            <td className="px-5 py-4 text-right text-red-600 font-medium">
+                              {item.customerReturnUnits}
+                            </td>
+
+                            <td className="px-5 py-4 text-right">
+                              <span className={`font-bold ${
+                                item.customerReturnRate >= 25
+                                  ? 'text-red-600'
+                                  : item.customerReturnRate >= 15
+                                  ? 'text-amber-600'
+                                  : 'text-green-600'
+                              }`}>
+                                {item.customerReturnRate}%
+                              </span>
+                            </td>
+
+                            <td className="px-5 py-4 text-right text-amber-600 font-semibold">
+                              {item.rtoRate}%
+                            </td>
+
+                            <td className="px-5 py-4 text-right text-purple-600 font-semibold">
+                              {item.wrongReturnRate}%
+                            </td>
+
+                          </tr>
+                        ))}
+
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* ======================================================
+                  RETURN REASONS
+              ====================================================== */}
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+
+                {/* Reason Chart */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+
+                  <div className="flex items-center justify-between mb-5">
+                    <div>
+                      <h3 className="text-lg font-bold text-gray-900">
+                        Return Reason Intelligence
+                      </h3>
+
+                      <p className="text-sm text-gray-500">
+                        Most common customer return reasons
+                      </p>
+                    </div>
+
+                    <ExportButton
+                      data={returnInsights.reasonAnalysis || []}
+                      filename="return_reason_analysis"
+                      title="Return Reason Analysis"
+                    />
+                  </div>
+
+                  {(returnInsights.reasonAnalysis || []).length === 0 ? (
+                    <div className="h-64 flex items-center justify-center text-gray-400">
+                      No return reasons available
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+
+                      {(returnInsights.reasonAnalysis || [])
+                        .slice(0, 10)
+                        .map((item, index) => (
+
+                          <div key={`${item.reason}-${index}`}>
+
+                            <div className="flex items-center justify-between mb-1.5">
+
+                              <span className="text-sm font-medium text-gray-700 truncate pr-4">
+                                {item.reason}
+                              </span>
+
+                              <span className="text-sm font-bold text-gray-900">
+                                {item.units}
+                                <span className="text-gray-400 font-normal ml-1">
+                                  ({item.percentage}%)
+                                </span>
+                              </span>
+
+                            </div>
+
+                            <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+
+                              <div
+                                className="h-full bg-indigo-500 rounded-full"
+                                style={{
+                                  width: `${Math.min(
+                                    item.percentage,
+                                    100
+                                  )}%`
+                                }}
+                              />
+
+                            </div>
+
+                          </div>
+                        ))}
+
+                    </div>
+                  )}
+                </div>
+
+                {/* Account Comparison */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+
+                  <div className="mb-5">
+                    <h3 className="text-lg font-bold text-gray-900">
+                      Marketplace Comparison
+                    </h3>
+
+                    <p className="text-sm text-gray-500">
+                      Compare return performance across accounts
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+
+                    {(returnInsights.accountComparison || []).map(
+                      (item, index) => (
+
+                        <div
+                          key={`${item.accountName}-${index}`}
+                          className="p-4 rounded-lg border border-gray-200 hover:border-indigo-200 hover:bg-indigo-50/30 transition-colors"
+                        >
+
+                          <div className="flex items-center justify-between mb-3">
+
+                            <span className="font-semibold text-gray-900">
+                              {item.accountName}
+                            </span>
+
+                            <span className="text-sm font-bold text-gray-700">
+                              {item.totalUnits} units
+                            </span>
+
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-3 text-center">
+
+                            <div>
+                              <p className="text-xs text-gray-500">
+                                Return
+                              </p>
+
+                              <p className="font-bold text-red-600">
+                                {item.customerReturnRate}%
+                              </p>
+                            </div>
+
+                            <div>
+                              <p className="text-xs text-gray-500">
+                                RTO
+                              </p>
+
+                              <p className="font-bold text-amber-600">
+                                {item.rtoRate}%
+                              </p>
+                            </div>
+
+                            <div>
+                              <p className="text-xs text-gray-500">
+                                Wrong
+                              </p>
+
+                              <p className="font-bold text-purple-600">
+                                {item.wrongReturnRate}%
+                              </p>
+                            </div>
+
+                          </div>
+
+                        </div>
+                      )
+                    )}
+
+                  </div>
+                </div>
+              </div>
+
+              {/* ======================================================
+                  RETURN REASON × DESIGN
+              ====================================================== */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+
+                <div className="p-6 border-b border-gray-200 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+
+                  <div>
+                    <h3 className="text-lg font-bold text-gray-900">
+                      Return Reason & Design
+                    </h3>
+
+                    <p className="text-sm text-gray-500 mt-1">
+                      Identify which designs are generating specific return reasons
+                    </p>
+                  </div>
+
+                  <ExportButton
+                    data={returnInsights.reasonDesignAnalysis || []}
+                    filename="return_reason_design_analysis"
+                    title="Return Reason & Design Analysis"
+                  />
+
+                </div>
+
+                {(returnInsights.reasonDesignAnalysis || []).length === 0 ? (
+
+                  <div className="py-12 text-center">
+
+                    <FiBarChart2 className="mx-auto text-3xl text-gray-300 mb-3" />
+
+                    <p className="text-sm font-medium text-gray-500">
+                      No return reason and design data available
+                    </p>
+
+                  </div>
+
+                ) : (
+
+                  <div className="overflow-x-auto max-h-[500px]">
+
+                    <table className="w-full">
+
+                      <thead className="bg-gray-50 sticky top-0 z-10">
+
+                        <tr>
+
+                          <th className="px-5 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                            Return Reason
+                          </th>
+
+                          <th className="px-5 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                            Design
+                          </th>
+
+                          <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                            Return Orders
+                          </th>
+
+                          <th className="px-5 py-3 text-right text-xs font-semibold text-gray-600 uppercase">
+                            Return Units
+                          </th>
+
+                        </tr>
+
+                      </thead>
+
+                      <tbody className="divide-y divide-gray-100">
+
+                        {(returnInsights.reasonDesignAnalysis || [])
+                          .map((item, index) => (
+
+                            <tr
+                              key={`${item.reason}-${item.design}-${index}`}
+                              className="hover:bg-gray-50 transition-colors"
+                            >
+
+                              <td className="px-5 py-4">
+
+                                <span className="text-sm font-medium text-gray-700">
+                                  {item.reason}
+                                </span>
+
+                              </td>
+
+                              <td className="px-5 py-4">
+
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-indigo-50 text-indigo-700 text-sm font-semibold">
+                                  {item.design}
+                                </span>
+
+                              </td>
+
+                              <td className="px-5 py-4 text-right text-sm text-gray-700">
+                                {item.count}
+                              </td>
+
+                              <td className="px-5 py-4 text-right">
+
+                                <span className="font-bold text-red-600">
+                                  {item.units}
+                                </span>
+
+                              </td>
+
+                            </tr>
+
+                          ))}
+
+                      </tbody>
+
+                    </table>
+
+                  </div>
+
+                )}
+
+              </div>
+
+              {/* ======================================================
+                  RTO GEOGRAPHY
+              ====================================================== */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+
+                <div className="mb-5">
+                  <h3 className="text-lg font-bold text-gray-900">
+                    RTO Geography
+                  </h3>
+
+                  <p className="text-sm text-gray-500">
+                    States generating the highest RTO volume
+                  </p>
+                </div>
+
+                {(returnInsights.rtoGeography || []).length === 0 ? (
+                  <div className="py-10 text-center text-gray-400">
+                    No RTO geography data available
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+
+                    {(returnInsights.rtoGeography || [])
+                      .slice(0, 12)
+                      .map((item, index) => (
+
+                        <div
+                          key={`${item.state}-${index}`}
+                          className="border border-gray-200 rounded-lg p-4"
+                        >
+
+                          <div className="flex items-center justify-between">
+
+                            <span className="font-semibold text-gray-900">
+                              {item.state}
+                            </span>
+
+                            <span className="text-xl font-bold text-amber-600">
+                              {item.rtoUnits}
+                            </span>
+
+                          </div>
+
+                          <p className="text-xs text-gray-500 mt-2">
+                            {item.rtoOrders} RTO orders
+                          </p>
+
+                        </div>
+                      ))}
+
+                  </div>
+                )}
+              </div>
+
+              {/* ======================================================
+                  DETAILED RETURN RECORDS
+              ====================================================== */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+
+                <div className="p-6 border-b border-gray-200 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+
+                  <div>
+                    <h3 className="text-lg font-bold text-gray-900">
+                      Detailed Return Records
+                    </h3>
+
+                    <p className="text-sm text-gray-500">
+                      Individual Customer Return, RTO and Wrong Return records
+                    </p>
+                  </div>
+
+                  <ExportButton
+                    data={returnInsights.records || []}
+                    filename="detailed_return_records"
+                    title="Detailed Return Records"
+                  />
+
+                </div>
+
+                <div className="overflow-x-auto max-h-[600px]">
+
+                  <table className="w-full">
+
+                    <thead className="bg-gray-50 sticky top-0 z-10">
+                      <tr>
+
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Marketplace
+                        </th>
+
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Order
+                        </th>
+
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Product
+                        </th>
+
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Status
+                        </th>
+
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Reason
+                        </th>
+
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">
+                          Sale Date
+                        </th>
+
+                      </tr>
+                    </thead>
+
+                    <tbody className="divide-y divide-gray-100">
+
+                      {(returnInsights.records || [])
+                        .slice(0, 200)
+                        .map((item, index) => (
+
+                          <tr
+                            key={`${item.orderItemId}-${index}`}
+                            className="hover:bg-gray-50"
+                          >
+
+                            <td className="px-4 py-4 text-sm font-medium text-gray-900">
+                              {item.marketplace || '-'}
+                            </td>
+
+                            <td className="px-4 py-4">
+                              <div className="text-sm font-medium text-gray-900">
+                                {item.orderId || '-'}
+                              </div>
+
+                              <div className="text-xs text-gray-400">
+                                {item.orderItemId || ''}
+                              </div>
+                            </td>
+
+                            <td className="px-4 py-4">
+                              <div className="text-sm font-semibold text-gray-900">
+                                {item.design}
+                              </div>
+
+                              <div className="text-xs text-gray-500">
+                                {item.color} • {item.size}
+                              </div>
+                            </td>
+
+                            <td className="px-4 py-4">
+
+                              <span
+                                className={`inline-flex px-2.5 py-1 rounded-full text-xs font-semibold ${
+                                  item.status === 'returned'
+                                    ? 'bg-red-100 text-red-700'
+                                    : item.status === 'RTO'
+                                    ? 'bg-amber-100 text-amber-700'
+                                    : 'bg-purple-100 text-purple-700'
+                                }`}
+                              >
+                                {item.status === 'returned'
+                                  ? 'Customer Return'
+                                  : item.status === 'wrongreturn'
+                                  ? 'Wrong Return'
+                                  : item.status}
+                              </span>
+
+                            </td>
+
+                            <td className="px-4 py-4 max-w-[300px]">
+                              <div className="text-sm text-gray-700 truncate">
+                                {item.returnReason || '-'}
+                              </div>
+
+                              {item.returnSubReason && (
+                                <div className="text-xs text-gray-400 truncate">
+                                  {item.returnSubReason}
+                                </div>
+                              )}
+                            </td>
+
+                            <td className="px-4 py-4 text-sm text-gray-600 whitespace-nowrap">
+                              {item.saleDate
+                                ? new Date(
+                                    item.saleDate
+                                  ).toLocaleDateString('en-IN')
+                                : '-'}
+                            </td>
+
+                          </tr>
+                        ))}
+
+                    </tbody>
+                  </table>
+                </div>
+
+                {(returnInsights.records || []).length > 200 && (
+                  <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 text-sm text-gray-500 text-center">
+                    Showing first 200 records on screen. Export the data to view all{' '}
+                    {returnInsights.records.length} records.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
 

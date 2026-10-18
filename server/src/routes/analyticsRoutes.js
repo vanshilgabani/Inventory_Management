@@ -20,6 +20,7 @@ router.get('/marketplace/account-stats', protect, analyticsController.getMarketp
 router.get('/marketplace/return-rate', protect, analyticsController.getReturnRateByProduct);
 router.get('/marketplace/best-selling', protect, analyticsController.getBestSellingMarketplaceProducts);
 router.get('/marketplace/stock-recommendations', protect, analyticsController.getStockRecommendations);
+router.get('/marketplace/return-insights', protect, analyticsController.getReturnInsights);
 
 // Inventory Intelligence
 router.get('/inventory/stock-levels', protect, analyticsController.getCurrentStockLevels);

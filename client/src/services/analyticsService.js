@@ -93,6 +93,10 @@ export const analyticsService = {
     return response.data;
   },
 
+  async getReturnInsights(params = {}) {
+    const response = await api.get('/analytics/marketplace/return-insights', { params });
+    return response.data;
+  },
   // ==========================================
   // NEW: Inventory Intelligence
   // ==========================================
