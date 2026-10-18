@@ -53,98 +53,214 @@ const COLOR_MAPPINGS = {
  */
 function parseMarketplaceSKU(sku) {
   if (!sku) {
-    return { design: null, color: null, size: null, rawSize: null };
+    return {
+      design: null,
+      color: null,
+      size: null,
+      rawSize: null
+    };
   }
 
-  // Remove # and commas, trim
-  let cleaned = sku.replace(/#/g, '').replace(/,/g, '').trim();
+  // ---------------------------------------------------------
+  // BASIC CLEANUP
+  // ---------------------------------------------------------
+  let cleaned = String(sku)
+    .replace(/#/g, '')
+    .replace(/,/g, '')
+    .trim();
 
   // ---------------------------------------------------------
-  // NORMALIZE PREFIXED DESIGN FORMAT
-  // Example:
-  // HR_D9-D.GREY-XL  -> D9-D.GREY-XL
-  // AMZ_D13-BLACK-L  -> D13-BLACK-L
-  // FK_D11-KHAKI-M   -> D11-KHAKI-M
+  // NEW: REMOVE PREFIX BEFORE A D<number> DESIGN
   //
-  // IMPORTANT:
-  // Only remove the prefix when "_" is immediately followed
-  // by a valid D + number design pattern.
-  // This avoids breaking existing Color_Size formats such as:
+  // HR_D9-D.GREY-XL       -> D9-D.GREY-XL
+  // AMZ_D13-BLACK-L       -> D13-BLACK-L
+  // FK_D11-KHAKI-M        -> D11-KHAKI-M
+  // MYN_D22-L.GREY-XXL    -> D22-L.GREY-XXL
+  //
+  // Existing formats remain unchanged:
+  // D9-D.GREY-XL
+  // D13-BLACK-L
   // MN-D-NO-09-Khaki_32
   // ---------------------------------------------------------
-  cleaned = cleaned.replace(/^[^_]+_(D\d+)(?=-|$)/i, '$1');
+  const prefixedDesignMatch = cleaned.match(
+    /(?:^|_)(D\d+)(?=-|_|$)/i
+  );
 
-  // ✅ CHECK FOR UNDERSCORE (Color_Size format)
-  if (cleaned.includes('_')) {
-    // Format: XXX-XXX-XXX-Color_Size
-    const parts = cleaned.split('-');
-    
-    if (parts.length < 2) {
-      return { design: null, color: null, size: null, rawSize: null };
-    }
+  if (prefixedDesignMatch) {
+    const design = prefixedDesignMatch[1];
 
-    // Last part contains Color_Size
-    const lastPart = parts[parts.length - 1];
-    
-    if (lastPart.includes('_')) {
-      const [colorPart, sizePart] = lastPart.split('_');
-      
-      // Design is everything except the last part
-      const design = parts.slice(0, -1).join('-');
-      const color = colorPart.trim();
-      const rawSize = sizePart.trim();
-      
-      // Convert numeric size to letter (30 -> M, 32 -> L, etc.)
-      const size = convertSizeToLetter(rawSize) || (rawSize?.length <= 3 ? rawSize : null);
-      
-      return {
-        design: design || null,
-        color: color || null,
-        size: size || null,
-        rawSize: rawSize || null
-      };
+    // Only normalize when something exists BEFORE the design
+    const designIndex = cleaned
+      .toUpperCase()
+      .indexOf(design.toUpperCase());
+
+    if (designIndex > 0) {
+      cleaned = cleaned.substring(designIndex);
     }
   }
 
-  // ✅ STANDARD DASH FORMAT (existing logic)
-  const parts = cleaned.split('-');
+  // ---------------------------------------------------------
+  // UNDERSCORE FORMAT
+  //
+  // Example:
+  // MN-D-NO-09-Khaki_32
+  // ---------------------------------------------------------
+  if (cleaned.includes('_')) {
+    const parts = cleaned.split('-');
+
+    if (parts.length >= 2) {
+      const lastPart = parts[parts.length - 1];
+
+      if (lastPart.includes('_')) {
+        const underscoreParts = lastPart.split('_');
+
+        if (underscoreParts.length >= 2) {
+          const sizePart = underscoreParts.pop();
+          const colorPart = underscoreParts.join('_');
+
+          const design = parts
+            .slice(0, -1)
+            .join('-')
+            .trim();
+
+          const color = colorPart
+            .replace(/[._]/g, ' ')
+            .trim();
+
+          const rawSize = String(sizePart).trim();
+
+          const convertedSize = convertSizeToLetter(rawSize);
+
+          const size =
+            convertedSize ||
+            (/^(S|M|L|XL|XXL|XXXL|3XL|4XL|5XL)$/i.test(rawSize)
+              ? rawSize.toUpperCase()
+              : null);
+
+          return {
+            design: design || null,
+            color: color || null,
+            size: size || null,
+            rawSize: rawSize || null
+          };
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------
+  // STANDARD DASH FORMAT
+  // ---------------------------------------------------------
+  const parts = cleaned
+    .split('-')
+    .map(part => part.trim())
+    .filter(Boolean);
 
   if (parts.length < 3) {
-    return { design: null, color: null, size: null, rawSize: null };
+    return {
+      design: null,
+      color: null,
+      size: null,
+      rawSize: null
+    };
   }
 
-  let design, color, rawSize;
+  let design;
+  let color;
+  let rawSize;
 
-  // Pattern 1: D-11-KHAKHI-XL (D and number separate)
-  if (parts[0] === 'D' && !isNaN(parts[1])) {
+  // ---------------------------------------------------------
+  // FORMAT:
+  // D-11-KHAKHI-XL
+  // ---------------------------------------------------------
+  if (
+    parts[0].toUpperCase() === 'D' &&
+    /^\d+$/.test(parts[1])
+  ) {
     design = `D${parts[1]}`;
-    color = parts.slice(2, -1).join('-');
+
+    color = parts
+      .slice(2, -1)
+      .join('-');
+
     rawSize = parts[parts.length - 1];
   }
-  // Pattern 2: D9-L.GREY-L (D and number together)
-  else if (parts[0].match(/^D\d+$/)) {
-    design = parts[0];
-    color = parts.slice(1, -1).join('-');
+
+  // ---------------------------------------------------------
+  // FORMAT:
+  // D9-D.GREY-XL
+  // D13-LIGHT-GREY-L
+  // D22-BLACK-32
+  //
+  // This also handles normalized:
+  // HR_D9-D.GREY-XL
+  //      ↓
+  // D9-D.GREY-XL
+  // ---------------------------------------------------------
+  else if (/^D\d+$/i.test(parts[0])) {
+    design = parts[0].toUpperCase();
+
+    color = parts
+      .slice(1, -1)
+      .join('-');
+
     rawSize = parts[parts.length - 1];
   }
-  // Pattern 3: MN-D-NO-09-Khaki (multi-part design)
+
+  // ---------------------------------------------------------
+  // GENERIC / MULTI-PART DESIGN
+  //
+  // Example:
+  // MN-D-NO-09-KHAKI-XL
+  // ---------------------------------------------------------
   else {
-    // Look for numeric size at the end
-    const lastPart = parts[parts.length - 1];
-    
-    // Check if last part is a number or size (M, L, XL, etc.)
-    rawSize = lastPart;
+    rawSize = parts[parts.length - 1];
+
     color = parts[parts.length - 2];
-    design = parts.slice(0, -2).join('-');
+
+    design = parts
+      .slice(0, -2)
+      .join('-');
   }
 
-  // Clean color (remove dots, underscores)
+  // ---------------------------------------------------------
+  // CLEAN COLOR
+  // ---------------------------------------------------------
   if (color) {
-    color = color.replace(/[._]/g, ' ').trim();
+    color = color
+      .replace(/[._]/g, ' ')
+      .trim();
   }
 
-  // Convert size
-  const size = convertSizeToLetter(rawSize) || (rawSize?.length <= 3 ? rawSize : null);
+  // ---------------------------------------------------------
+  // NORMALIZE SIZE
+  // ---------------------------------------------------------
+  rawSize = rawSize
+    ? String(rawSize).trim()
+    : null;
+
+  let size = null;
+
+  if (rawSize) {
+    // Numeric:
+    // 28 -> S
+    // 30 -> M
+    // 32 -> L
+    // 34 -> XL
+    // 36 -> XXL
+    const convertedSize = convertSizeToLetter(rawSize);
+
+    if (convertedSize) {
+      size = convertedSize;
+    }
+
+    // Letter sizes
+    else if (
+      /^(S|M|L|XL|XXL|XXXL|3XL|4XL|5XL)$/i.test(rawSize)
+    ) {
+      size = rawSize.toUpperCase();
+    }
+  }
 
   return {
     design: design || null,

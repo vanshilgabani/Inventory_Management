@@ -2281,16 +2281,49 @@ exports.importFromCSV = async (req, res) => {
 
     logger.info('Found existing SKU mappings', { count: skuMappingMap.size });
 
-    // STEP 3: Pre-fetch all products
-    const uniqueDesigns = [...new Set(csvData.map(row => row.design))];
+// STEP 3: Pre-fetch products
+// Include BOTH:
+// 1. Design directly supplied by CSV
+// 2. Design automatically extracted from SKU
+
+const designSet = new Set();
+
+for (const row of csvData) {
+  // Design already available in CSV
+  if (row.design) {
+    designSet.add(String(row.design).trim());
+  }
+
+  // Try extracting design from SKU
+  if (row.sku) {
+    const parsed = parseMarketplaceSKU(row.sku);
+
+    if (parsed?.design) {
+      designSet.add(String(parsed.design).trim());
+    }
+  }
+}
+
+    const uniqueDesigns = [...designSet];
+
+    logger.info('Designs required for CSV import', {
+      uniqueDesigns
+    });
+
     const products = await Product.find({
       design: { $in: uniqueDesigns },
       organizationId
     }).session(session);
 
     const productMap = new Map();
+
     products.forEach(product => {
       productMap.set(product.design, product);
+    });
+
+    logger.info('Products loaded for CSV import', {
+      requestedDesigns: uniqueDesigns,
+      loadedDesigns: [...productMap.keys()]
     });
 
     // STEP 4: Process and validate in memory
