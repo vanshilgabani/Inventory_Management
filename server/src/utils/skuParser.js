@@ -57,7 +57,22 @@ function parseMarketplaceSKU(sku) {
   }
 
   // Remove # and commas, trim
-  const cleaned = sku.replace(/#/g, '').replace(/,/g, '').trim();
+  let cleaned = sku.replace(/#/g, '').replace(/,/g, '').trim();
+
+  // ---------------------------------------------------------
+  // NORMALIZE PREFIXED DESIGN FORMAT
+  // Example:
+  // HR_D9-D.GREY-XL  -> D9-D.GREY-XL
+  // AMZ_D13-BLACK-L  -> D13-BLACK-L
+  // FK_D11-KHAKI-M   -> D11-KHAKI-M
+  //
+  // IMPORTANT:
+  // Only remove the prefix when "_" is immediately followed
+  // by a valid D + number design pattern.
+  // This avoids breaking existing Color_Size formats such as:
+  // MN-D-NO-09-Khaki_32
+  // ---------------------------------------------------------
+  cleaned = cleaned.replace(/^[^_]+_(D\d+)(?=-|$)/i, '$1');
 
   // ✅ CHECK FOR UNDERSCORE (Color_Size format)
   if (cleaned.includes('_')) {
